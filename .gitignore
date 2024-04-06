@@ -1,3 +1,11 @@
+**.Rproj
+**/.DS_Store
+**/tmp/
+
+# Template by GitHub
+# =============================================
+
+
 # History files
 .Rhistory
 .Rapp.history
