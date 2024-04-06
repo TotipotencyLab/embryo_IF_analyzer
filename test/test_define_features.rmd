@@ -1,0 +1,232 @@
+---
+title: "Testing define_features Function"
+author: "Author: Siwat (Chad) Ruangroengkulrith (Tachibana Lab)"
+date: "Created: 06/04/2024"
+output: 
+  html_notebook:
+    theme: flatly
+    highlight: pygments
+    toc: true
+    # toc_depth: 2
+    # toc_float: true
+    # code_folding: hide
+---
+```{r, echo=FALSE, results='asis'}
+# cat(format(Sys.time(), "%a %b %d %X %Y"))
+cat("Last Updated and Executed:", format(Sys.time(), "%d %B %Y %X"))
+```
+
+```{r}
+addDateSuffix <- TRUE
+if(addDateSuffix){
+  date_suffix <- format(Sys.time(), "_%Y%m%d")
+}else{
+  date_suffix <- ""
+}
+```
+
+```{r}
+suppressPackageStartupMessages({
+  # Generic
+  library(dplyr)
+  library(tidyr)
+  library(tibble)
+  library(stringr)
+  
+  # Spatial analysis
+  library(sp)
+  library(sf)
+  
+  # plot function
+  library(ggplot2)
+  library(RColorBrewer)
+  library(cowplot)
+})
+```
+
+
+```{r}
+wd <- "/Users/chad/Lab/dev/embryo_IF_analyzer"
+script_dir <- paste0(wd, "/scripts/R")
+data_dir <- paste0(wd, "/test/data")
+```
+
+```{r}
+source(paste0(script_dir, "/brewer_pal_2.r"))
+source(paste0(script_dir, "/read_fiji_result.r"))
+source(paste0(script_dir, "/FnGroup_roi_2_polygons.r"))
+source(paste0(script_dir, "/find_ROI_z_intersect.r"))
+source(paste0(script_dir, "/define_feature_group.r"))
+source(paste0(script_dir, "/find_overlap_roi_features.r"))
+```
+
+
+# Read test data
+
+```{r}
+data_basename <- c(nuc_outline = "sample1_position001_nucleus_outline.txt",
+                   nuc_result = "sample1_position001_nucleus_res.txt",
+                   nucleo_outline = "sample1_position001_nucleolus_outline.txt",
+                   nucleo_result = "sample1_position001_nucleolus_res.txt")
+
+data_path_list <- setNames(paste0(data_dir, "/", data_basename), names(data_basename)) %>% 
+  as.list()
+
+outline_df <- read.table(data_path_list$nucleo_outline, sep="\t", header=TRUE, stringsAsFactors=FALSE)
+results_df <- read_fiji_result(data_path_list$nucleo_result)
+```
+
+```{r}
+# Filter by circularity
+valid_roi <- results_df %>% 
+  # dplyr::filter(!((area>=200)&(circ<0.5))) %>% 
+  dplyr::filter(circ>0.7) %>%
+  dplyr::pull(roi) %>% unique()
+
+invalid_roi <- unique(subset(outline_df$roi, !(outline_df$roi %in% valid_roi)))
+outline_df <- outline_df %>% 
+  mutate(include = roi %in% valid_roi)
+
+outline_pg_df <- polygonize_roi_df(outline_df)
+outline_pg_df$area <- st_area(outline_pg_df$geometry)
+outline_pg_df <- mutate(outline_pg_df, roi_type = str_extract(roi, "^[:alpha:]+"))
+
+outline_pg_df
+```
+
+```{r}
+outline_pg_df %>% 
+  ggplot(aes(geometry=geometry, color = roi_type)) +
+  geom_sf(fill=NA) +
+  theme_minimal() +
+  labs(title = "Colored by ROI type (before defining feature)")
+```
+
+
+```{r}
+tmpFn_plot_top_feature <- function(feature_df, 
+                                   feature_name_regex="^feature_", 
+                                   invalid_feature_name_regex="^invalid_feature_", 
+                                   failed_ROI_regex="^fail"){
+    feature_names <- feature_df %>% 
+      dplyr::filter(str_detect(feature_id, feature_name_regex)) %>% 
+      dplyr::pull(feature_id) %>% unique() %>% sort()
+    invalid_feature_names <- feature_df %>% 
+      dplyr::filter(str_detect(feature_id, invalid_feature_name_regex)) %>% 
+      dplyr::pull(feature_id) %>% unique() %>% sort()
+    fail_feature_names <- feature_df %>% 
+      dplyr::filter(str_detect(tolower(feature_id), failed_ROI_regex)) %>% 
+      dplyr::pull(feature_id) %>% unique() %>% sort()
+    
+    # n_feature <- length(feature_names)
+    n_color <- length(unique(feature_df$feature_id))
+    
+    feature_col_map <- brewer_pal_2(n_color, pal_name="Paired")
+    names(feature_col_map) <- feature_names
+    
+    col_map <- c(
+      feature_col_map,
+      setNames(rep("gray40", length(invalid_feature_names)), sort(invalid_feature_names)),
+      setNames(rep("gray80", length(fail_feature_names)), sort(fail_feature_names))
+    )
+    
+    p <- feature_df %>% 
+      arrange(z) %>% 
+      ggplot(aes(geometry=geometry, color = feature_id)) +
+      geom_sf(fill=NA, alpha=0.5) +
+      # coord_sf() +
+      scale_color_manual(values=col_map) +
+      scale_y_reverse() +
+      theme_minimal()
+    return(p)
+  }
+```
+
+
+
+
+# Define feature
+
+```{r}
+nuc_df <- define_feature_group(outline_df, pre_roi_filter_colname="include", 
+                               roi_regex="^nucleus", feature_prefix="nucleus_", 
+                               invalid_feature_prefix="invalid_", min_avg_area=100,
+                               max_z_dist=3, min_z_span=5)
+
+nucleo_df <- define_feature_group(outline_df, pre_roi_filter_colname="include", 
+                                  roi_regex="^nucleolus", feature_prefix="nucleolus_", 
+                                  invalid_feature_prefix="invalid_", 
+                                  max_z_dist=1, min_z_span=2)
+```
+
+
+```{r}
+extend_factor <- 0.1
+l <- list(
+  xmin=min(outline_df$x)*(1-extend_factor), 
+  xmax=max(outline_df$x)*(1+extend_factor),
+  ymin=min(outline_df$y)*(1-extend_factor), 
+  ymax=max(outline_df$y)*(1+extend_factor)
+)
+```
+
+
+```{r, fig.width=15, fig.asp=1}
+# nucleus
+p_nuc <- nuc_df %>% 
+  tmpFn_plot_top_feature(feature_name_regex="^nucleus", invalid_feature_name_regex="^invalid_") +
+  labs(title = "Nucleus") + 
+  coord_sf(ylim=c(l$ymin, l$ymax), xlim=c(l$xmin, l$xmax)) +
+  theme(legend.position="bottom")
+
+p_nuc_only <- nuc_df %>% 
+  dplyr::filter(str_detect(feature_id, "^nucleus")) %>%
+  tmpFn_plot_top_feature(feature_name_regex="^nucleus", invalid_feature_name_regex="^invalid_") +
+  labs(title = "Nucleus") + 
+  coord_sf(ylim=c(l$ymin, l$ymax), xlim=c(l$xmin, l$xmax)) +
+  theme(legend.position="bottom")
+
+# nucleolus
+p_nucleo <- nucleo_df %>% 
+  # dplyr::filter(!str_detect(feature_id, "^fail")) %>% 
+  tmpFn_plot_top_feature(feature_name_regex="^nucleolus", invalid_feature_name_regex="^invalid_") +
+  labs(title = "Nucleolus Only") + 
+  coord_sf(ylim=c(l$ymin, l$ymax), xlim=c(l$xmin, l$xmax)) +
+  theme(legend.position="bottom")
+
+
+p_nucleo_only <- nucleo_df %>% 
+  dplyr::filter(str_detect(feature_id, "^nucleolus")) %>%
+  tmpFn_plot_top_feature(feature_name_regex="^nucleolus", invalid_feature_name_regex="^invalid_") +
+  labs(title = "Nucleolus Only") + 
+  coord_sf(ylim=c(l$ymin, l$ymax), xlim=c(l$xmin, l$xmax)) +
+  theme(legend.position="bottom")
+
+plot_grid(p_nuc, p_nucleo, p_nuc_only, p_nucleo_only, nrow=2)
+```
+
+
+# Matching nucleolus and nucleus
+
+```{r}
+nucleo_nuc_ovl <- find_overlap_roi_features(nucleo_df, nuc_df, feature_1_regex="nucleolus", feature_2_regex="nucleus", 
+                                            min_intersect_ratio=0.9, min_ratio_roi_overlap=1)
+
+nucleo_nuc_map <- dplyr::pull(nucleo_nuc_ovl, feature_id_2, name=feature_id_1)
+nucleo_df <- nucleo_df %>% 
+  mutate(nucleus_id = nucleo_nuc_map[feature_id])
+
+nucleo_nuc_ovl
+```
+
+
+
+# Session information
+```{r}
+sessionInfo()
+```
+
+```{r, include=FALSE}
+rm(list=ls())
+```
+

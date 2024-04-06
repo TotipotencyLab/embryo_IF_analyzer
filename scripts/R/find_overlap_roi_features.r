@@ -17,6 +17,11 @@ find_overlap_roi_features <- function(feature_df_1, feature_df_2,
   F1_df <- dplyr::filter(feature_df_1, str_detect(feature_id, feature_1_regex))
   F2_df <- dplyr::filter(feature_df_2, str_detect(feature_id, feature_2_regex))
   
+  if(nrow(F1_df)==0){stop("Couldn't find feature 1")}
+  if(nrow(F2_df)==0){stop("Couldn't find feature 2")}
+  
+  
+  
   # F1_feature <- unique(F1_df$feature_id)
   # F2_feature <- unique(F2_df$feature_id)
   # roi_feature_map_1 <- dplyr::pull(F1_df, feature_id, name=roi)
