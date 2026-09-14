@@ -9,22 +9,48 @@ Fiji code can be run and tested from the terminal here. Do that before handing a
 script to the user — the GUI round-trip is slow for them and hides bugs that an
 assertion would catch.
 
-## Launcher
+## Finding a working launcher
+
+**Do not assume a path.** Which launcher works is installation-specific: a Fiji
+that has been updated in place for years may still bundle Java 8 while its newer
+`fiji` launcher expects Java 21, in which case `fiji` fails with *"No matching
+Java installations found"* and the older platform launcher works instead. A fresh
+install typically behaves the opposite way.
+
+If `CLAUDE.local.md` records a verified launcher for this machine, use it. If not,
+probe once and record the result there:
 
 ```bash
-/Applications/Fiji.app/Contents/MacOS/ImageJ-macosx --headless --console --run script.groovy
+cat > /tmp/probe.groovy <<'EOF'
+println "LAUNCHER_OK headless=" + java.awt.GraphicsEnvironment.isHeadless()
+EOF
+
+for L in /Applications/Fiji.app/Contents/MacOS/ImageJ-* \
+         /Applications/Fiji.app/fiji \
+         "$(command -v fiji 2>/dev/null)"; do
+  [ -x "$L" ] || continue
+  if "$L" --headless --console --run /tmp/probe.groovy 2>&1 | grep -q LAUNCHER_OK; then
+    echo "WORKS: $L"; break
+  else
+    echo "fails: $L"
+  fi
+done
 ```
 
-- **Use `Contents/MacOS/ImageJ-macosx`.** The newer `/Applications/Fiji.app/fiji`
-  launcher fails with *"No matching Java installations found"* — it expects Java 21,
-  and this Fiji bundles Java 8 (`java/macosx/adoptopenjdk-8.jdk`).
-- `ImageJ-macosx` prints *"Unable to locate a Java Runtime"* to stderr and then
-  works anyway. Ignore that line; filter it out of output greps.
-- `--run` takes `.groovy` (and other script languages); `-macro` takes `.ijm`.
-- Add `--mem=6000m` for real images. The default heap is small.
+Then:
+
+```bash
+<launcher> --headless --console --run script.groovy      # .groovy
+<launcher> --headless --console -macro  script.ijm       # IJ1 macro
+```
+
+- A launcher may print *"Unable to locate a Java Runtime"* to stderr and still
+  work. Filter that line out of output greps rather than treating it as failure.
+- Add `--mem=<N>m` for real images; the default heap is small and an OOM here
+  looks exactly like a code bug. Size it against the image and free RAM.
 - The docs suggest `-Dimagej.updater.disableAutocheck=true` to skip the
-  update-server ping. Not verified with this launcher — startup here is dominated
-  by JVM/class loading, so it may not help much.
+  update-server ping. Unverified; startup is dominated by JVM/class loading, so
+  it may not help much.
 
 ## Launches are slow — batch everything
 

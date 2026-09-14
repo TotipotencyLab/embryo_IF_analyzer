@@ -22,6 +22,9 @@
 # whose parent directory is excluded).
 !fixture/**/*.txt
 
+# Machine-local Claude notes (per-machine; not shared)
+CLAUDE.local.md
+
 # Template by GitHub
 # =============================================
 
