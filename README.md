@@ -36,10 +36,24 @@ Output per feature, written to the chosen directory:
 <prefix><image id>_<feature>_outline.txt        name, roi, z, x, y
 <prefix><image id>_<feature>_outline_ROIs.zip   ImageJ ROIs
 <prefix><image id>_<feature>_res.txt            measurements, one row per ROI per channel
+<prefix><image id>_config.txt                   every parameter used for this run
 ```
 
 `Set Measurements` is forced by the script, so the output columns do not depend on
-the operator's Fiji preferences.
+the operator's Fiji preferences. The `_config.txt` records the full parameter set,
+image calibration and ROI counts, so a set of results always carries the settings
+that produced it.
+
+Analysis can be restricted to chosen z-slices (e.g. `1-20,35-40`), which is useful
+for cutting small fixtures out of a full stack.
+
+Detection uses `ParticleAnalyzer` directly rather than the ROI Manager, so the
+whole pipeline also runs headless:
+
+```bash
+/Applications/Fiji.app/Contents/MacOS/ImageJ-macosx --headless --console \
+  --run scripts/groovy/Run_NucleusSelector.groovy
+```
 
 ## R side
 

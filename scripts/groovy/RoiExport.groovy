@@ -88,6 +88,17 @@ class RoiExport {
         rt.save(path)
     }
 
+    /**
+     * Write the run configuration next to the results, so a set of outputs
+     * always carries the parameters that produced it. Two columns, tab
+     * separated, so it is readable by eye and by read.table() alike.
+     */
+    static void saveRunConfig(Map<String, Object> params, String path) {
+        def sb = new StringBuilder("parameter\tvalue\n")
+        params.each { k, v -> sb.append(k).append("\t").append(v == null ? "" : v.toString()).append("\n") }
+        new File(path).setText(sb.toString(), "UTF-8")
+    }
+
     /** Identifier for output filenames: a token from the slice label, else the title. */
     static String resolveImageId(ImagePlus imp, String pattern) {
         String label = imp.getStack().getSliceLabel(imp.getCurrentSlice()) ?: ""
