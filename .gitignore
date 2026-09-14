@@ -16,10 +16,14 @@
 #     "position..." despite the capital P.
 *Position[0-9]*.txt
 
-# ...except under fixture/, which holds deliberately version-controlled
-# test inputs for the R unit tests. Bulk image data under fixture/*/data/
-# stays excluded by the **/data/ rule above (git cannot re-include a file
-# whose parent directory is excluded).
+# ...except under fixture/, which holds deliberately version-controlled test
+# inputs for the R unit tests.
+#
+# NB: git will not look inside an excluded directory, so a file cannot be
+#     re-included while its parent stays excluded. fixture/*/data/ therefore has
+#     to be un-excluded first, and the bulk image data inside it is held back by
+#     the per-extension rules above (*.tif, *.lif, *.zip) rather than by **/data/.
+!fixture/*/data/
 !fixture/**/*.txt
 
 # Machine-local Claude notes (per-machine; not shared)
