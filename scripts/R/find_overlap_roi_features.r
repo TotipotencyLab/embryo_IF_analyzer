@@ -69,7 +69,9 @@ find_overlap_roi_features <- function(feature_df_1, feature_df_2,
   # Only do this for those with known to be overlap
   if(sum(roi_ovl_pair_df$overlap)>0){
     roi_ovl_pair_df_fil <- dplyr::filter(roi_ovl_pair_df, overlap)
-    for(i in 1:nrow(roi_ovl_pair_df_fil)){
+    # NB: seq_len() for the same reason as elsewhere -- 1:nrow() is only safe
+    #     when the table is known to be non-empty.
+    for(i in seq_len(nrow(roi_ovl_pair_df_fil))){
       pg1 <- F1_df$geometry[F1_df$roi == roi_ovl_pair_df_fil$roi_1[i]]
       pg2 <- F2_df$geometry[F2_df$roi == roi_ovl_pair_df_fil$roi_2[i]]
       # plot(c(pg1, pg2)) # For visual inspection

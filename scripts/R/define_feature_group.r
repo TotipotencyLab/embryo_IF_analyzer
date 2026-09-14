@@ -165,8 +165,13 @@ define_feature_group <- function(roi_df,
   roi_edge_mat <- as.matrix(roi_edge_df)
   
   # Assigning feature groups
+  # NB: seq_len(), not 1:nrow(). find_ROI_z_intersect() legitimately returns a
+  #     zero-row table when nothing overlaps across z (it only warns), and
+  #     1:nrow() would then iterate over c(1, 0) and index rows that do not
+  #     exist. With seq_len() the loop is simply skipped and every ROI falls
+  #     through to the "overlap" fail bucket, which is the correct answer.
   feature_count <- 0
-  for(i in 1:nrow(roi_edge_mat)){
+  for(i in seq_len(nrow(roi_edge_mat))){
     cur_idx <- which(roi_node_df$roi_id %in% roi_edge_mat[i, ])
     # Check if any of these two already has group number assign to it
     cur_nuc_num <- unique(roi_node_df$feature_group[cur_idx]) %>% 

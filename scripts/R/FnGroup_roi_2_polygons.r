@@ -9,10 +9,18 @@
 roi_extract_xy_coord <- function(roi_df, roi_id){
   # Extract XY coordinate from a single ROI ID.
   # NB: This function is likely used as a dependencies of other functions
-  df <- roi_df %>% 
-    dplyr::filter(roi == roi_id) %>% 
-    {dplyr::add_row(., .[1, ])} # required for closing the polygons in R
+  df <- dplyr::filter(roi_df, roi == roi_id)
   
+  # NB: return an empty matrix instead of closing a polygon that is not there.
+  #     `.[1, ]` on a zero-row tibble yields a row of NAs, so this used to hand
+  #     back a 1-row all-NA matrix; the empty-ROI check in roi_2_polygons() saw
+  #     nrow == 1 and let it through, and the failure only surfaced later, deep
+  #     inside Polygon(), pointing at the wrong place.
+  if(nrow(df) == 0){
+    return(matrix(numeric(0), ncol=2, dimnames=list(NULL, c("x", "y"))))
+  }
+  
+  df <- dplyr::add_row(df, df[1, ]) # required for closing the polygons in R
   m <- as.matrix(df[ , c("x", "y")])
   return(m)
 }
@@ -36,10 +44,14 @@ roi_2_polygons <- function(roi_df, roi_id_vec){
   names(xy_coord_list) <- roi_id_vec
   
   # QC
+  # A closed ring needs at least 3 distinct vertices, i.e. 4 rows once the first
+  # point has been repeated. Anything shorter is a degenerate ROI that Polygon()
+  # rejects with an error that does not name the ROI responsible.
   n_points_vec <- sapply(xy_coord_list, nrow)
-  empty_roi <- n_points_vec == 0
+  empty_roi <- n_points_vec < 4
   if(any(empty_roi)){
-    warning("Some ROIs didn't return XY coordinate\n")
+    warning("Dropping ", sum(empty_roi), " ROI(s) with too few coordinates to form a polygon: ",
+            paste(names(xy_coord_list)[empty_roi], collapse=", "))
     xy_coord_list <- xy_coord_list[!empty_roi]
     n_points_vec <- n_points_vec[!empty_roi]
   }
@@ -50,10 +62,13 @@ roi_2_polygons <- function(roi_df, roi_id_vec){
   
   # Converting to polygons object (sp package)
   # PG = Polygon
-  sp_PG <- lapply(roi_id_vec, FUN=function(x){
+  # NB: iterate over what survived QC, not over the original roi_id_vec. Indexing
+  #     the list by a dropped ROI returns NULL and Polygon(NULL) fails.
+  use_roi_id <- names(xy_coord_list)
+  sp_PG <- lapply(use_roi_id, FUN=function(x){
     Polygons(list(Polygon(xy_coord_list[[x]])), ID=x)
   })
-  names(sp_PG) <- roi_id_vec
+  names(sp_PG) <- use_roi_id
   sp_spg <- SpatialPolygons(sp_PG)
   
   # Converting to polygons object (sf package)
@@ -119,7 +134,10 @@ pg_2_coord_df <- function(st_df){
       stop("Input doesn't have required column")
     }
   }else{
-    feat_coord_df <- feature_df
+    # NB: was `feature_df`, which is not a parameter of this function -- this
+    #     branch raised "object 'feature_df' not found" for any input that
+    #     already carried x/y columns.
+    feat_coord_df <- st_df
   }
   
   return(feat_coord_df)
