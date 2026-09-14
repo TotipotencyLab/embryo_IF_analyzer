@@ -1,13 +1,38 @@
-// version 0.1.3
-// last update: 2024-03-01
+// version 0.1.4
+// last update: 2026-09-14
+//
+// CHANGELOG (0.1.4)
+//  - FIX: measure_roi() measured channels 1..N instead of the channels listed
+//         in `channel_to_measure`. The array contents are now honoured.
+//  - FIX: outline y-coordinates were scaled by pixelWidth instead of
+//         pixelHeight (wrong on anisotropic pixels).
+//  - FIX: the "Position" token lookup crashed on images whose slice label
+//         carries no match. Now configurable, with a fallback to the title.
+//  - FIX: the nucleolus pass re-prefixed every ROI in the manager, including
+//         the nucleus ROIs kept by keep_nuc_roi, producing names like
+//         "nucleolus_nucleus_0011-0001-0442". Only the newly added ROIs are
+//         prefixed now.
+//  - FIX: with keep_nuc_roi=true the nucleolus outline/measurement files also
+//         contained every nucleus ROI, duplicating the nucleus outputs.
+//         detect_outline_coord() and measure_roi() now take an ROI index range
+//         so each feature writes only its own ROIs.
+//  - Set Measurements is now issued explicitly. It is a PERSISTENT Fiji user
+//         preference, so relying on it made output columns machine-dependent.
+//  - Detection parameters (blur sigma, size, circularity) lifted out of the
+//         analysis section into the configuration block, per feature.
 
 // # ANALYSIS CONFIGURATION ======================================================
 // ## Output specification -------------------------------------------------------
-outdir="/Users/chad/Lab/0_imaging/test/"
-out_basename="test_16C_1_"
+outdir="/Users/chad/Lab/dev/embryo_IF_analyzer/fixture/if_data/res_fiji/"
+out_basename="FJ_"
 
 
 // ## Image information --------------------------------------------------------
+// Token used to locate the imaging position inside the slice label.
+// Leica .lif series carry e.g. ".../Position003". Set to "" to always fall
+// back to the image window title instead.
+position_pattern = "Position";
+
 dna_mask_ch=1;
 cyto_mask_ch=1; // ignore this for now
 channel_to_measure=newArray(1,2,3);
@@ -24,7 +49,66 @@ only_current_z_stack = false;
 // For the list of all method, see:
 //	 https://imagej.net/plugins/auto-threshold
 threshold_method_nucleus = "Huang2"
-threshold_method_nucleolus = "Default"
+threshold_method_nucleolus = "Triangle"
+
+// ## Per-feature detection settings
+// Nucleus
+nucleus_blur_sigma    = 8;
+nucleus_particle_size = "80-Infinity";
+nucleus_fill_holes    = true;
+
+// Nucleolus
+// NB: nucleoli are far smaller than nuclei. A blur sigma tuned for nuclei
+//     erodes them below the minimum particle size, so small nucleoli go
+//     undetected and the rest measure smaller than they really are. Tune this
+//     independently of the nucleus sigma -- ~5 has worked better historically.
+nucleolus_blur_sigma           = 3;
+nucleolus_particle_size        = "3-150";
+nucleolus_particle_circularity = "0.50-1.00";
+// Compute one threshold from the whole stack rather than per z-slice, as
+// mask_nucleus() already does. Without it each slice gets its own threshold, so
+// a slice where the nucleolus is out of focus or absent thresholds on
+// essentially nucleolus-free data -- making nucleolus size drift across z and
+// corrupting the downstream z-merge.
+// Pooling the histogram across z made things worse in practice (no nucleoli
+// detected with either Default or Triangle): most slices contain little or no
+// nucleolus, so the pooled population is dominated by slices with nothing to
+// find. Left off; this is likely why it was absent originally.
+nucleolus_use_stack_histogram  = false;
+
+// Compute the nucleolus threshold from NUCLEAR PIXELS ONLY, using the nucleus
+// ROIs detected in the previous pass.
+// Rationale: nucleoli are dark in DAPI, so the old path inverted the image and
+// thresholded the whole frame -- which also made the large extranuclear
+// background the brightest thing present, so the auto-threshold ended up
+// separating background from nucleus rather than nucleolus from nucleoplasm.
+// Restricting the histogram to inside the nuclei removes the background from
+// the calculation entirely, and lets us drop the inversion (setAutoThreshold
+// can target the dark end directly).
+// KNOWN BROKEN -- SUPERSEDED. Leave this false.
+//   This path computes ONE threshold, from ONE arbitrary slice, over the
+//   z-FLATTENED union of all nucleus ROIs, then applies it to every slice. In
+//   practice that detects noise in empty space (a nucleus at one z fences in
+//   background at another) and whole nuclei as nucleoli (a threshold from one
+//   slice is wrong where the nucleus is dimmer).
+//   Doing it properly needs a per-nucleus, per-slice loop, which the IJ1 macro
+//   language cannot express cleanly -- the ROI Manager is the only way to hold a
+//   set of ROIs. That is why this moved to Groovy; see
+//   scripts/groovy/NucleolusDetect.groovy, which is the supported version.
+//   Kept here, disabled, as a record of why.
+nucleolus_restrict_to_nucleus  = false;
+
+// ## Measurements --------------------------------------------------------------
+// Fiji's Set Measurements is a persistent USER PREFERENCE, not a per-macro
+// setting. A macro that relies on whatever the operator happens to have ticked
+// produces different columns on different machines, which silently breaks the
+// downstream R scripts. Setting it explicitly makes the output schema
+// deterministic. This list reproduces the column set the R scripts expect:
+//   Label Area Mean StdDev Min Max X Y Circ. IntDen Median RawIntDen
+//   Ch Slice AR Round Solidity
+// NB: this overwrites the operator's Fiji preference, and it persists.
+measurement_fields  = "area mean standard min centroid shape integrated median stack display";
+measurement_decimal = 3;
 
 
 // ## Behavior control ---------------------------------------------------------
@@ -63,22 +147,16 @@ save_measurement = true;
 if(run_mask_nucleoli){keep_nuc_roi=true;}
 
 // # Set_basename
-// This will attempt to get the imaging position information of the current image
-//		Thus, would require to have the word 'Position' within the name
-cur_name = getInfo("slice.label");
-cur_name = split(cur_name, "\\/");
-//Array.print(cur_name);
-use_name = Array.filter(cur_name, "Position");
-out_basename=out_basename + use_name[0];
-//out_basename=out_basename + "test"
+// Derive a per-image identifier for the output filenames. Prefers a token
+// matching `position_pattern` in the slice label; falls back to the image
+// title so the macro also runs on data named differently (e.g. "...-S8-ch2.tif").
+out_basename = out_basename + resolve_image_id(position_pattern);
 
 
 // # Set measurement
-//if(run_fit_ellipse){
-//	run("Set Measurements...", "area min area_fraction limit display redirect=None decimal=3");
-//}else{
-//	run("Set Measurements...", "area centroid perimeter fit shape feret's redirect=None decimal=2");
-//}
+// Force the measurement set so the output columns do not depend on the
+// operator's Fiji preferences. See `measurement_fields` above.
+run("Set Measurements...", measurement_fields + " redirect=None decimal=" + measurement_decimal);
 
 
 // # Fetching some constant information
@@ -108,8 +186,8 @@ if(only_current_z_stack){
 
 // # Nucleus --------------------------------------------------------------------
 clear_roi();
-// mask_nucleus(dna_mask_ch, sigma, particle_size, fill_hole, close_popup_window)
-mask_nucleus(dna_mask_ch, 8, threshold_method_nucleus, "40-Infinity", true, close_outline_window);
+// mask_nucleus(dna_mask_ch, sigma, method, particle_size, fill_hole, close_popup_window)
+mask_nucleus(dna_mask_ch, nucleus_blur_sigma, threshold_method_nucleus, nucleus_particle_size, nucleus_fill_holes, close_outline_window);
 
 n = roiManager("count");
 // Add prefix to the detected ROIs
@@ -128,11 +206,11 @@ n = roiManager("count");
 if(n>0){
 	if(extract_outline_coord){
 		// detect_outline_coord(dm_name, outdir, outfile_basename, close_popup_window, save_coord, save_roi)
-		detect_outline_coord("nucleus_outline", outdir, out_basename, close_outline_table_window, save_outline_coord, save_roi);
+		detect_outline_coord("nucleus_outline", outdir, out_basename, close_outline_table_window, save_outline_coord, save_roi, 0, n);
 	}
 	selectWindow(start_window); // come back to the main image
 	if(auto_measure_results){
-		measure_roi(start_window, channel_to_measure, outdir, out_basename+"_nucleus", auto_reset_results_window, save_measurement);
+		measure_roi(start_window, channel_to_measure, outdir, out_basename+"_nucleus", auto_reset_results_window, save_measurement, 0, n);
 	}
 	run("Select None");
 }else{
@@ -146,19 +224,23 @@ if(run_mask_nucleoli){
 	if(!keep_nuc_roi){
 		clear_roi();
 	}
-	//mask_nucleus(dna_mask_ch, 5, "3-100", false, close_outline_window);
-	mask_nucloli(dna_mask_ch, 8, threshold_method_nucleolus, "3-300", "0.50-1.00", close_outline_window);
+	// NB: capture the ROI count BEFORE detection. With keep_nuc_roi=true the
+	//     nucleus ROIs are still in the manager, so renaming the full 0..n range
+	//     re-prefixed them as "nucleolus_nucleus_...". Only prefix the new ones.
+	n_before = roiManager("count");
+	mask_nucloli(dna_mask_ch, nucleolus_blur_sigma, threshold_method_nucleolus, nucleolus_particle_size, nucleolus_particle_circularity, nucleolus_use_stack_histogram, nucleolus_restrict_to_nucleus, 0, n_before, close_outline_window);
 	
 	// # this chunk has the same structure as the nucleus one.
 	n = roiManager("count");
-	if(n>0){
-		modify_roi_name_range("nucleolus_", "", 0, n);
+	if(n > n_before){
+		print("Detected ROI (nucleolus): " + (n - n_before));
+		modify_roi_name_range("nucleolus_", "", n_before, n);
 		if(extract_outline_coord){
-			detect_outline_coord("nucleolus_outline", outdir, out_basename, close_outline_table_window, save_outline_coord, save_roi);
+			detect_outline_coord("nucleolus_outline", outdir, out_basename, close_outline_table_window, save_outline_coord, save_roi, n_before, n);
 		}
 		selectWindow(start_window); // come back to the main image
 		if(auto_measure_results){
-			measure_roi(start_window, channel_to_measure, outdir, out_basename+"_nucleolus", auto_reset_results_window, save_measurement);
+			measure_roi(start_window, channel_to_measure, outdir, out_basename+"_nucleolus", auto_reset_results_window, save_measurement, n_before, n);
 		}
 		
 		run("Select None");
@@ -194,6 +276,40 @@ print("Analysis Done!");
 
 
 // ## local FUNCTIONS ============================================================
+// Naming ------------------------------------------------------------------------
+
+function resolve_image_id(pattern){
+	// Return an identifier for the current image, for use in output filenames.
+	// Prefers a token matching `pattern` inside the slice label; falls back to
+	// the image window title when the label carries no match (or is empty).
+	label = getInfo("slice.label");
+	if( (pattern != "") && (label != "") ){
+		parts = split(label, "\\/");
+		matched = Array.filter(parts, pattern);
+		if(lengthOf(matched) > 0){
+			// NB: assign before returning. The IJ1 macro interpreter cannot infer
+			//     a string return type through a nested user-function call, so
+			//     "return sanitize_name(...)" fails with "Numeric return value
+			//     expected". Do not collapse these two lines.
+			id = sanitize_name(matched[0]);
+			return id;
+		}
+	}
+	print("No '" + pattern + "' token in slice label -- falling back to image title.");
+	id = sanitize_name(getTitle());
+	return id;
+}
+
+function sanitize_name(s){
+	// Drop a trailing image extension and replace characters that are unsafe
+	// or awkward inside a filename.
+	s = replace(s, "\\.(tif|tiff|lif|lifext|czi|nd2)$", "");
+	s = replace(s, "[\\/\\\\:\\*\\?\"<>\\|]", "_");
+	s = replace(s, "^\\s+", "");
+	s = replace(s, "\\s+$", "");
+	return s;
+}
+
 // ROI management ----------------------------------------------------------------
 function clear_roi() {
 	run("Select None");
@@ -252,7 +368,7 @@ function mask_nucleus(dna_mask_ch, sigma, method, particle_size, fill_hole, clos
 }
 
 
-function mask_nucloli(dna_mask_ch, sigma, method, particle_size, particle_circularity, close_popup_window){
+function mask_nucloli(dna_mask_ch, sigma, method, particle_size, particle_circularity, use_stack_hist, restrict_to_nuc, nuc_min, nuc_max, close_popup_window){
 	// recommended input value:
 	//		sigma: 5
 	//		particle_size: 3-300
@@ -262,12 +378,50 @@ function mask_nucloli(dna_mask_ch, sigma, method, particle_size, particle_circul
 	tmpt=getTitle();
 	selectWindow(tmpt);
 	
-	run("Invert", "stack");
-	run("Gaussian Blur...", "sigma="+sigma+" stack");
-	// run("Auto Threshold", "method=Triangle white stack");
-	run("Auto Threshold", "method="+method+" white stack");
-	run("Close-", "stack");
-	//run("Dilate", "stack");
+	if(restrict_to_nuc && (nuc_max > nuc_min)){
+		// --- threshold from nuclear pixels only, no inversion ----------------
+		run("Gaussian Blur...", "sigma="+sigma+" stack");
+
+		// union of the nucleus ROIs from the previous pass
+		sel = newArray(nuc_max - nuc_min);
+		for(k=0; k<sel.length; k++){ sel[k] = nuc_min + k; }
+		roiManager("deselect");
+		roiManager("select", sel);
+		if(sel.length > 1){ roiManager("Combine"); }
+
+		// NB: setAutoThreshold() is the BUILT-IN macro function, not the
+		//     "Auto Threshold" plugin used below. It computes its histogram
+		//     from the ACTIVE SELECTION, which is the entire point here.
+		//     No "dark" modifier => it targets the dark end, i.e. the nucleoli.
+		thresh_opt = method;
+		if(use_stack_hist){ thresh_opt = thresh_opt + " stack"; }
+		setAutoThreshold(thresh_opt);
+		getThreshold(nucleolus_lo, nucleolus_hi);
+		print("   nucleolus threshold (within nuclei): [" + nucleolus_lo + ", " + nucleolus_hi + "]");
+
+		// apply over the frame, then discard anything outside the nuclei
+		run("Select None");
+		setThreshold(nucleolus_lo, nucleolus_hi);
+		setOption("BlackBackground", true);
+		run("Convert to Mask", "background=Light black");
+
+		roiManager("select", sel);
+		if(sel.length > 1){ roiManager("Combine"); }
+		run("Clear Outside", "stack");
+		run("Select None");
+
+	}else{
+		// --- original behaviour: invert, then threshold the whole frame ------
+		run("Invert", "stack");
+		run("Gaussian Blur...", "sigma="+sigma+" stack");
+		// run("Auto Threshold", "method=Triangle white stack");
+		thresh_opt = "method="+method+" white stack";
+		if(use_stack_hist){ thresh_opt = thresh_opt + " use_stack_histogram"; }
+		run("Auto Threshold", thresh_opt);
+		run("Close-", "stack");
+		//run("Dilate", "stack");
+	}
+
 	run("Analyze Particles...", "size="+particle_size+" circularity="+particle_circularity+" exclude add stack");
 	
 	if(close_popup_window){
@@ -313,7 +467,7 @@ function mask_cytoplasm(cyto_mask_ch, sigma, close_popup_window){
 
 // # ROI processing -----------------------------------------------------------------
 
-function detect_outline_coord(dm_name, outdir, outfile_basename, close_popup_window, save_coord, save_roi){
+function detect_outline_coord(dm_name, outdir, outfile_basename, close_popup_window, save_coord, save_roi, min_idx, max_idx){
 	dm=dm_name;
 	// # A placeholder for our outline table
 	Table.create(dm);
@@ -322,11 +476,14 @@ function detect_outline_coord(dm_name, outdir, outfile_basename, close_popup_win
 	//getPixelSize(unit, pixelWidth, pixelHeight);
 	
 	n = roiManager("count");
-	if(n>0) {
+	if(max_idx > min_idx) {
 		cnt=0; // for line count?
 		
 		// # Saving the outline into a text file
-		for ( i=0; i<n; i++ ) { 
+		// NB: only ROIs in [min_idx, max_idx). Previously this walked the whole
+		//     manager, so with keep_nuc_roi=true the nucleolus outputs also
+		//     contained every nucleus ROI.
+		for ( i=min_idx; i<max_idx; i++ ) { 
 			roiManager("select", i); // select one ROI
 			
 			// # fetch information of the current ROI
@@ -340,7 +497,7 @@ function detect_outline_coord(dm_name, outdir, outfile_basename, close_popup_win
 				Table.set("roi", cnt, roi_name, dm);
 				Table.set("z", cnt, curr, dm);
 				Table.set("x", cnt, xpoints[noc]*pixelWidth, dm);
-				Table.set("y", cnt, ypoints[noc]*pixelWidth, dm);
+				Table.set("y", cnt, ypoints[noc]*pixelHeight, dm);
 				cnt++;
 			}
 			
@@ -353,8 +510,13 @@ function detect_outline_coord(dm_name, outdir, outfile_basename, close_popup_win
 		}
 		
 		if(save_roi){
-			// # save all currently available ROI object
-			roiManager("Save", outdir + outfile_basename + "_" + dm_name + "_ROIs.zip");
+			// # save only the ROIs belonging to this feature
+			roiManager("deselect");
+			sel = newArray(max_idx - min_idx);
+			for(k=0; k<sel.length; k++){ sel[k] = min_idx + k; }
+			roiManager("select", sel);
+			roiManager("save selected", outdir + outfile_basename + "_" + dm_name + "_ROIs.zip");
+			roiManager("deselect");
 		}
 		
 		
@@ -373,19 +535,22 @@ function detect_outline_coord(dm_name, outdir, outfile_basename, close_popup_win
 }
 
 
-function measure_roi(window_name, channel_to_measure, outdir, outfile_basename, reset_res, save_to_file) {
+function measure_roi(window_name, channel_to_measure, outdir, outfile_basename, reset_res, save_to_file, min_idx, max_idx) {
 	selectWindow(window_name);
 	//channel_to_measure=newArray(1,2,3);
 	num_channel=channel_to_measure.length;
 	
 	n = roiManager("count");
-	if(n>0) {
-		// # i.e., there is at least one valid ROI
+	if(max_idx > min_idx) {
+		// # i.e., there is at least one valid ROI in the requested range
 		
 		for ( ch=0; ch<num_channel; ch++ ) {
-			Stack.setChannel(ch+1)
+			// NB: use the channel NUMBERS supplied by the caller. This loop
+			//     previously did setChannel(ch+1), i.e. it measured channels
+			//     1..N and silently ignored which channels were requested.
+			Stack.setChannel(channel_to_measure[ch]);
 			
-			for ( i=0; i<n; i++ ) { 
+			for ( i=min_idx; i<max_idx; i++ ) { 
 				roiManager("select", i); // select one ROI
 				roiManager("measure");
 			}

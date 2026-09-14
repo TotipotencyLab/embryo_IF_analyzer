@@ -6,11 +6,24 @@
 **/data/
 *.lif
 *.lifext
+*.tif
 *.tiff
 *.zip
 *.html
-# ignore files extracted from Fiji
+
+# Raw Fiji text dumps (outline coordinates / measurement exports).
+# NB: macOS sets core.ignorecase=true, so this also matches lowercase
+#     "position..." despite the capital P.
 *Position[0-9]*.txt
+
+# ...except under fixture/, which holds deliberately version-controlled
+# test inputs for the R unit tests. Bulk image data under fixture/*/data/
+# stays excluded by the **/data/ rule above (git cannot re-include a file
+# whose parent directory is excluded).
+!fixture/**/*.txt
+
+# Machine-local Claude notes (per-machine; not shared)
+CLAUDE.local.md
 
 # Template by GitHub
 # =============================================
