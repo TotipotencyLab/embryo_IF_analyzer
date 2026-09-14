@@ -2,6 +2,16 @@
 **/.DS_Store
 **/tmp/
 
+# Data
+**/data/
+*.lif
+*.lifext
+*.tiff
+*.zip
+*.html
+# ignore files extracted from Fiji
+*Position[0-9]*.txt
+
 # Template by GitHub
 # =============================================
 

@@ -58,12 +58,12 @@ read_fiji_result <- function(res_path){
     # Checking for potential problem ----
     conflict_col <- (colSums(m) > 1)
     if(any(conflict_col)){
-      warning("Conflict column found")
+      warning("Conflict row found")
     }
     
     conflict_row <- rowSums(m) > 1
     if(any(conflict_row)){
-      warning("Conflict row found")
+      warning("Conflict column found")
     }
     
     # Returning output

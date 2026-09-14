@@ -64,10 +64,15 @@ source(paste0(script_dir, "/find_overlap_roi_features.r"))
 # Read test data
 
 ```{r}
-data_basename <- c(nuc_outline = "sample1_position001_nucleus_outline.txt",
-                   nuc_result = "sample1_position001_nucleus_res.txt",
-                   nucleo_outline = "sample1_position001_nucleolus_outline.txt",
-                   nucleo_result = "sample1_position001_nucleolus_res.txt")
+# data_basename <- c(nuc_outline = "sample1_position001_nucleus_outline.txt",
+#                    nuc_result = "sample1_position001_nucleus_res.txt",
+#                    nucleo_outline = "sample1_position001_nucleolus_outline.txt",
+#                    nucleo_result = "sample1_position001_nucleolus_res.txt")
+
+data_basename <- c(nuc_outline = "Position010_Gr1_KO_60hpf_nucleus_outline.txt",
+                   nuc_result = "Position010_Gr1_KO_60hpf_nucleus_res.txt",
+                   nucleo_outline = "Position010_Gr1_KO_60hpf_nucleolus_outline.txt",
+                   nucleo_result = "Position010_Gr1_KO_60hpf_nucleolus_res.txt")
 
 data_path_list <- setNames(paste0(data_dir, "/", data_basename), names(data_basename)) %>% 
   as.list()
@@ -182,7 +187,7 @@ p_nuc <- nuc_df %>%
 p_nuc_only <- nuc_df %>% 
   dplyr::filter(str_detect(feature_id, "^nucleus")) %>%
   tmpFn_plot_top_feature(feature_name_regex="^nucleus", invalid_feature_name_regex="^invalid_") +
-  labs(title = "Nucleus") + 
+  labs(title = "Nucleus Only") + 
   coord_sf(ylim=c(l$ymin, l$ymax), xlim=c(l$xmin, l$xmax)) +
   theme(legend.position="bottom")
 
@@ -190,7 +195,7 @@ p_nuc_only <- nuc_df %>%
 p_nucleo <- nucleo_df %>% 
   # dplyr::filter(!str_detect(feature_id, "^fail")) %>% 
   tmpFn_plot_top_feature(feature_name_regex="^nucleolus", invalid_feature_name_regex="^invalid_") +
-  labs(title = "Nucleolus Only") + 
+  labs(title = "Nucleolus") + 
   coord_sf(ylim=c(l$ymin, l$ymax), xlim=c(l$xmin, l$xmax)) +
   theme(legend.position="bottom")
 

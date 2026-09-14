@@ -1,0 +1,791 @@
+---
+title: "Checking Nr5a2 signals"
+author: "Author: Siwat (Chad) Ruangroengkulrith (Tachibana Lab)"
+date: "Created: 06/04/2024"
+output: 
+  html_notebook:
+    theme: flatly
+    highlight: pygments
+    toc: true
+    # toc_depth: 2
+    # toc_float: true
+    # code_folding: hide
+---
+```{r, echo=FALSE, results='asis'}
+# cat(format(Sys.time(), "%a %b %d %X %Y"))
+cat("Last Updated and Executed:", format(Sys.time(), "%d %B %Y %X"))
+```
+
+```{r}
+addDateSuffix <- TRUE
+if(addDateSuffix){
+  date_suffix <- format(Sys.time(), "_%Y%m%d")
+}else{
+  date_suffix <- ""
+}
+```
+
+```{r}
+suppressPackageStartupMessages({
+  # Generic
+  library(dplyr)
+  library(tidyr)
+  library(tibble)
+  library(stringr)
+  library(readxl)
+  
+  # Spatial analysis
+  library(sp)
+  library(sf)
+  
+  # plot function
+  library(ggplot2)
+  library(ggbeeswarm)
+  library(plotly)
+  library(ggplotify)
+  library(cowplot)
+  library(ggpubr)
+})
+```
+
+
+```{r}
+wd <- "/Users/chad/Lab/Projects/Maternal_Nr5a2/IF/20240327_timecourse_nr5a2"
+script_dir <- "/Users/chad/Lab/dev/embryo_IF_analyzer/scripts/R"
+
+RData_dir <- paste0(wd, "/data")
+if(!dir.exists(RData_dir)){dir.create(RData_dir)}
+```
+
+```{r}
+source(paste0(script_dir, "/brewer_pal_2.r"))
+source(paste0(script_dir, "/read_fiji_result.r"))
+source(paste0(script_dir, "/FnGroup_roi_2_polygons.r"))
+source(paste0(script_dir, "/find_ROI_z_intersect.r"))
+source(paste0(script_dir, "/define_feature_group.r"))
+source(paste0(script_dir, "/find_overlap_roi_features.r"))
+
+# Plot functions
+source(paste0(script_dir, "/plot_outline_topView.r"))
+```
+
+
+# Read test data
+
+***************************************************************************************************
+
+```{r}
+# Original
+data_dir <- "/Volumes/pool-toti-imaging/Alina/LeicaStellaris/27032024_Nr5a2_timecourse_1hRT/SR/raw_measurements"
+# local copy
+data_dir <- "/Users/chad/Lab/Projects/Maternal_Nr5a2/IF/20240327_timecourse_nr5a2/raw_measurements"
+plot_dir=paste0(data_dir, "/plot")
+if(!dir.exists(plot_dir)){dir.create(plot_dir)}
+
+channel_map <- c("DAPI", "H3K27ac", "Nr5a2")
+channel_order <- c("Nr5a2", "H3K27ac", "DAPI")
+
+pos_info <- read_xlsx(paste0(data_dir, "/../pos_info.xlsx"), sheet="sample") %>% 
+  mutate(condition = str_replace(condition, "\\\\n", "\n"))
+# pos_param_info <- read_xlsx(paste0(data_dir, "/../pos_info.xlsx"), sheet="parameter") 
+
+background_raw_df <- read_xlsx(paste0(data_dir, "/../pos_info.xlsx"), sheet = "background")
+```
+
+```{r}
+# pos_info$genotype %>% unique
+genotype_color_map <- c(`fl/fl`="darkorchid4", KO = "firebrick")
+
+condition_order <- c("fl/fl", "KO", "fl/fl\nNo_primary", "KO\nNo_primary")
+```
+
+# Calculating background signal
+
+***************************************************************************************************
+
+> The recommended way fro normalizing the signal is: `(Mean[ROI] x Area[ROI]) - (Mean[BG] x Area[BG])`. In other words: `(Mean[ROI] - Mean[BG]) x Area[ROI]`
+
+```{r}
+background_df <- background_raw_df %>% 
+  dplyr::rename_all(.funs=function(x){tolower(str_remove_all(x, "\\.+$"))}) %>% 
+  dplyr::select(-position) %>% 
+  mutate(pos = str_extract(label, "[Pp]osition\\d+"),
+         z = as.numeric(str_extract(label, "(?<=z\\:)\\d+"))) %>% 
+  group_by(pos, ch, type) %>% 
+  reframe(n_z = length(unique(z)),
+          sum_intDen = sum(intden),
+          sum_area = sum(area),
+          mean_area = mean(area),
+          signal = sum_intDen/sum_area,
+          mean_signal = mean(mean)) %>% 
+  mutate(channel = channel_map[as.integer(ch)]) %>% 
+  left_join(., dplyr::select(pos_info, pos=position, genotype, celltype, hpf, condition), by="pos")
+
+background_area_df <- background_df %>% 
+  dplyr::select(pos, type, mean_area) %>% 
+  unique() %>% 
+  tidyr::spread(key="type", value="mean_area") %>% 
+  dplyr::rename(bg_mean_area = background, cyto_mean_area=cytoplasm)
+```
+
+## Compare raw background signal
+```{r}
+background_df %>% 
+  ggplot(aes(x = condition, y=signal)) +
+  geom_boxplot() +
+  geom_quasirandom(alpha = 0.5) +
+  facet_grid(channel~type, scales="free_y") +
+  labs(title = "Raw signal in two types of background",
+       x="", y="Signal (Total IntDen / Total Area) (A.U.)") +
+  theme_bw()
+```
+
+
+Normalizing the signal
+
+```{r}
+background_df_2 <- background_df %>%
+  dplyr::select(pos, channel, type, signal) %>% 
+  spread(key = "type", value="signal") %>% 
+  dplyr::rename(bg_mean_signal = background, cyto_mean_signal=cytoplasm) %>% 
+  # Add area column:
+  left_join(., background_area_df, by="pos")
+```
+
+
+```{r}
+background_norm_df <- background_df_2 %>% 
+  mutate(norm_cyto_signal_1 = cyto_mean_signal/bg_mean_signal,
+         norm_cyto_signal_2 = cyto_mean_signal - bg_mean_signal,
+         norm_cyto_signal_3 = (cyto_mean_signal - bg_mean_signal)*cyto_mean_area) %>% 
+  left_join(., dplyr::select(pos_info, pos=position, genotype, celltype, hpf, condition), by="pos")
+```
+
+```{r}
+background_norm_df %>% 
+  ggplot(aes(x=condition, y=log2(norm_cyto_signal_1))) +
+  # ggplot(aes(x=condition, y=norm_cyto_signal_2)) +
+  geom_boxplot() +
+  geom_quasirandom(alpha = 0.5) +
+  facet_grid(channel~., scales="free_y") +
+  labs(title = "Normalized cytoplasmic signal over the background",
+       x="", y="Signal log2(cytoplasm / background) (A.U.)") +
+  theme_bw()
+
+background_norm_df %>% 
+  ggplot(aes(x=condition, y=log2(norm_cyto_signal_2))) +
+  # ggplot(aes(x=condition, y=norm_cyto_signal_2)) +
+  geom_boxplot() +
+  geom_quasirandom(alpha = 0.5) +
+  facet_grid(channel~., scales="free_y") +
+  labs(title = "Normalized cytoplasmic signal over the background",
+       x="", y="Signal (cytoplasm - background) (A.U.)") +
+  theme_bw()
+
+background_norm_df %>% 
+  ggplot(aes(x=condition, y=log2(norm_cyto_signal_3))) +
+  # ggplot(aes(x=condition, y=norm_cyto_signal_2)) +
+  geom_boxplot() +
+  geom_quasirandom(alpha = 0.5) +
+  facet_grid(channel~., scales="free_y") +
+  labs(title = "Normalized cytoplasmic signal over the background",
+       x="", y="Signal (cytoplasm - background) * Area (A.U.)") +
+  theme_bw()
+```
+
+
+# Read nucleus IF signal 
+
+***************************************************************************************************
+
+# Read data
+
+```{r}
+# nuc_data_path <- paste0(RData_dir, "/nuc_raw_p1_113.RData")
+nuc_data_path <- paste0(RData_dir, "/nuc_raw_p114_141.RData")
+
+pos_range <- 114:142
+# pos_range <- 82:142
+pos_id_vec <- paste0("Position", str_pad(pos_range, width=3, side="left", pad="0"))
+prefered_suffix <- "byCH1_Huang2"
+prefered_suffix_regex <- c("(byCH1)")
+```
+
+```{r}
+do_read_nuc_data <- TRUE
+if(!is.null(nuc_data_path)){
+  if(file.exists(nuc_data_path)){
+    load(nuc_data_path)
+    do_read_nuc_data <- FALSE
+  }
+}
+
+# Read data =======================================================================================
+if(do_read_nuc_data){
+  all_feature_df <- tibble()
+  all_res_df <- tibble()
+  all_nucleo_nuc_ovl_df <- tibble()
+  
+  for(i in seq_along(pos_id_vec)){
+    # Reading file ----------------------------------------------------------------------------------
+    # pos_id <- "Position115"
+    pos_id <- pos_id_vec[i]
+    
+    outline_path <- list.files(data_dir, pattern=paste0(pos_id, ".+nucleolus_outline\\.txt$"))
+    res_path <- list.files(data_dir, pattern=paste0(pos_id, ".+nucleolus_res\\.txt$"))
+    
+    if((length(outline_path)>1) | (length(res_path)>1)){
+      # Use the prefered suffix
+      outline_path <- subset(outline_path, str_detect(outline_path, prefered_suffix_regex))[1]
+      res_path <- subset(res_path, str_detect(res_path, prefered_suffix_regex))[1]
+    }
+    
+    if(length(outline_path) != 1 | length(res_path)!=1){
+      # Skip to the next iteration of the loop
+      cat(pos_id, " - skip\n")
+      next
+    }else{
+      cat(pos_id, ", ")
+      outline_path <- paste0(data_dir, "/", outline_path)
+      res_path <- paste0(data_dir, "/", res_path)
+    }
+    
+    outline_df <- as_tibble(read.table(outline_path, header=TRUE, stringsAsFactors=FALSE))
+    outline_df$type <- str_extract(outline_df$roi, "^[:alpha:]+")
+    
+    res_df <- suppressWarnings(read_fiji_result(res_path)) %>% 
+      mutate(pos=pos_id)
+    res_df$type <- str_extract(res_df$roi, "^[:alpha:]+")
+    
+    # Filter valid ROI ------------------------------------------------------------------------------
+    min_circ <- pos_info %>% 
+      dplyr::filter(position == pos_id) %>% 
+      dplyr::pull(min_circularity)
+    if(length(min_circ)!=1){
+      min_circ <- 0.7 # Default value
+    }
+    
+    valid_roi <- res_df %>% 
+      dplyr::filter(circ>min_circ) %>%
+      dplyr::pull(roi) %>% unique()
+    
+    # outline_df <- dplyr::filter(outline_df, roi %in% valid_roi)
+    outline_df <- outline_df %>% 
+      mutate(include = roi %in% valid_roi)
+    
+    nuc_outline_df <- dplyr::filter(outline_df, type == "nucleus")
+    nucleo_outline_df <- dplyr::filter(outline_df, type == "nucleolus")
+    
+    if(sum(nuc_outline_df$include)==0){
+      warning("No ROI pass circularity filter\n")
+      # next
+    }
+    
+    # Detect nucleus/nucleolus ----------------------------------------------------------------------
+    nuc_df <- nuc_outline_df %>% 
+      # dplyr::filter(type == "nucleus") %>% 
+      define_feature_group(., pre_roi_filter_colname="include", 
+                           roi_regex="^nucleus", feature_prefix="nucleus_", 
+                           roi_area_range = c(200, 600),
+                           min_intersect_ratio=0.90,
+                           # max_z_dist=2, min_z_span=3, min_avg_area=100, # Setting for 2C onward
+                           max_z_dist=30, min_z_span=3, min_avg_area=200, # Setting for zygote
+                           invalid_feature_prefix="invalid_") %>% 
+      mutate(type = "nucleus", pos = pos_id)
+    
+    n_nuc <- length(unique(dplyr::pull(dplyr::filter(nuc_df, str_detect(feature_id, "^nuc")), feature_id)))
+    if(n_nuc>0){
+      nuc_df <- mutate(nuc_df, nucleus_id = str_extract(feature_id, "^nucleus_\\d+"))
+    }else{
+      nuc_df$nucleus_id <- NA
+    }
+    
+    if(n_nuc==0){
+      warning("Couldn't detect nucleus, skip\n")
+      # next
+      # Maybe we should done something else
+    }
+    
+    if(sum(nucleo_outline_df$include)>0){
+      nucleo_df <- nucleo_outline_df %>% 
+        # dplyr::filter(type == "nucleolus") %>% 
+        define_feature_group(., pre_roi_filter_colname="include", 
+                             roi_regex="^nucleolus", feature_prefix="nucleolus_", 
+                             min_intersect_ratio=0.75,
+                             invalid_feature_prefix="invalid_", 
+                             max_z_dist=1, min_z_span=2) %>% 
+        mutate(type = "nucleolus", pos = pos_id)
+      n_nucleo <- length(unique(dplyr::pull(dplyr::filter(nucleo_df, str_detect(feature_id, "^nuc")), feature_id)))
+    }else{
+      nucleo_df <- tibble()
+      n_nucleo=0
+    }
+    
+    # split the results based on the compartment types
+    # Which nucleolus belong to which nucleus
+    if((n_nuc>0) & (n_nucleo>0)){
+      nucleo_nuc_ovl_df <- find_overlap_roi_features(feature_df_1=nucleo_df, 
+                                                     feature_df_2=nuc_df, 
+                                                     feature_1_regex="nucleolus", feature_2_regex="nucleus", 
+                                                     # somehow doesn't work when using min_intersect_ratio=1.0
+                                                     min_intersect_ratio=0.9, min_ratio_roi_overlap=1) %>% 
+        mutate(pos = pos_id)
+      if(nrow(nucleo_nuc_ovl_df) > 0){
+        feature_ovl_map <- dplyr::pull(nucleo_nuc_ovl_df, feature_id_2, name=feature_id_1)
+        # Assigning nucleus_id field
+        
+        nucleo_df <- mutate(nucleo_df, nucleus_id = feature_ovl_map[feature_id])
+      }else{
+        nucleo_df$nucleus_id <- NA
+      }
+    }else{
+      nucleo_df$nucleus_id <- NA
+    }
+    
+    # Combine
+    feat_df <- unique(rbind(nuc_df, nucleo_df))
+    n_dup_roi <- feat_df$roi %>% duplicated() %>% sum()
+    if(n_dup_roi>0){paste0("Duplicated ROI found: \n", pos_id, "; (i=", i, ")")}
+    
+    # Add feature_id to res_df
+    res_df <- left_join(res_df, dplyr::select(feat_df, roi, feature_id, nucleus_id), by="roi")
+    
+    # Combine to the data ---------------------------------------------------------------------------
+    if(nrow(all_res_df)==0){
+      all_feature_df <- feat_df
+      all_res_df <- res_df
+      all_nucleo_nuc_ovl_df <- nucleo_nuc_ovl_df
+    }else{
+      # NB: Consider improve this part, this only work well when things went smoothly with the first position.
+      all_feature_df <- add_row(all_feature_df, feat_df)
+      all_res_df <- add_row(all_res_df, dplyr::select(res_df, any_of(colnames(all_res_df))))
+      all_nucleo_nuc_ovl_df <- add_row(all_nucleo_nuc_ovl_df, nucleo_nuc_ovl_df)
+    }
+  }
+  
+  save(list=c("all_feature_df", "all_res_df", "all_nucleo_nuc_ovl_df"), file=nuc_data_path)
+  cat("\nDone\n")
+}
+```
+
+
+## Check pre-determined excluded nucleus
+
+```{r}
+if("exclude_nuc" %in% colnames(pos_info)){
+  excl_nuc_df <- pos_info %>% 
+    dplyr::filter(!is.na(exclude_nuc)) %>% 
+    dplyr::select(pos=position, exclude_nuc)
+  
+  excl_nuc_list <- str_split(str_remove_all(excl_nuc_df$exclude_nuc, "\\s+"), ";") %>% 
+    setNames(nm=excl_nuc_df$pos)
+  
+  # Get unique vector of excluded Nuc
+  excl_nuc_vec <- c()
+  for(i in seq_along(excl_nuc_list)){
+    cur_id = paste0(names(excl_nuc_list)[i], "::", excl_nuc_list[[i]])
+    excl_nuc_vec <- c(excl_nuc_vec, cur_id)
+  }
+  
+  # Turn excluded nuc id into "invalid"
+  all_unq_nuc_id <- all_feature_df %>% 
+    transmute(unq_nuc_id = paste0(pos, "::", feature_id)) %>% 
+    dplyr::pull(unq_nuc_id)
+  invalid_flag <- all_unq_nuc_id %in% excl_nuc_vec
+  
+  all_feature_df$feature_id[invalid_flag] <- "invalid"
+  
+  # Change res_df
+  all_res_df
+  all_unq_nuc_id <- all_res_df %>% 
+    transmute(unq_nuc_id = paste0(pos, "::", feature_id)) %>% 
+    dplyr::pull(unq_nuc_id)
+  invalid_flag <- all_unq_nuc_id %in% excl_nuc_vec
+  
+  all_res_df$feature_id[invalid_flag] <- "invalid"
+  
+}
+```
+
+
+# Ploting feature outlines
+
+***************************************************************************************************
+
+```{r, eval=FALSE, echo=FALSE}
+unq_pos_vec <- unique(all_feature_df$pos) 
+extend_factor <- 0.1
+line_alpha=0.9
+line_width=0.1
+
+exclude_col_map <- c(invalid = "grey40", failed_ROI="gray50", other_feature = "gray75")
+
+p_top_list <- list()
+for(i in seq_along(unq_pos_vec)){
+  pos_id <- unq_pos_vec[i]
+  cat(unq_pos_vec[i], ",")
+  feat_df <- all_feature_df %>% 
+    dplyr::filter(pos == unq_pos_vec[i]) %>% 
+    mutate(feature_id = str_replace(str_replace(feature_id, "^invalid.+", "invalid"), "^fail.+", "failed_ROI"))
+  
+  feat_coord_df <- pg_2_coord_df(feat_df)
+  lim_list <- list(xmin=min(feat_coord_df$x, na.rm=TRUE)*(1-extend_factor), 
+                   xmax=max(feat_coord_df$x, na.rm=TRUE)*(1+extend_factor),
+                   ymin=min(feat_coord_df$y, na.rm=TRUE)*(1-extend_factor), 
+                   ymax=max(feat_coord_df$y, na.rm=TRUE)*(1+extend_factor))
+    
+  # plot nucleus 
+  unq_nuc_id <- feat_df %>% 
+    dplyr::filter(str_detect(feature_id, "nucleus")) %>% 
+    dplyr::pull(feature_id) %>% unique()
+  unq_nucleo_id <- feat_df %>% 
+    dplyr::filter(str_detect(feature_id, "nucleolus")) %>% 
+    dplyr::pull(feature_id) %>% unique()
+  
+  n_nuc <- length(unq_nuc_id)
+  n_nucleo <- length(unq_nucleo_id)
+  
+  nuc_col_map <- brewer_pal_2(n_nuc, pal_name="Paired")
+  if(!is.null(nuc_col_map)){names(nuc_col_map) <- unq_nuc_id}
+  nuc_col_map <- c(nuc_col_map, exclude_col_map)
+  
+  nucleo_col_map <- brewer_pal_2(n_nucleo, pal_name="Paired")
+  if(!is.null(nucleo_col_map)){names(nucleo_col_map) <- unq_nucleo_id}
+  nucleo_col_map <- c(nucleo_col_map, exclude_col_map)
+  
+  suppressWarnings({
+    p1 <- feat_df %>% 
+      dplyr::mutate(feature_id = if_else(type!="nucleus", "other_feature", feature_id)) %>%
+      # dplyr::pull(feature_id) %>% table()
+      plot_outline_topView(color_by="feature_id", 
+                           color_map=nuc_col_map,
+                           line_alpha=line_alpha, line_width=line_width) +
+      coord_fixed(ratio=1, xlim=c(lim_list$xmin, lim_list$xmax), ylim=c(lim_list$ymin, lim_list$ymax)) +
+      scale_y_reverse() +
+      labs(title=paste0(pos_id, " - Nucleus (all)"))
+    
+    plot_df <- feat_df %>% 
+      dplyr::filter(type=="nucleus", str_detect(feature_id, "^nuc"))
+    if(nrow(plot_df) > 0){
+      p2 <- plot_df %>% 
+      plot_outline_topView(color_by="feature_id", 
+                           color_map=nuc_col_map,
+                           line_alpha=line_alpha, line_width=line_width) +
+      coord_fixed(ratio=1, xlim=c(lim_list$xmin, lim_list$xmax), ylim=c(lim_list$ymin, lim_list$ymax)) +
+        scale_y_reverse() +
+      labs(title=paste0(pos_id, " - Nucleus (feature only)"))
+    }else{
+      p2 <- ggplot() +
+        coord_fixed(ratio=1, xlim=c(lim_list$xmin, lim_list$xmax), ylim=c(lim_list$ymin, lim_list$ymax)) +
+        scale_y_reverse() +
+        theme_minimal() +
+        labs(title=paste0(pos_id, " - Nucleus (feature only)"))
+    }
+    
+    
+    p3 <- feat_df %>% 
+      dplyr::mutate(feature_id = if_else(type!="nucleolus", "other_feature", feature_id)) %>%
+      # dplyr::pull(feature_id) %>% table()
+      plot_outline_topView(color_by="feature_id", 
+                           color_map=nucleo_col_map,
+                           line_alpha=line_alpha, line_width=line_width) +
+      coord_fixed(ratio=1, xlim=c(lim_list$xmin, lim_list$xmax), ylim=c(lim_list$ymin, lim_list$ymax)) +
+      scale_y_reverse() +
+      labs(title=paste0(pos_id, " - Nucleolus (all)"))
+    
+    plot_df <- feat_df %>% 
+      dplyr::filter(type=="nucleolus", str_detect(feature_id, "^nuc"))
+    if(nrow(plot_df) > 0){
+      p4 <- plot_df %>% 
+      plot_outline_topView(color_by="feature_id", 
+                           color_map=nucleo_col_map,
+                           line_alpha=line_alpha, line_width=line_width) +
+      coord_fixed(ratio=1, xlim=c(lim_list$xmin, lim_list$xmax), ylim=c(lim_list$ymin, lim_list$ymax)) +
+      labs(title=paste0(pos_id, " - Nucleolus (feature only)"))
+    }else{
+      p4 <- ggplot() +
+        coord_fixed(ratio=1, xlim=c(lim_list$xmin, lim_list$xmax), ylim=c(lim_list$ymin, lim_list$ymax)) +
+        scale_y_reverse() +
+        theme_minimal() +
+        labs(title=paste0(pos_id, " - Nucleolus (feature only)"))
+    }
+  })
+  
+  p_grid <- plot_grid(p1, p2, p3, p4, nrow=2, ncol=2, byrow=FALSE)
+  ggsave(plot=p_grid, filename=paste0(plot_dir, "/", pos_id, "_outline.png"), width=10, height=10, units="in", dpi=300)
+  
+  if(F){
+    feat_coord_df %>% 
+      dplyr::filter(type == "nucleus") %>% 
+      plot_ly(data=.,
+              x = ~x, y = ~y, z = ~z,
+              # type = 'mesh3d', split = ~roi, facecolor= NA,
+              type = "scatter3d", mode="markers", color=~feature_id, colors=feature_col_map,
+              size=0.5, alpha=0.5)
+  }
+  
+}
+```
+
+
+```{r, include=FALSE}
+all_res_df %>% 
+  left_join(., dplyr::select(pos_info, pos=position, everything()), by="pos") %>% 
+  dplyr::filter(type == "nucleus", ch==1) %>% 
+  mutate(valid_feature = str_detect(feature_id, "^nuc")) %>% 
+  ggplot(aes(x=circ, y=area)) +
+  facet_grid(celltype~valid_feature) +
+  geom_point(alpha=0.1)
+```
+
+
+# Comparing signal
+
+***************************************************************************************************
+
+## Per feature signal
+
+```{r}
+# channel_map <- c("DAPI", "H3K27ac", "Nr5a2")
+feature_res_df <- all_res_df %>% 
+  dplyr::filter(str_detect(feature_id, "^nuc"), !is.na(nucleus_id)) %>% 
+  mutate(channel = channel_map[as.integer(ch)]) %>% 
+  # signal per ROI
+  mutate(signal=intden/area) %>% 
+  # dplyr::select(signal, mean)
+  group_by(pos, type, nucleus_id, channel) %>% 
+  reframe(n_z = length(z),
+          # IntDen
+          sum_intDen = sum(intden),
+          mean_intDen = mean(intden),
+          median_intDen = median(intden),
+          sd_intDen = sd(intden),
+          # Area
+          sum_area = sum(area),
+          mean_area = mean(area),
+          median_area = median(area),
+          sd_area = sd(area),
+          # Signal
+          mean_signal = mean(signal),
+          median_signal = median(signal),
+          sd_signal = sd(signal, na.rm=TRUE)) %>% 
+  # Re-calculate the signal
+  mutate(signal = sum_intDen/sum_area) %>% 
+  left_join(., dplyr::select(pos_info, pos=position, everything()), by="pos")
+
+feature_res_df %>%
+  ggplot(aes(x=mean_signal, y=signal)) +
+  geom_abline() +
+  geom_point(alpha=0.5) +
+  coord_fixed()
+```
+
+### Raw signal per nucleus
+```{r, fig.width=7, fig.asp=0.7}
+feature_res_df %>% 
+  dplyr::filter(type=="nucleus") %>% 
+  ggplot(aes(x = condition, y=median_signal)) +
+  geom_boxplot(outlier.alpha=0) +
+  geom_quasirandom(aes(size = sd_signal), alpha=0.2) +
+  facet_grid(channel~celltype, scales="free_y") +
+  labs(title = "Nucleus") +
+  theme_bw()
+
+feature_res_df %>% 
+  dplyr::filter(type=="nucleolus") %>% 
+  ggplot(aes(x = condition, y=median_signal)) +
+  geom_boxplot(outlier.alpha=0) +
+  geom_quasirandom(aes(size = sd_signal), alpha=0.2) +
+  facet_grid(channel~celltype, scales="free_y") +
+  labs(title = "Nucleolus") +
+  theme_bw()
+```
+
+## Per embryo signal
+```{r}
+embryo_res_df <- feature_res_df %>% 
+  group_by(pos, type, channel) %>% 
+  reframe(n = length(nucleus_id),
+          median_area = median(mean_area),
+          sd_area = sd(mean_area),
+          mean_area = mean(mean_area),
+          mean_signal = mean(signal),
+          median_signal = median(signal),
+          sd_signal = sd(signal)) %>% 
+  left_join(., dplyr::select(pos_info, pos=position, everything()), by="pos")
+```
+
+```{r}
+embryo_res_df %>% 
+  dplyr::select(pos, type, sd_area, mean_area) %>% 
+  unique() %>% 
+  dplyr::filter(type == "nucleus") %>% 
+  left_join(., dplyr::select(pos_info, pos=position, everything()), by="pos") %>% 
+  ggplot(aes(x=condition, y=mean_area)) +
+  geom_boxplot() +
+  geom_quasirandom(aes(size=sd_area), alpha=0.5) +
+  facet_grid(.~celltype) +
+  labs(title="Cross section area of nucleus") +
+  theme_bw()
+```
+
+
+```{r, fig.width=7, fig.asp=0.7}
+embryo_res_df %>% 
+  dplyr::filter(type == "nucleus") %>% 
+  ggplot(aes(x = condition, y=mean_signal)) +
+  geom_boxplot(outlier.alpha=0) +
+  geom_quasirandom(alpha=0.5) +
+  facet_grid(channel~celltype, scales="free_y") +
+  labs(title = "Nucleus (Raw signal)") +
+  theme_bw()
+
+embryo_res_df %>% 
+  dplyr::filter(type == "nucleolus") %>% 
+  ggplot(aes(x = condition, y=mean_signal)) +
+  geom_boxplot(outlier.alpha=0) +
+  geom_quasirandom(alpha=0.5) +
+  facet_grid(channel~celltype, scales="free_y") +
+  labs(title = "Nucleolus (Raw signal)") +
+  theme_bw()
+```
+
+
+# Normalized with background data
+
+```{r}
+feature_res_df_norm <- feature_res_df %>% 
+  dplyr::select(pos, type, nucleus_id, channel, n_z, sum_intDen, mean_intDen, sum_area, mean_area, feature_signal=signal) %>% 
+  left_join(background_df_2, by=c("pos", "channel")) %>% 
+  mutate(norm_bg_signal = mean_intDen - (mean_area*bg_mean_signal), 
+         norm_cyto_signal = mean_intDen - (mean_area*cyto_mean_signal)) %>% 
+  left_join(., dplyr::select(pos_info, pos=position, everything()), by="pos")
+```
+
+```{r}
+feature_res_df_norm %>% 
+  dplyr::filter(type == "nucleus", include) %>% 
+  ggplot(aes(x = condition, y=norm_bg_signal)) +
+  geom_boxplot() +
+  geom_quasirandom(alpha=0.5) +
+  facet_grid(channel~celltype, scales="free_y") +
+  labs(title = "Per nucleus norm. signal (background)") +
+  theme_bw()
+
+feature_res_df_norm %>% 
+  dplyr::filter(type == "nucleus", include) %>% 
+  ggplot(aes(x = condition, y=norm_cyto_signal)) +
+  geom_boxplot() +
+  geom_quasirandom(alpha=0.5) +
+  facet_grid(channel~celltype, scales="free_y") +
+  labs(title = "Per nucleus norm. signal (cytoplasm)") +
+  theme_bw()
+```
+
+
+### Per embryo signal
+```{r}
+embryo_res_df_norm <- feature_res_df_norm %>% 
+  dplyr::filter(type == "nucleus", include) %>% 
+  group_by(pos, type, channel) %>% 
+  reframe(n=length(pos),
+          mean_norm_bg_signal = mean(norm_bg_signal),
+          sd_norm_bg_signal = sd(norm_bg_signal),
+          mean_norm_cyto_signal = mean(norm_cyto_signal),
+          sd_norm_cyto_signal = sd(norm_cyto_signal)) %>% 
+  left_join(., dplyr::select(pos_info, pos=position, everything()), by="pos") %>% 
+  # reorder stuffs by making it a factor
+  mutate(channel_factor = factor(channel, levels=channel_order),
+         condition_factor = factor(condition, levels=condition_order))
+```
+
+```{r}
+embryo_res_df_norm %>% 
+  dplyr::filter(channel == "DAPI") %>% 
+  group_by(celltype, condition) %>% 
+  reframe(n=length(pos))
+```
+
+
+```{r, fig.width=8, fig.asp=1}
+compare_list <- list(c("fl/fl", "KO"))
+
+
+p1 <- embryo_res_df_norm %>% 
+  ggplot(aes(x = condition_factor, y=mean_norm_bg_signal)) +
+  geom_hline(yintercept=0, color="gray25", linetype=2) +
+  geom_boxplot(outlier.alpha=0) +
+  geom_quasirandom(aes(color=genotype), alpha=0.5) +
+  scale_color_manual(values=genotype_color_map) +
+  facet_grid(channel_factor~celltype, scales="free_y") +
+  # facet_grid(channel_factor~celltype) +
+  stat_compare_means(comparisons=compare_list, method="wilcox.test", vjust=1) +
+  labs(title = "Per embryo signal (Background norm.)", 
+       subtitle = "mean_intDen - (mean_area * mean_background_signal)", 
+       x= "", y="Fluorescent Signal (A.U.)") +
+  theme_bw() +
+  theme(panel.grid=element_blank(), 
+        strip.text.y=element_text(size=14, angle=0),
+        strip.background.y=element_blank(),
+        legend.position="none")
+
+
+p2 <- embryo_res_df_norm %>% 
+  ggplot(aes(x = condition_factor, y=mean_norm_cyto_signal)) +
+  geom_hline(yintercept=0, color="gray25", linetype=2) +
+  geom_boxplot(outlier.alpha=0) +
+  geom_quasirandom(aes(color=genotype), alpha=0.5) +
+  scale_color_manual(values=genotype_color_map) +
+  facet_grid(channel_factor~celltype, scales="free_y") +
+  labs(title = "Per embryo signal (Cytoplasm norm.)", 
+       subtitle = "mean_intDen - (mean_area * mean_background_signal)", 
+       x= "", y="Fluorescent Signal (A.U.)") +
+  stat_compare_means(comparisons=compare_list, method="wilcox.test", vjust=1) +
+  theme_bw() +
+  theme(panel.grid=element_blank(), 
+        strip.text.y=element_text(size=14, angle=0),
+        strip.background.y=element_blank(),
+        legend.position="none")
+
+print(p1)
+print(p2)
+```
+
+```{r, fig.width=10, fig.asp=1}
+# ggplotly(p2)
+```
+
+# Check feature
+```{r}
+all_pos_df <- tibble(pos = paste0("Position", str_pad(pos_range, width=3, side="left", pad="0")))
+n_feature_count_df <- embryo_res_df %>% 
+  dplyr::select(pos, type, n) %>% 
+  unique() %>% 
+  left_join(all_pos_df, ., by="pos") %>% 
+  mutate(type = if_else(!is.na(type), type, "nucleus")) %>% 
+  tidyr::complete(pos, type, fill=list(n=0)) %>% 
+  mutate(pos_id = as.numeric(str_remove_all(str_extract(pos, "\\d+$"), "^0+"))) %>% 
+  # Add position info
+  left_join(., dplyr::select(pos_info, pos=position, everything()), by="pos")
+
+```
+
+Reporting problematic position
+
+```{r}
+n_feature_count_df %>% 
+  dplyr::filter(type=="nucleus", n==0) %>% 
+  dplyr::select(pos, condition, n)
+```
+
+```{r}
+n_feature_count_df %>% 
+  dplyr::filter(type == "nucleus") %>% 
+  ggplot(aes(x=pos_id, y=n, color=celltype)) +
+  geom_hline(yintercept=0, color="gray25") +
+  # geom_col() +
+  geom_point() +
+  scale_y_continuous(breaks=seq(0, max(n_feature_count_df$n))) +
+  theme_minimal()
+```
+
