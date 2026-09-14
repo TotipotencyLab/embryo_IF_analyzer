@@ -23,8 +23,8 @@
 
 // # ANALYSIS CONFIGURATION ======================================================
 // ## Output specification -------------------------------------------------------
-outdir="/Users/chad/Lab/dev/embryo_IF_analyzer/fixture/if_data/"
-out_basename="test_morula_small_"
+outdir="/Users/chad/Lab/dev/embryo_IF_analyzer/fixture/if_data/res_fiji/"
+out_basename="FJ_"
 
 
 // ## Image information --------------------------------------------------------
@@ -49,12 +49,12 @@ only_current_z_stack = false;
 // For the list of all method, see:
 //	 https://imagej.net/plugins/auto-threshold
 threshold_method_nucleus = "Huang2"
-threshold_method_nucleolus = "Default"
+threshold_method_nucleolus = "Triangle"
 
 // ## Per-feature detection settings
 // Nucleus
 nucleus_blur_sigma    = 8;
-nucleus_particle_size = "40-Infinity";
+nucleus_particle_size = "80-Infinity";
 nucleus_fill_holes    = true;
 
 // Nucleolus
@@ -62,9 +62,41 @@ nucleus_fill_holes    = true;
 //     erodes them below the minimum particle size, so small nucleoli go
 //     undetected and the rest measure smaller than they really are. Tune this
 //     independently of the nucleus sigma -- ~5 has worked better historically.
-nucleolus_blur_sigma           = 8;
-nucleolus_particle_size        = "3-300";
+nucleolus_blur_sigma           = 3;
+nucleolus_particle_size        = "3-150";
 nucleolus_particle_circularity = "0.50-1.00";
+// Compute one threshold from the whole stack rather than per z-slice, as
+// mask_nucleus() already does. Without it each slice gets its own threshold, so
+// a slice where the nucleolus is out of focus or absent thresholds on
+// essentially nucleolus-free data -- making nucleolus size drift across z and
+// corrupting the downstream z-merge.
+// Pooling the histogram across z made things worse in practice (no nucleoli
+// detected with either Default or Triangle): most slices contain little or no
+// nucleolus, so the pooled population is dominated by slices with nothing to
+// find. Left off; this is likely why it was absent originally.
+nucleolus_use_stack_histogram  = false;
+
+// Compute the nucleolus threshold from NUCLEAR PIXELS ONLY, using the nucleus
+// ROIs detected in the previous pass.
+// Rationale: nucleoli are dark in DAPI, so the old path inverted the image and
+// thresholded the whole frame -- which also made the large extranuclear
+// background the brightest thing present, so the auto-threshold ended up
+// separating background from nucleus rather than nucleolus from nucleoplasm.
+// Restricting the histogram to inside the nuclei removes the background from
+// the calculation entirely, and lets us drop the inversion (setAutoThreshold
+// can target the dark end directly).
+// KNOWN BROKEN -- SUPERSEDED. Leave this false.
+//   This path computes ONE threshold, from ONE arbitrary slice, over the
+//   z-FLATTENED union of all nucleus ROIs, then applies it to every slice. In
+//   practice that detects noise in empty space (a nucleus at one z fences in
+//   background at another) and whole nuclei as nucleoli (a threshold from one
+//   slice is wrong where the nucleus is dimmer).
+//   Doing it properly needs a per-nucleus, per-slice loop, which the IJ1 macro
+//   language cannot express cleanly -- the ROI Manager is the only way to hold a
+//   set of ROIs. That is why this moved to Groovy; see
+//   scripts/groovy/NucleolusDetect.groovy, which is the supported version.
+//   Kept here, disabled, as a record of why.
+nucleolus_restrict_to_nucleus  = false;
 
 // ## Measurements --------------------------------------------------------------
 // Fiji's Set Measurements is a persistent USER PREFERENCE, not a per-macro
@@ -196,7 +228,7 @@ if(run_mask_nucleoli){
 	//     nucleus ROIs are still in the manager, so renaming the full 0..n range
 	//     re-prefixed them as "nucleolus_nucleus_...". Only prefix the new ones.
 	n_before = roiManager("count");
-	mask_nucloli(dna_mask_ch, nucleolus_blur_sigma, threshold_method_nucleolus, nucleolus_particle_size, nucleolus_particle_circularity, close_outline_window);
+	mask_nucloli(dna_mask_ch, nucleolus_blur_sigma, threshold_method_nucleolus, nucleolus_particle_size, nucleolus_particle_circularity, nucleolus_use_stack_histogram, nucleolus_restrict_to_nucleus, 0, n_before, close_outline_window);
 	
 	// # this chunk has the same structure as the nucleus one.
 	n = roiManager("count");
@@ -336,7 +368,7 @@ function mask_nucleus(dna_mask_ch, sigma, method, particle_size, fill_hole, clos
 }
 
 
-function mask_nucloli(dna_mask_ch, sigma, method, particle_size, particle_circularity, close_popup_window){
+function mask_nucloli(dna_mask_ch, sigma, method, particle_size, particle_circularity, use_stack_hist, restrict_to_nuc, nuc_min, nuc_max, close_popup_window){
 	// recommended input value:
 	//		sigma: 5
 	//		particle_size: 3-300
@@ -346,12 +378,50 @@ function mask_nucloli(dna_mask_ch, sigma, method, particle_size, particle_circul
 	tmpt=getTitle();
 	selectWindow(tmpt);
 	
-	run("Invert", "stack");
-	run("Gaussian Blur...", "sigma="+sigma+" stack");
-	// run("Auto Threshold", "method=Triangle white stack");
-	run("Auto Threshold", "method="+method+" white stack");
-	run("Close-", "stack");
-	//run("Dilate", "stack");
+	if(restrict_to_nuc && (nuc_max > nuc_min)){
+		// --- threshold from nuclear pixels only, no inversion ----------------
+		run("Gaussian Blur...", "sigma="+sigma+" stack");
+
+		// union of the nucleus ROIs from the previous pass
+		sel = newArray(nuc_max - nuc_min);
+		for(k=0; k<sel.length; k++){ sel[k] = nuc_min + k; }
+		roiManager("deselect");
+		roiManager("select", sel);
+		if(sel.length > 1){ roiManager("Combine"); }
+
+		// NB: setAutoThreshold() is the BUILT-IN macro function, not the
+		//     "Auto Threshold" plugin used below. It computes its histogram
+		//     from the ACTIVE SELECTION, which is the entire point here.
+		//     No "dark" modifier => it targets the dark end, i.e. the nucleoli.
+		thresh_opt = method;
+		if(use_stack_hist){ thresh_opt = thresh_opt + " stack"; }
+		setAutoThreshold(thresh_opt);
+		getThreshold(nucleolus_lo, nucleolus_hi);
+		print("   nucleolus threshold (within nuclei): [" + nucleolus_lo + ", " + nucleolus_hi + "]");
+
+		// apply over the frame, then discard anything outside the nuclei
+		run("Select None");
+		setThreshold(nucleolus_lo, nucleolus_hi);
+		setOption("BlackBackground", true);
+		run("Convert to Mask", "background=Light black");
+
+		roiManager("select", sel);
+		if(sel.length > 1){ roiManager("Combine"); }
+		run("Clear Outside", "stack");
+		run("Select None");
+
+	}else{
+		// --- original behaviour: invert, then threshold the whole frame ------
+		run("Invert", "stack");
+		run("Gaussian Blur...", "sigma="+sigma+" stack");
+		// run("Auto Threshold", "method=Triangle white stack");
+		thresh_opt = "method="+method+" white stack";
+		if(use_stack_hist){ thresh_opt = thresh_opt + " use_stack_histogram"; }
+		run("Auto Threshold", thresh_opt);
+		run("Close-", "stack");
+		//run("Dilate", "stack");
+	}
+
 	run("Analyze Particles...", "size="+particle_size+" circularity="+particle_circularity+" exclude add stack");
 	
 	if(close_popup_window){
