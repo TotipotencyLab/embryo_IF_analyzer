@@ -16,6 +16,7 @@ find_ROI_z_intersect <- function(roi_pg_df, max_z_dist=1, min_intersect_ratio=0.
   # Find intersecting ROI across all z-stack ------------------------------------------------------
   roi_ovl_mat <- st_intersects(roi_pg_df$geometry, roi_pg_df$geometry, sparse=F)
   colnames(roi_ovl_mat) <- rownames(roi_ovl_mat) <- roi_pg_df$roi
+  # colSums(roi_ovl_mat)-1
   
   # Turning matrix into a data frame of ROI overlap (tidy format)
   ovl_pair_df <- as.data.frame(roi_ovl_mat) %>% 
@@ -79,6 +80,7 @@ find_ROI_z_intersect <- function(roi_pg_df, max_z_dist=1, min_intersect_ratio=0.
   # FILTER 2) by ratio of overlap -----------------------------------------------------------------
   do_int_area_filter <- !is.null(min_intersect_ratio) & (min_intersect_ratio >= 0) & (min_intersect_ratio <= 1)
   if(do_int_area_filter){
+    # BUG: error when ovl_pair_df has 0 rows
     # Calculating ratio of overlap (overlap area/min area)
     ovl_pair_df <- ovl_pair_df %>% 
       mutate(area_1 = roi_area_map[roi_1],

@@ -66,7 +66,7 @@ roi_2_polygons <- function(roi_df, roi_id_vec){
 }
 
 
-polygonize_roi_df <- function(roi_df){
+polygonize_roi_df <- function(roi_df, keep_other_columns=FALSE){
   # old function name: df_2_polygons
   # Transforming plain ROI coordinate table -- 
   # Collapsing the x,y,z positioning information of ROI table into polygon geometry object (sf package)
@@ -76,7 +76,12 @@ polygonize_roi_df <- function(roi_df){
   
   # simplify the ROI information
   unq_roi_id <- unique(roi_df$roi)
-  roi_info_df <- unique(dplyr::select(roi_df, roi, z))
+  if(keep_other_columns){
+    roi_info_df <- unique(dplyr::select(roi_df, -x, -y))  
+  }else{
+    roi_info_df <- unique(dplyr::select(roi_df, roi, z))  
+  }
+  
   
   ## DEPRECIATED: only keep for historical reason
   # # Extract polygon for each ROI
@@ -95,6 +100,31 @@ polygonize_roi_df <- function(roi_df){
   roi_info_df <- left_join(roi_info_df, geom_df, by="roi")
   return(roi_info_df)
 }
+
+
+pg_2_coord_df <- function(st_df){
+  # Retrieve xy coordinate from dataframe with geometry field (st polygon object)
+  if(!all(c("x", "y") %in% colnames(st_df))){
+    if("geometry" %in% colnames(st_df)){
+      # # This is technically working, but I don't want to use L2 field as an indicator of the ROI
+      # x = as_tibble(st_coordinates(feat_df$geometry))
+      
+      roi_coord_df <- st_df %>% 
+        group_by(roi) %>% 
+        reframe(x = st_coordinates(geometry)[ , "X"],
+                y = st_coordinates(geometry)[ , "Y"])
+      
+      feat_coord_df <- left_join(dplyr::select(st_df, -geometry), roi_coord_df, by="roi")
+    }else{
+      stop("Input doesn't have required column")
+    }
+  }else{
+    feat_coord_df <- feature_df
+  }
+  
+  return(feat_coord_df)
+}
+
 
 
 

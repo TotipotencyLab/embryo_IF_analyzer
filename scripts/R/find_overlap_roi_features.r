@@ -67,61 +67,66 @@ find_overlap_roi_features <- function(feature_df_1, feature_df_2,
   
   # Calculate overlap area ------------------------------------------------------------------------
   # Only do this for those with known to be overlap
-  roi_ovl_pair_df_fil <- dplyr::filter(roi_ovl_pair_df, overlap)
-  for(i in 1:nrow(roi_ovl_pair_df_fil)){
-    pg1 <- F1_df$geometry[F1_df$roi == roi_ovl_pair_df_fil$roi_1[i]]
-    pg2 <- F2_df$geometry[F2_df$roi == roi_ovl_pair_df_fil$roi_2[i]]
-    # plot(c(pg1, pg2)) # For visual inspection
-    ovl_area <- st_area(st_intersection(pg1, pg2))
-    
-    roi_ovl_pair_df_fil$int_area[i] <- ovl_area
-  }
-  
-  # Merge the data back
-  roi_ovl_pair_df <- left_join(dplyr::select(roi_ovl_pair_df, -int_area), 
-            dplyr::select(roi_ovl_pair_df_fil, ovl_idx, int_area), by="ovl_idx") %>% 
-    replace_na(replace=list(int_area=0))
-  
-  # Calculate intersect ratio
-  roi_ovl_pair_df <- roi_ovl_pair_df %>% 
-    mutate(int_ratio = as.double(int_area/min_area),
-           overlap = (overlap & (int_ratio >= min_intersect_ratio)))
-  
-  # # For checking
-  # roi_ovl_pair_df %>% 
-  #   dplyr::filter(int_ratio != 0) %>% 
-  #   dplyr::pull(int_ratio) %>% 
-  #   range()
-  
-  # Detecting overlap features --------------------------------------------------------------------
-  ## BOOKMARK ----
-  # Summarizing overlap by feature
-  feature_pair_stats <- roi_ovl_pair_df %>% 
-    group_by(f_id_1, f_id_2) %>% 
-    reframe(
-      # # Z-filtering
-      # n_z_1 = length(unique(z_1)),
-      # n_z_2 = length(unique(z_2)),
-      # min_z = pmin(n_z_1, n_z_2),
-      # n_z_1_ovl = length(unique(z_1[overlap])),
-      # n_z_2_ovl = length(unique(z_2[overlap])),
-      # ratio_z_ovl = pmin(n_z_1_ovl, n_z_2_ovl) / min_z,
+  if(sum(roi_ovl_pair_df$overlap)>0){
+    roi_ovl_pair_df_fil <- dplyr::filter(roi_ovl_pair_df, overlap)
+    for(i in 1:nrow(roi_ovl_pair_df_fil)){
+      pg1 <- F1_df$geometry[F1_df$roi == roi_ovl_pair_df_fil$roi_1[i]]
+      pg2 <- F2_df$geometry[F2_df$roi == roi_ovl_pair_df_fil$roi_2[i]]
+      # plot(c(pg1, pg2)) # For visual inspection
+      ovl_area <- st_area(st_intersection(pg1, pg2))
       
-      ## ROI ovl ratio filtering
-      n_roi_1 = length(unique(roi_1)),
-      n_roi_2 = length(unique(roi_2)),
-      min_roi = pmin(n_roi_1, n_roi_2),
-      n_roi_1_ovl = length(unique(roi_1[overlap])),
-      n_roi_2_ovl = length(unique(roi_2[overlap])),
-      ratio_roi_ovl = pmin(n_roi_1_ovl, n_roi_2_ovl) / min_roi
-    )
-  
-  # Preparing output ------------------------------------------------------------------------------
-  feature_ovl_df <- feature_pair_stats %>% 
-    dplyr::filter(ratio_roi_ovl >= min_ratio_roi_overlap) %>% 
-    dplyr::select(feature_id_1 = f_id_1,
-                  feature_id_2 = f_id_2)
-  
+      roi_ovl_pair_df_fil$int_area[i] <- ovl_area
+    }
+    
+    # Merge the data back
+    roi_ovl_pair_df <- left_join(dplyr::select(roi_ovl_pair_df, -int_area), 
+                                 dplyr::select(roi_ovl_pair_df_fil, ovl_idx, int_area), by="ovl_idx") %>% 
+      replace_na(replace=list(int_area=0))
+    
+    # Calculate intersect ratio
+    roi_ovl_pair_df <- roi_ovl_pair_df %>% 
+      mutate(int_ratio = as.double(int_area/min_area),
+             overlap = (overlap & (int_ratio >= min_intersect_ratio)))
+    
+    # # For checking
+    # roi_ovl_pair_df %>% 
+    #   dplyr::filter(int_ratio != 0) %>% 
+    #   dplyr::pull(int_ratio) %>% 
+    #   range()
+    
+    # Detecting overlap features --------------------------------------------------------------------
+    ## BOOKMARK ----
+    # Summarizing overlap by feature
+    feature_pair_stats <- roi_ovl_pair_df %>% 
+      group_by(f_id_1, f_id_2) %>% 
+      reframe(
+        # # Z-filtering
+        # n_z_1 = length(unique(z_1)),
+        # n_z_2 = length(unique(z_2)),
+        # min_z = pmin(n_z_1, n_z_2),
+        # n_z_1_ovl = length(unique(z_1[overlap])),
+        # n_z_2_ovl = length(unique(z_2[overlap])),
+        # ratio_z_ovl = pmin(n_z_1_ovl, n_z_2_ovl) / min_z,
+        
+        ## ROI ovl ratio filtering
+        n_roi_1 = length(unique(roi_1)),
+        n_roi_2 = length(unique(roi_2)),
+        min_roi = pmin(n_roi_1, n_roi_2),
+        n_roi_1_ovl = length(unique(roi_1[overlap])),
+        n_roi_2_ovl = length(unique(roi_2[overlap])),
+        ratio_roi_ovl = pmin(n_roi_1_ovl, n_roi_2_ovl) / min_roi
+      )
+    
+    # Preparing output ------------------------------------------------------------------------------
+    feature_ovl_df <- feature_pair_stats %>% 
+      dplyr::filter(ratio_roi_ovl >= min_ratio_roi_overlap) %>% 
+      dplyr::select(feature_id_1 = f_id_1,
+                    feature_id_2 = f_id_2)
+    
+  }else{
+    # i.e., no overlap to begin with
+    feature_ovl_df <- tibble()
+  }
   
   return(feature_ovl_df)
 }

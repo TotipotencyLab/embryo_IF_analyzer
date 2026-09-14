@@ -73,7 +73,8 @@ define_feature_group <- function(roi_df,
       roi_pg_df <- dplyr::filter(roi_pg_df, (roi %in% valid_roi))
       
       if(nrow(roi_pg_df) == 0){
-        stop("All ROIs were filtered out (include flag)")
+        warning("All ROIs were filtered out (include flag)")
+        return(roi_fail_df)
       }
     }
   }
@@ -93,7 +94,8 @@ define_feature_group <- function(roi_df,
     roi_pg_df <- dplyr::filter(roi_pg_df, (roi %in% valid_roi))
     
     if(nrow(roi_pg_df) == 0){
-      stop("All ROIs were filtered out (ROI name filtering)")
+      warning("All ROIs were filtered out (ROI name filtering)")
+      return(roi_fail_df)
     }
   }
   
@@ -113,7 +115,8 @@ define_feature_group <- function(roi_df,
     roi_pg_df <- dplyr::filter(roi_pg_df, (roi %in% valid_roi))
     
     if(nrow(roi_pg_df) == 0){
-      stop("All ROIs were filtered out (ROI Area)")
+      warning("All ROIs were filtered out (ROI Area)")
+      return(roi_fail_df)
     }
   }
   
@@ -239,7 +242,7 @@ define_feature_group <- function(roi_df,
   #   geom_node_point(aes(color=feature_id), size = 1)
   
   # Preparing output ------------------------------------------------------------------------------
-  out_df <- left_join(roi_pg_df, dplyr::select(roi_node_df, roi=roi_id, feature_id), by="roi")
+  out_df <- left_join(roi_pg_df, dplyr::select(roi_node_df, roi=roi_id, feature_id), by="roi", suffix=c("", "_x"))
   if(nrow(roi_fail_df) > 0){
     # Merged back with the held out ROIs
     out_df <- add_row(out_df, roi_fail_df)
