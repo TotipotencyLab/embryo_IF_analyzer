@@ -1,6 +1,6 @@
 ---
 name: fiji-headless-testing
-description: Run and test Fiji/ImageJ code (Groovy or IJ1 macro) headlessly from the terminal on this machine, and verify a change against a reference run. Use whenever writing, debugging or porting anything under scripts/groovy/ or scripts/fiji/ — before claiming a script works, and before handing one over for the user to run in the GUI. Covers the working launcher, what does and does not work headless, driving a #@ script from a Binding, and diffing outputs against a known-good run.
+description: Run and test Fiji/ImageJ code (Groovy or IJ1 macro) headlessly from the terminal on this machine, and verify a change against a reference run. Use whenever writing, debugging or porting a Fiji script or ImageJ macro — before claiming it works, and before handing one over for the user to run in the GUI. Covers the working launcher, what does and does not work headless, driving a #@ script from a Binding, and diffing outputs against a known-good run.
 ---
 
 # Fiji headless testing
@@ -88,7 +88,7 @@ constructed without a display; imagej-legacy does not patch it
 `new RoiManager(false)` fails too.
 
 **To get ROIs headless**, subclass `ParticleAnalyzer` and intercept before its
-output routing — see `scripts/groovy/RoiDetect.groovy`:
+output routing:
 
 ```groovy
 @Override protected void saveResults(ImageStatistics stats, Roi roi) {
@@ -135,8 +135,8 @@ ps -eo pid,command | grep "[I]mageJ-macosx --headless" \
 ## Verifying a change against a reference run
 
 The way bugs actually get found here: run the old and new paths on the same input
-with the same settings, then diff. Counts alone are not enough — two of the three
-bugs in the `RoiDetect` port produced plausible-looking counts.
+with the same settings, then diff. Counts alone are not enough: a wrong size
+filter and a wrong circularity filter both produce plausible-looking counts.
 
 1. **Use the same output prefix** for both runs, in different directories, so
    filenames match and `diff` is direct.

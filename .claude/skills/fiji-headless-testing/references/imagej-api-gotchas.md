@@ -46,16 +46,27 @@ which presents as `OutOfMemoryError` and looks like a headless limitation.
 ## Roi.setName() must be set on the object
 
 Keeping names in a parallel list is not enough. The name is encoded into the
-`.roi` file **and** picked up into the `Label` column by `Analyzer`. Since
-`read_fiji_result.r` joins outlines to measurements by matching the roi id inside
-that Label, a missing name silently breaks the R join.
+`.roi` file **and** picked up into the `Label` column by `Analyzer`. Downstream
+parsers commonly key on the roi id inside that Label to join measurements back to
+outlines, so a missing name breaks the join silently — the numeric columns are all
+still correct, which makes it easy to miss.
 
 ## ROI Manager auto-label format
 
 `SSSS-NNNN-YYYY` = slice, per-slice index, **y-centre of the ROI bounds** (not x).
-Derived empirically and confirmed by byte-identical output. `read_fiji_result.r`
-identifies the roi column by matching `\d{4}-\d{4}-\d{4}$`, so the shape matters.
-Reproduced in `RoiDetect.autoLabels()`.
+Derived empirically and confirmed by byte-identical output. Downstream parsers may
+identify the roi column by matching `\d{4}-\d{4}-\d{4}$`, so the shape matters when
+producing ROIs without the ROI Manager:
+
+```groovy
+def perSlice = [:]
+rois.collect { roi ->
+    int z = roi.getPosition()
+    int idx = (perSlice[z] = (perSlice[z] ?: 0) + 1)
+    def b = roi.getBounds()
+    String.format("%04d-%04d-%04d", z, idx, b.y + (int) (b.height / 2))
+}
+```
 
 ## ImageStatistics.getHistogram() returns long[]
 
@@ -111,8 +122,8 @@ buffer has no path at all, so always fail with an explicit message.
 ## Set Measurements is a persistent user preference
 
 Not a per-script setting. A script that relies on it produces different output
-columns on different machines. Issue it explicitly. This set reproduces the
-column contract the R side expects:
+columns on different machines, silently. Issue it explicitly, and treat the option
+string as part of the output contract. For example:
 
 ```
 area mean standard min centroid shape integrated median stack display
