@@ -72,12 +72,24 @@ analysis script:
 [`PLA_analysis/`](PLA_analysis/) contains the proximity ligation assay analysis
 (published separately) and serves as a worked example of the R side end to end.
 
+## Tests
+
+```bash
+Rscript tests/run_tests.R
+```
+
+Covers the Fiji→R boundary: that the roi id is recovered for every measurement
+row, that reading a table neither adds nor drops rows, and that outlines become
+valid polygons and group into features across z. Tests needing `sf` skip
+themselves if it cannot be loaded, so the rest still run.
+
 ## Layout
 
 ```
 scripts/groovy/   Fiji scripts (primary)
 scripts/fiji/     IJ1 macros (reference; PLA + manual-selection still used here)
 scripts/R/        downstream analysis functions
+tests/            R test suite (testthat)
 fixture/          small test inputs and reference outputs
 PLA_analysis/     published PLA analysis
 ```

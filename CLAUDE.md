@@ -76,25 +76,39 @@ fourth fork.** A new assay should be a new configuration of the shared library.
 
 Nothing image-sized is tracked. `.gitignore` specifics worth knowing:
 
-- `**/data/` — bulk images live in `fixture/*/data/`, deliberately ignored.
+- `**/data/` ignores bulk data everywhere, then `!fixture/*/data/` un-excludes
+  the fixture ones so their text tables can be tracked. The order matters and so
+  does the directory: git will not look inside an excluded directory, so a
+  negation on files alone never gets the chance to match.
 - `*Position[0-9]*.txt` ignores raw Fiji dumps. **macOS sets
   `core.ignorecase=true`, so this matches lowercase `position...` too** — it once
   silently hid the entire fixture directory. `!fixture/**/*.txt` re-includes
   fixture text.
 - `CLAUDE.local.md` is per-machine and untracked.
 
-`fixture/if_data/` currently holds `res_fiji/`, `res_groovy/` and `res_headless/`
-— outputs of the macro, GUI-Groovy and headless-Groovy runs of the same image,
-kept as the evidence that the port is equivalent. They are untracked and large.
+`fixture/if_data/data/` holds the Groovy output for `Position010` and **is
+tracked** — five text tables, 1.1 MB, the input for the R tests. Getting them
+tracked needed `!fixture/*/data/`, because git does not descend into a directory
+excluded by `**/data/` and so a negation on the files alone can never fire. The
+TIFF stacks in `fixture/*/raw_data/` and the ROI zips stay out via `*.tif` /
+`*.zip`.
+
+## Tests
+
+`Rscript tests/run_tests.R` (`tests/testthat/`, testthat). The suite asserts the
+output contract itself — that the roi id is recovered for **every** measurement
+row, and that reading a table neither adds nor drops rows — because the numbers
+can all be right while the join silently matches nothing.
+
+The spatial tests need a working `sf`. `helper-setup.R` probes it **in a child
+process**, since a broken `units` aborts R outright rather than raising, which
+would take the whole run down; when it cannot load they skip rather than fail.
+Note which R ran: the count differs. See `CLAUDE.local.md` for this machine.
 
 ## Open items
 
-- No R unit tests yet. Cutting a small fixture (the z-range option exists for
-  this) and pinning current behaviour is the next step; it should come before any
-  further R refactoring.
-- `scripts/R/find_ROI_z_intersect.r:83` has a marked, unfixed bug: it errors when
-  the overlap table has zero rows, which is reachable — the checkpoints above only
-  `warning()` and fall through.
+- The R fixture covers one image (`Position010`) and one assay. Nothing pins the
+  PLA or oocyte paths.
 - `scripts/fiji/static_versions/` duplicates what git history already provides and
   is slated for removal; tag the commits first if the versions should stay
   addressable.

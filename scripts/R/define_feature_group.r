@@ -197,13 +197,17 @@ define_feature_group <- function(roi_df,
   # Filtering feature -----------------------------------------------------------------------------
   # By number of z-span
   # Calculate number of z-span per nucleus
+  # NB: counted with count(), not table(). as.data.frame(table(x)) on an empty
+  #     column comes back with a single column, so the `colnames<-` below
+  #     renamed nothing and the next filter failed with "object 'n_z_span' not
+  #     found". That is reachable whenever no ROI overlaps any other, which
+  #     find_ROI_z_intersect() reports by warning rather than by stopping.
+  #     Counting after unique() gives distinct z per group either way.
   z_span_df <- roi_node_df %>% 
     dplyr::filter(!is.na(feature_group)) %>% 
     dplyr::select(feature_group, z) %>% 
     unique() %>% 
-    {table(.$feature_group)} %>% 
-    as.data.frame() %>% as_tibble() %>% 
-    `colnames<-`(c("feature_group", "n_z_span")) %>% 
+    dplyr::count(feature_group, name="n_z_span") %>% 
     mutate(feature_group = as.double(feature_group))
   
   valid_feature_group <- z_span_df %>% 

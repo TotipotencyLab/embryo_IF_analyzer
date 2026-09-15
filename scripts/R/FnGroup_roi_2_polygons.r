@@ -74,6 +74,13 @@ roi_2_polygons <- function(roi_df, roi_id_vec){
   # Converting to polygons object (sf package)
   sf_pg <- suppressWarnings(st_as_sf(sp_spg))
   
+  # NB: carry the ROI ids back as a column. st_as_sf() does not reliably keep the
+  #     Polygons IDs (they can come back as row numbers), which leaves callers
+  #     pairing geometry to ROI ids by position -- and position stops being a
+  #     valid key the moment the QC above drops anything.
+  sf_pg$roi <- use_roi_id
+  sf_pg <- sf_pg[ , c("roi", "geometry")]
+  
   return(sf_pg)
   
   # Initialy tryiing to do it this way, but didn't seems to compatible with our goal
@@ -110,7 +117,18 @@ polygonize_roi_df <- function(roi_df, keep_other_columns=FALSE){
   # geom_df <- as_tibble(geom_df)
   
   # Vectorized version:
-  geom_df <- tibble(roi = unq_roi_id, geometry = roi_2_polygons(roi_df, roi_id_vec=unq_roi_id)$geometry)
+  pg_sf <- roi_2_polygons(roi_df, roi_id_vec=unq_roi_id)
+  geom_df <- tibble(roi = pg_sf$roi, geometry = pg_sf$geometry)
+  
+  # NB: join on the ROI id, never by position. roi_2_polygons() drops ROIs that
+  #     cannot form a polygon, so the two are not the same length in general.
+  #     Pairing them positionally let tibble() recycle one ROI's geometry onto
+  #     another -- a wrong answer, reported as nothing at all.
+  dropped_roi <- setdiff(roi_info_df$roi, geom_df$roi)
+  if(length(dropped_roi) > 0){
+    # roi_2_polygons() has already warned about these; just do not carry them.
+    roi_info_df <- dplyr::filter(roi_info_df, roi %in% geom_df$roi)
+  }
   
   roi_info_df <- left_join(roi_info_df, geom_df, by="roi")
   return(roi_info_df)
