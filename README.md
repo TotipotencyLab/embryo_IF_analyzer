@@ -94,6 +94,12 @@ fixture/          small test inputs and reference outputs
 PLA_analysis/     published PLA analysis
 ```
 
+## Versioning
+
+Releases are git tags; see the repository's releases page. The `VERSION` file at
+the repo root carries the same string, and each run records it in `_config.txt`
+so a set of results says which version produced it.
+
 ## Requirements
 
 - **Fiji** with Bio-Formats (bundled). Groovy scripting is built in.

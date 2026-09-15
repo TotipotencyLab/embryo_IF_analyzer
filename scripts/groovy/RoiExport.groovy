@@ -1,4 +1,4 @@
-// RoiExport.groovy -- version 0.1.0
+// RoiExport.groovy
 //
 // Export / measurement role, split out of the monolithic macro.
 // Nothing here touches the ROI Manager: everything works from a plain
@@ -97,6 +97,23 @@ class RoiExport {
         def sb = new StringBuilder("parameter\tvalue\n")
         params.each { k, v -> sb.append(k).append("\t").append(v == null ? "" : v.toString()).append("\n") }
         new File(path).setText(sb.toString(), "UTF-8")
+    }
+
+    /**
+     * Repository version, read from the VERSION file at the repo root.
+     *
+     * Versions are git tags, not per-file headers, but a results directory still
+     * has to say what produced it -- so the one string that the tag also names
+     * is read at run time and recorded in the run config. Non-fatal: a script
+     * copied out of the repo still runs, it just cannot name its version.
+     */
+    static String repoVersion(String libDir) {
+        try {
+            // libDir is scripts/groovy; the VERSION file sits two levels up.
+            def f = new File(new File(libDir).getParentFile().getParentFile(), "VERSION")
+            if (f.exists()) return f.getText("UTF-8").trim()
+        } catch (ignored) { }
+        return "unknown"
     }
 
     /** Identifier for output filenames: a token from the slice label, else the title. */

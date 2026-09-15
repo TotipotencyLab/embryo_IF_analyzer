@@ -21,7 +21,7 @@
 #@ Boolean (label="Save measurements", value=true) saveMeasurements
 #@ Boolean (label="Save run configuration", value=true) saveConfig
 
-// Run_NucleusSelector.groovy -- version 0.2.0
+// Run_NucleusSelector.groovy
 //
 // Nucleus + nucleolus detection, export and measurement.
 //
@@ -121,7 +121,7 @@ if (addToRoiManager && !java.awt.GraphicsEnvironment.isHeadless()) {
 if (saveConfig) {
     RX.saveRunConfig([
         timestamp              : new Date().format("yyyy-MM-dd HH:mm:ss"),
-        script                 : "Run_NucleusSelector.groovy 0.2.0",
+        script                 : "Run_NucleusSelector.groovy " + RX.repoVersion(LIBDIR),
         imagej_version         : IJ.getVersion(),
         image_title            : imp.getTitle(),
         image_slices           : imp.getNSlices(),

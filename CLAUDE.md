@@ -105,15 +105,29 @@ process**, since a broken `units` aborts R outright rather than raising, which
 would take the whole run down; when it cannot load they skip rather than fail.
 Note which R ran: the count differs. See `CLAUDE.local.md` for this machine.
 
+## Versioning
+
+Versions are **git tags / GitHub releases**, not per-file headers. Do not
+reintroduce a `// version x.y.z` line when editing a script.
+
+One exception, and it is deliberate: `VERSION` at the repo root holds the same
+string the tag names, and `RoiExport.repoVersion()` reads it at run time so that
+`_config.txt` can record which code produced a results directory. Provenance has
+to travel with the output — a results folder is often read long after, on
+another machine. Bump `VERSION` in the same commit you tag.
+
+A script copied out of the repo still runs; it records `unknown`.
+
 ## Open items
 
 - The R fixture covers one image (`Position010`) and one assay. Nothing pins the
   PLA or oocyte paths.
-- `scripts/fiji/static_versions/` duplicates what git history already provides and
-  is slated for removal; tag the commits first if the versions should stay
-  addressable.
-- `scripts/tmp/define_nucleus.r` exists on disk but `**/tmp/` ignores it, so it is
-  invisible to git. Promote it or delete it; do not leave real code there.
+- `scripts/tmp/define_nucleus.r` exists on disk but `**/tmp/` ignores it, so it
+  is **invisible to git and has never been committed** — there is no blob for it
+  in any branch. It is an early graph-based (`igraph`/`tidygraph`) prototype of
+  the ROI-grouping idea that became `define_feature_group.r`, not a copy of it.
+  Deleting it destroys it. Promote it or delete it deliberately; do not assume
+  git holds a copy.
 - `Run_*.groovy` resolve their library directory from the SciJava script binding,
   so they must be *saved* and run from `scripts/groovy/` — an unsaved Script
   Editor buffer has no path and will fail with an explicit message.

@@ -1,7 +1,6 @@
-// version 0.1.1
 // last update: 2026-09-14
 //
-// CHANGELOG (0.1.1)
+// CHANGELOG
 //  - FIX: measure_roi() measured channels 1..N instead of the channels listed
 //         in `channel_to_measure`. The array contents are now honoured.
 //  - FIX: outline y-coordinates were scaled by pixelWidth instead of pixelHeight.
