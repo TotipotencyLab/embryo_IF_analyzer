@@ -1,7 +1,6 @@
-// version 0.0.2
 // last update: 2026-09-14
 //
-// CHANGELOG (0.0.2)
+// CHANGELOG
 //  - FIX: measure_roi() measured channels 1..N rather than the channels listed
 //         in `channel_to_measure`. The array contents are now honoured.
 //  - FIX: callers passed newArray(nuc_ch) / newArray(PLA_ch). In the IJ1 macro

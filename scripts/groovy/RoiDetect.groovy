@@ -1,4 +1,4 @@
-// RoiDetect.groovy -- version 0.1.0
+// RoiDetect.groovy
 //
 // Particle detection that returns ROIs without the ROI Manager.
 //

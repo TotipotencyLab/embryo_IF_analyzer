@@ -8,7 +8,7 @@
 #@ String  (label="Circularity", value="0.50-1.00") circularity
 #@ Boolean (label="Show the intermediate mask", value=true) showMask
 
-// Run_NucleolusDetect.groovy -- version 0.1.0
+// Run_NucleolusDetect.groovy
 //
 // Wires NucleolusDetect.buildNucleolusMask() to the interactive Fiji workflow.
 //

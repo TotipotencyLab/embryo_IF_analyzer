@@ -80,15 +80,19 @@ find_ROI_z_intersect <- function(roi_pg_df, max_z_dist=1, min_intersect_ratio=0.
   # FILTER 2) by ratio of overlap -----------------------------------------------------------------
   do_int_area_filter <- !is.null(min_intersect_ratio) & (min_intersect_ratio >= 0) & (min_intersect_ratio <= 1)
   if(do_int_area_filter){
-    # BUG: error when ovl_pair_df has 0 rows
     # Calculating ratio of overlap (overlap area/min area)
     ovl_pair_df <- ovl_pair_df %>% 
       mutate(area_1 = roi_area_map[roi_1],
              area_2 = roi_area_map[roi_2],
-             int_area = NA) # int: intersect; NA as a placeholder for now
+             int_area = NA_real_) # int: intersect; NA as a placeholder for now
     
     # TODO: This can take quite some time; consider vectorizing it
-    for(i in 1:nrow(ovl_pair_df)){
+    # NB: seq_len(), not 1:nrow(). The checkpoints above only warning() and fall
+    #     through, so a zero-row table reaches here; 1:nrow() would then count
+    #     c(1, 0) and index a row that does not exist. seq_len(0) is empty, and
+    #     mutate() on zero rows still yields the full set of columns, so callers
+    #     get a correctly shaped empty result instead of an error.
+    for(i in seq_len(nrow(ovl_pair_df))){
       pg1 <- roi_pg_df$geometry[roi_pg_df$roi == ovl_pair_df$roi_1[i]]
       pg2 <- roi_pg_df$geometry[roi_pg_df$roi == ovl_pair_df$roi_2[i]]
       # plot(c(pg1, pg2)) # For visual inspection

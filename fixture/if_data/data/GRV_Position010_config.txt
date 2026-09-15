@@ -1,0 +1,29 @@
+parameter	value
+timestamp	2026-09-14 23:09:47
+script	Run_NucleusSelector.groovy 0.2.0
+imagej_version	2.16.0/1.54p
+image_title	20241216_dkD_DAPI_EGFP_Klf5_Nr5a2_forrep3.lif-Position010-1.tif
+image_slices	50
+image_channels	4
+pixel_width	0.14147068967810042
+pixel_height	0.14147068967810042
+pixel_unit	micron
+output_basename	GRV_Position010
+position_pattern	Position
+z_spec	(all)
+z_slices_analysed	50
+dna_channel	1
+channels_measured	1,2,3
+measurements	area mean standard min centroid shape integrated median stack display
+nucleus_blur_sigma	8.0
+nucleus_threshold	Otsu
+nucleus_particle_size	80-Infinity
+nucleus_count	70
+nucleoli_enabled	true
+nucleolus_blur_sigma	3.0
+nucleolus_threshold	Relative
+nucleolus_rel_fraction	0.6
+nucleolus_erode_px	0
+nucleolus_particle_size	3-150
+nucleolus_circularity	0.50-1.00
+nucleolus_count	27

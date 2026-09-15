@@ -165,8 +165,13 @@ define_feature_group <- function(roi_df,
   roi_edge_mat <- as.matrix(roi_edge_df)
   
   # Assigning feature groups
+  # NB: seq_len(), not 1:nrow(). find_ROI_z_intersect() legitimately returns a
+  #     zero-row table when nothing overlaps across z (it only warns), and
+  #     1:nrow() would then iterate over c(1, 0) and index rows that do not
+  #     exist. With seq_len() the loop is simply skipped and every ROI falls
+  #     through to the "overlap" fail bucket, which is the correct answer.
   feature_count <- 0
-  for(i in 1:nrow(roi_edge_mat)){
+  for(i in seq_len(nrow(roi_edge_mat))){
     cur_idx <- which(roi_node_df$roi_id %in% roi_edge_mat[i, ])
     # Check if any of these two already has group number assign to it
     cur_nuc_num <- unique(roi_node_df$feature_group[cur_idx]) %>% 
@@ -192,13 +197,17 @@ define_feature_group <- function(roi_df,
   # Filtering feature -----------------------------------------------------------------------------
   # By number of z-span
   # Calculate number of z-span per nucleus
+  # NB: counted with count(), not table(). as.data.frame(table(x)) on an empty
+  #     column comes back with a single column, so the `colnames<-` below
+  #     renamed nothing and the next filter failed with "object 'n_z_span' not
+  #     found". That is reachable whenever no ROI overlaps any other, which
+  #     find_ROI_z_intersect() reports by warning rather than by stopping.
+  #     Counting after unique() gives distinct z per group either way.
   z_span_df <- roi_node_df %>% 
     dplyr::filter(!is.na(feature_group)) %>% 
     dplyr::select(feature_group, z) %>% 
     unique() %>% 
-    {table(.$feature_group)} %>% 
-    as.data.frame() %>% as_tibble() %>% 
-    `colnames<-`(c("feature_group", "n_z_span")) %>% 
+    dplyr::count(feature_group, name="n_z_span") %>% 
     mutate(feature_group = as.double(feature_group))
   
   valid_feature_group <- z_span_df %>% 

@@ -9,10 +9,18 @@
 roi_extract_xy_coord <- function(roi_df, roi_id){
   # Extract XY coordinate from a single ROI ID.
   # NB: This function is likely used as a dependencies of other functions
-  df <- roi_df %>% 
-    dplyr::filter(roi == roi_id) %>% 
-    {dplyr::add_row(., .[1, ])} # required for closing the polygons in R
+  df <- dplyr::filter(roi_df, roi == roi_id)
   
+  # NB: return an empty matrix instead of closing a polygon that is not there.
+  #     `.[1, ]` on a zero-row tibble yields a row of NAs, so this used to hand
+  #     back a 1-row all-NA matrix; the empty-ROI check in roi_2_polygons() saw
+  #     nrow == 1 and let it through, and the failure only surfaced later, deep
+  #     inside Polygon(), pointing at the wrong place.
+  if(nrow(df) == 0){
+    return(matrix(numeric(0), ncol=2, dimnames=list(NULL, c("x", "y"))))
+  }
+  
+  df <- dplyr::add_row(df, df[1, ]) # required for closing the polygons in R
   m <- as.matrix(df[ , c("x", "y")])
   return(m)
 }
@@ -36,10 +44,14 @@ roi_2_polygons <- function(roi_df, roi_id_vec){
   names(xy_coord_list) <- roi_id_vec
   
   # QC
+  # A closed ring needs at least 3 distinct vertices, i.e. 4 rows once the first
+  # point has been repeated. Anything shorter is a degenerate ROI that Polygon()
+  # rejects with an error that does not name the ROI responsible.
   n_points_vec <- sapply(xy_coord_list, nrow)
-  empty_roi <- n_points_vec == 0
+  empty_roi <- n_points_vec < 4
   if(any(empty_roi)){
-    warning("Some ROIs didn't return XY coordinate\n")
+    warning("Dropping ", sum(empty_roi), " ROI(s) with too few coordinates to form a polygon: ",
+            paste(names(xy_coord_list)[empty_roi], collapse=", "))
     xy_coord_list <- xy_coord_list[!empty_roi]
     n_points_vec <- n_points_vec[!empty_roi]
   }
@@ -50,14 +62,24 @@ roi_2_polygons <- function(roi_df, roi_id_vec){
   
   # Converting to polygons object (sp package)
   # PG = Polygon
-  sp_PG <- lapply(roi_id_vec, FUN=function(x){
+  # NB: iterate over what survived QC, not over the original roi_id_vec. Indexing
+  #     the list by a dropped ROI returns NULL and Polygon(NULL) fails.
+  use_roi_id <- names(xy_coord_list)
+  sp_PG <- lapply(use_roi_id, FUN=function(x){
     Polygons(list(Polygon(xy_coord_list[[x]])), ID=x)
   })
-  names(sp_PG) <- roi_id_vec
+  names(sp_PG) <- use_roi_id
   sp_spg <- SpatialPolygons(sp_PG)
   
   # Converting to polygons object (sf package)
   sf_pg <- suppressWarnings(st_as_sf(sp_spg))
+  
+  # NB: carry the ROI ids back as a column. st_as_sf() does not reliably keep the
+  #     Polygons IDs (they can come back as row numbers), which leaves callers
+  #     pairing geometry to ROI ids by position -- and position stops being a
+  #     valid key the moment the QC above drops anything.
+  sf_pg$roi <- use_roi_id
+  sf_pg <- sf_pg[ , c("roi", "geometry")]
   
   return(sf_pg)
   
@@ -95,7 +117,18 @@ polygonize_roi_df <- function(roi_df, keep_other_columns=FALSE){
   # geom_df <- as_tibble(geom_df)
   
   # Vectorized version:
-  geom_df <- tibble(roi = unq_roi_id, geometry = roi_2_polygons(roi_df, roi_id_vec=unq_roi_id)$geometry)
+  pg_sf <- roi_2_polygons(roi_df, roi_id_vec=unq_roi_id)
+  geom_df <- tibble(roi = pg_sf$roi, geometry = pg_sf$geometry)
+  
+  # NB: join on the ROI id, never by position. roi_2_polygons() drops ROIs that
+  #     cannot form a polygon, so the two are not the same length in general.
+  #     Pairing them positionally let tibble() recycle one ROI's geometry onto
+  #     another -- a wrong answer, reported as nothing at all.
+  dropped_roi <- setdiff(roi_info_df$roi, geom_df$roi)
+  if(length(dropped_roi) > 0){
+    # roi_2_polygons() has already warned about these; just do not carry them.
+    roi_info_df <- dplyr::filter(roi_info_df, roi %in% geom_df$roi)
+  }
   
   roi_info_df <- left_join(roi_info_df, geom_df, by="roi")
   return(roi_info_df)
@@ -119,7 +152,10 @@ pg_2_coord_df <- function(st_df){
       stop("Input doesn't have required column")
     }
   }else{
-    feat_coord_df <- feature_df
+    # NB: was `feature_df`, which is not a parameter of this function -- this
+    #     branch raised "object 'feature_df' not found" for any input that
+    #     already carried x/y columns.
+    feat_coord_df <- st_df
   }
   
   return(feat_coord_df)

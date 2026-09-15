@@ -1,4 +1,4 @@
-// NucleolusDetect.groovy -- version 0.1.0
+// NucleolusDetect.groovy
 //
 // Per-nucleus, per-slice nucleolus detection.
 //
