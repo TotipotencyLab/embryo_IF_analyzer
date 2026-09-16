@@ -8,6 +8,7 @@
 #@ Double  (label="Nucleus: blur sigma", value=8.0) nucSigma
 #@ String  (label="Nucleus: threshold method", choices={"Huang2","Huang","Default","Otsu","Triangle","IsoData"}) nucMethod
 #@ String  (label="Nucleus: particle size (calibrated units^2)", value="80-Infinity") nucSize
+#@ Boolean (label="Nucleus: split touching nuclei (watershed)", value=false) nucWatershed
 #@ Boolean (label="Detect nucleoli", value=true) doNucleoli
 #@ Double  (label="Nucleolus: blur sigma", value=3.0) nucleolusSigma
 #@ String  (label="Nucleolus: threshold method", choices={"Relative","Default","Otsu","Triangle","Huang","IsoData"}) nucleolusMethod
@@ -79,10 +80,7 @@ def writeFeature = { String feature, List rois, List names, List sls ->
 }
 
 // --- Nucleus -------------------------------------------------------------
-def dna = new Duplicator().run(imp, dnaCh, dnaCh, 1, imp.getNSlices(), 1, 1)
-IJ.run(dna, "Gaussian Blur...", "sigma=${nucSigma} stack")
-IJ.run(dna, "Auto Threshold", "method=${nucMethod} ignore_black ignore_white white stack use_stack_histogram")
-IJ.run(dna, "Fill Holes", "stack")
+def dna = RD.buildMask(imp, dnaCh, nucSigma, nucMethod, true, nucWatershed)
 def nucRois   = RD.detect(dna, nucSize, "", slices, true, true)
 def nucNames  = RD.autoLabels(nucRois).collect { "nucleus_" + it }
 def nucSlices = nucRois.collect { it.getPosition() }
@@ -139,6 +137,7 @@ if (saveConfig) {
         nucleus_blur_sigma     : nucSigma,
         nucleus_threshold      : nucMethod,
         nucleus_particle_size  : nucSize,
+        nucleus_watershed      : nucWatershed,
         nucleus_count          : nucRois.size(),
         nucleoli_enabled       : doNucleoli,
         nucleolus_blur_sigma   : nucleolusSigma,

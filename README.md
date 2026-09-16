@@ -25,6 +25,9 @@ reference and comparison but are no longer the primary path.
 | `Run_NucleolusDetect.groovy` | nucleoli only, using nucleus ROIs already in the ROI Manager |
 | `NucleolusDetect.groovy` | per-nucleus, per-slice nucleolus thresholding |
 | `RoiExport.groovy` | outline `.txt`, ROI `.zip`, measurement `.txt` |
+| `RoiDetect.groovy` | mask building (blur, threshold, fill holes, watershed) and particle detection |
+| `Inspect_ImageFile.groovy` | list the series in a file and their dimensions, without loading pixels |
+| `Inspect_Session.groovy` | report open images, the active image, ROI Manager and measurement settings |
 
 To run: open the image in Fiji, then `File › Open…` the script and press **Run**.
 Parameters are `#@` script parameters, so they appear as a dialog — no file editing.
@@ -46,6 +49,10 @@ that produced it.
 
 Analysis can be restricted to chosen z-slices (e.g. `1-20,35-40`), which is useful
 for cutting small fixtures out of a full stack.
+
+Touching nuclei can be split with **watershed** (off by default). Turn it on for
+objects that threshold into one blob but are two things — a zygote's two
+pronuclei, or oocytes packed together in a section.
 
 Detection uses `ParticleAnalyzer` directly rather than the ROI Manager, so the
 whole pipeline also runs headless:
@@ -78,7 +85,14 @@ analysis script:
 Rscript tests/run_tests.R
 ```
 
-Covers the Fiji→R boundary: that the roi id is recovered for every measurement
+Fiji-side checks (no data needed):
+
+```bash
+/Applications/Fiji.app/Contents/MacOS/ImageJ-macosx --headless --console \
+  --run tests/groovy/Test_BuildMask.groovy
+```
+
+The R suite covers the Fiji→R boundary: that the roi id is recovered for every measurement
 row, that reading a table neither adds nor drops rows, and that outlines become
 valid polygons and group into features across z. Tests needing `sf` skip
 themselves if it cannot be loaded, so the rest still run.

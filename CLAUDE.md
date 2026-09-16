@@ -43,7 +43,12 @@ loop, including how to diff.
 - **`scripts/groovy/` is the supported Fiji path.** `Run_NucleusSelector.groovy`
   is the main entry point. `NucleolusDetect`, `RoiExport` and `RoiDetect` are the
   shared library, split by role (detect / export / orchestrate) rather than by
-  experiment.
+  experiment. `Inspect_*.groovy` are read-only diagnostics, written to be read as
+  well as run — they carry the Groovy/ImageJ API notes.
+- Mask building lives in `RoiDetect.buildMask()`, not inline in the runner, so a
+  new assay configures it rather than copying it. Watershed is an option there
+  and is **off by default**: with it off the mask step is exactly what it was
+  before extraction, verified against the fixture.
 - **`scripts/fiji/` is reference only.** The IJ1 macros are kept deliberately, for
   code study and comparison. `PLA.ijm` and `measure_manual_selection.ijm` are
   still the only implementations of those two workflows.
@@ -55,6 +60,12 @@ fourth fork.** A new assay should be a new configuration of the shared library.
 
 ## Standing decisions
 
+- **Watershed forces `Prefs.blackBackground = true`.** It reads that preference
+  to decide which phase is object; left to the operator's setting it erodes the
+  background instead of splitting objects, and produces a plausible-looking mask
+  while doing it. Same reasoning as forcing Set Measurements — and it likewise
+  persists. Holes are filled before splitting, or watershed cuts through an
+  unfilled hole and shatters one object into a ring of fragments.
 - **Nucleolus thresholding:** `Default` and `Relative` work on real embryo DAPI.
   `Otsu` and `Triangle` mask essentially the whole nucleus — once the histogram is
   restricted to a single nucleus it is no longer strongly bimodal.
@@ -104,6 +115,16 @@ The spatial tests need a working `sf`. `helper-setup.R` probes it **in a child
 process**, since a broken `units` aborts R outright rather than raising, which
 would take the whole run down; when it cannot load they skip rather than fail.
 Note which R ran: the count differs. See `CLAUDE.local.md` for this machine.
+
+On the Fiji side, `tests/groovy/Test_BuildMask.groovy` synthesises its images, so
+it needs no data:
+
+```
+/Applications/Fiji.app/Contents/MacOS/ImageJ-macosx --headless --console \
+  --run tests/groovy/Test_BuildMask.groovy
+```
+
+Read the FAILED count, never a bare "OK" — every check prints the value it saw.
 
 ## Versioning
 

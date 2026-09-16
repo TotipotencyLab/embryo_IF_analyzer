@@ -13,6 +13,7 @@ import ij.measure.Measurements
 import ij.measure.ResultsTable
 import ij.process.ImageProcessor
 import ij.process.ImageStatistics
+import ij.plugin.Duplicator
 import ij.plugin.filter.ParticleAnalyzer
 
 class RoiDetect {
@@ -41,6 +42,41 @@ class RoiDetect {
      * circRange: "0.50-1.00"
      * slices:    which z-slices to analyse; null means all.
      */
+    /**
+     * Build a binary mask from one channel: blur, auto-threshold, optionally fill
+     * holes, and optionally split touching objects by watershed.
+     *
+     * Returns a NEW ImagePlus that the caller must close. The source is untouched.
+     *
+     * Watershed splits objects that threshold into a single blob but are two
+     * things -- a zygote's two pronuclei, oocytes packed together in a section.
+     * It is off by default: with watershed=false this reproduces the previous
+     * inline mask step exactly, so turning it on is the only thing that can
+     * change existing results.
+     */
+    static ImagePlus buildMask(ImagePlus imp, int channel, double sigma, String method,
+                               boolean fillHoles, boolean watershed) {
+        def mask = new Duplicator().run(imp, channel, channel, 1, imp.getNSlices(), 1, 1)
+        if (sigma > 0) IJ.run(mask, "Gaussian Blur...", "sigma=${sigma} stack")
+        IJ.run(mask, "Auto Threshold",
+               "method=${method} ignore_black ignore_white white stack use_stack_histogram")
+        if (fillHoles) IJ.run(mask, "Fill Holes", "stack")
+
+        if (watershed) {
+            // NB: Watershed reads Prefs.blackBackground to decide which phase is
+            //     object and which is background. Left to whatever the operator
+            //     happens to have ticked, it will erode the background instead of
+            //     splitting the objects -- and produce a plausible-looking mask
+            //     while doing it. Forced here for the same reason Set Measurements
+            //     is forced. This overwrites the preference, and it persists.
+            Prefs.blackBackground = true
+            // Holes are filled first on purpose: watershed cuts through an unfilled
+            // hole and shatters one object into a ring of fragments.
+            IJ.run(mask, "Watershed", "stack")
+        }
+        return mask
+    }
+
     static List<Roi> detect(ImagePlus binary, String sizeRange, String circRange,
                             Set<Integer> slices, boolean excludeEdges, boolean includeHoles) {
         def (double minSize, double maxSize) = parseRange(sizeRange, 0d, Double.MAX_VALUE)
