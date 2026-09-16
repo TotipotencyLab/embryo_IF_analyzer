@@ -231,31 +231,65 @@ if(do_read_nuc_data){
     # pos_id <- "Position115"
     pos_id <- pos_id_vec[i]
     
-    outline_path <- list.files(data_dir, pattern=paste0(pos_id, ".+nucleolus_outline\\.txt$"))
-    res_path <- list.files(data_dir, pattern=paste0(pos_id, ".+nucleolus_res\\.txt$"))
-    
-    if((length(outline_path)>1) | (length(res_path)>1)){
-      # Use the prefered suffix
-      outline_path <- subset(outline_path, str_detect(outline_path, prefered_suffix_regex))[1]
-      res_path <- subset(res_path, str_detect(res_path, prefered_suffix_regex))[1]
+    # NB: each FEATURE now has its own pair of files. The old Fiji macro wrote
+    #     nucleus AND nucleolus ROIs into the nucleolus files, so reading
+    #     "*_nucleolus_*" alone was enough and the nuclei came along for free.
+    #     The Groovy scripts scope each feature to its own files, so that same
+    #     read returns nucleolus ROIs only -- nuc_outline_df below comes back
+    #     empty, every nucleus is lost, and the analysis yields nothing while
+    #     only warning. Read both features and combine them.
+    resolve_feature_path <- function(feature, kind){
+      hits <- list.files(data_dir,
+                         pattern=paste0(pos_id, ".+", feature, "_", kind, "\\.txt$"))
+      if(length(hits) > 1){
+        # Use the prefered suffix
+        hits <- subset(hits, str_detect(hits, prefered_suffix_regex))[1]
+      }
+      if(length(hits) != 1 || is.na(hits)) return(NA_character_)
+      paste0(data_dir, "/", hits)
     }
     
-    if(length(outline_path) != 1 | length(res_path)!=1){
+    feature_paths <- list(
+      nucleus   = c(outline = resolve_feature_path("nucleus", "outline"),
+                    res     = resolve_feature_path("nucleus", "res")),
+      nucleolus = c(outline = resolve_feature_path("nucleolus", "outline"),
+                    res     = resolve_feature_path("nucleolus", "res"))
+    )
+    
+    # Old-format data keeps both features in the nucleolus files. Detect that
+    # rather than assume either layout: if there is no separate nucleus file,
+    # fall back to reading the nucleolus pair alone, which still carries both.
+    split_files <- !is.na(feature_paths$nucleus["outline"]) &&
+                   !is.na(feature_paths$nucleus["res"])
+    read_features <- if(split_files) c("nucleus", "nucleolus") else "nucleolus"
+    
+    if(any(is.na(unlist(feature_paths[read_features])))){
       # Skip to the next iteration of the loop
       cat(pos_id, " - skip\n")
       next
-    }else{
-      cat(pos_id, ", ")
-      outline_path <- paste0(data_dir, "/", outline_path)
-      res_path <- paste0(data_dir, "/", res_path)
     }
+    cat(pos_id, if(split_files) "(split) " else "(combined) ")
     
-    outline_df <- as_tibble(read.table(outline_path, header=TRUE, stringsAsFactors=FALSE))
+    outline_df <- tibble(); res_df <- tibble()
+    for(feat in read_features){
+      outline_df <- as_tibble(read.table(feature_paths[[feat]]["outline"],
+                                         header=TRUE, stringsAsFactors=FALSE)) %>%
+        bind_rows(outline_df, .)
+      res_df <- suppressWarnings(read_fiji_result(feature_paths[[feat]]["res"])) %>%
+        bind_rows(res_df, .)
+    }
     outline_df$type <- str_extract(outline_df$roi, "^[:alpha:]+")
-    
-    res_df <- suppressWarnings(read_fiji_result(res_path)) %>% 
-      mutate(pos=pos_id)
+    res_df <- mutate(res_df, pos=pos_id)
     res_df$type <- str_extract(res_df$roi, "^[:alpha:]+")
+    
+    # Fail loudly on the assumption that actually matters. Without this the
+    # nucleus-free case below only warning()s -- its `next` is commented out --
+    # and the run completes having silently produced nothing.
+    if(!any(outline_df$type == "nucleus")){
+      stop("No nucleus ROIs for ", pos_id,
+           ": read ", paste(read_features, collapse=" + "),
+           ". Expected a *_nucleus_outline.txt beside the nucleolus files.")
+    }
     
     # Filter valid ROI ------------------------------------------------------------------------------
     min_circ <- pos_info %>% 
