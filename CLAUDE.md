@@ -7,6 +7,42 @@ sharing a common library, not one program.
 
 `README.md` is for people *using* the repo. This file is for working *on* it.
 
+## Workflow
+
+1. **Orient.** Check the current state against the repo, not against memory or
+   this file. Both go stale; the code does not.
+2. **Branch.** Never commit to `main`.
+3. **Change** one thing. If a new assay needs behaviour the library lacks, add
+   the option to the library — do not fork a script.
+4. **Verify.** This is the step that earns its keep here, because the
+   characteristic failure in this repo is *silent*: measurements stay correct
+   while a join matches nothing, a filter switches units, or a mask looks
+   plausible and is wrong.
+   - Changing anything that writes the output files ⇒ re-run a reference and
+     **diff**. The ROI counts agreeing is not the check; the files agreeing is.
+   - A new option that should change nothing when off ⇒ prove it changes nothing
+     when off, and *separately* prove it does something when on. Identical
+     output can mean "correctly did nothing" or "silently never ran" — those
+     look the same and must be told apart, if necessary on a case you
+     synthesise (`tests/groovy/Test_BuildMask.groovy`).
+   - Never report a pass that could not have failed. Print the value observed,
+     not the word "OK".
+   - Say which R ran; the suite's counts differ between 4.4 and 4.6.
+5. **Commit** with the reasoning, not the diff. Why it was wrong and how the
+   failure showed up is what is worth reading in a year. Note explicitly what
+   was *not* verified.
+6. **PR, squash merge**, tag if releasing (bump `VERSION` in the tagged commit).
+7. **Doc-sync — propose, do not write.** At the end of a piece of work, say what
+   the work revealed that the docs get wrong or do not cover: a gotcha worth
+   recording, a stale claim in `CLAUDE.md` or `.claude/skills/`, a note in
+   `note/`, or a new skill worth having. **Raise it as a proposal and stop.**
+   Draft the edit only once it has been agreed. Docs describing the change being
+   shipped (README for a new option, say) travel with that change as usual; this
+   step is for captured *knowledge*, which is not the author's call alone.
+
+Before deleting anything, confirm git actually holds it — `**/tmp/` and
+`**/data/` mean "it is on disk" and "it is in history" are different questions.
+
 ## The output contract
 
 Fiji writes, per feature per image:
