@@ -152,3 +152,39 @@ filter and a wrong circularity filter both produce plausible-looking counts.
    being exactly 44 bytes short meant a missing 22-character name stored as UTF-16.
 
 See `references/imagej-api-gotchas.md` for the specific API traps these uncovered.
+
+## Verifying an option that should change nothing
+
+Adding a flag that is off by default and behaviour-preserving needs **two**
+proofs, and only the first is obvious:
+
+1. **Off changes nothing** — reference diff, exactly as above.
+2. **On does something** — without this, identical output is equally consistent
+   with *the flag is never read*.
+
+Step 2 is the one that gets skipped, because real data often has nothing for the
+feature to act on. Both runs then legitimately agree, and a no-op that was never
+wired up is indistinguishable from a feature working correctly. Observed: adding
+an object-splitting step changed neither the counts nor a byte of the outlines on
+a real image, because nothing in that image needed splitting.
+
+Resolve it by synthesising the case the feature exists for. No fixture, seconds
+to run:
+
+```groovy
+// two overlapping discs threshold into ONE blob
+def ip = new ByteProcessor(200, 120)
+ip.setColor(255)
+ip.fill(new OvalRoi(20, 20, 80, 80))
+ip.fill(new OvalRoi(80, 20, 80, 80))
+// expect 1 particle with the option off, 2 with it on
+```
+
+Assert the negative too: that the option leaves alone what it must not — two
+well-separated objects stay 2, one object stays 1 — and that the source image is
+unmodified. An option that splits *everything* passes the positive check on its
+own.
+
+The general rule: **a check that cannot fail is not evidence.** Before accepting
+a pass, ask what result would have revealed the bug, and confirm the test could
+have produced it.
