@@ -29,6 +29,10 @@
 # Machine-local Claude notes (per-machine; not shared)
 CLAUDE.local.md
 
+# Personal working notes kept out of the repo on request. note/ is otherwise
+# tracked -- fiji_vocabulary.md and wishlist.md are shared reference.
+note/learn_groovy.md
+
 # Template by GitHub
 # =============================================
 
