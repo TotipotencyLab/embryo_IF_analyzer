@@ -14,6 +14,7 @@
 // plane, the wrong channel, or mix channels, and the number is different.
 
 import ij.*
+import ij.gui.Roi
 import ij.process.ByteProcessor
 import ij.process.FloatProcessor
 import ij.process.ImageProcessor
@@ -235,6 +236,16 @@ def hot8 = ramp8()
 [[10, 10], [150, 60], [190, 90]].each { xy -> hot8.set(xy[0], xy[1], 255) }
 check("8-bit hot pixels: 'auto' max stays ~40", range(OV.prepare(asProj(hot8, 1), 1))[1] <= 40, true)
 
+// saturated: 0 means "clip nothing", so the hot pixels are back in range. With a
+// careless `opts.saturated ?: 0.35`, 0 counts as false, becomes 0.35, and the
+// hot pixels are still ignored -- which this check catches.
+// The top lands on a histogram bin edge (see the 32-bit note in prepare()), so
+// it is 99609, not exactly 100000. What matters is ~99609 vs the ~781 of the bug.
+def hiSat0 = range(OV.prepare(asProj(hot, 1), 1, [saturated: 0]))[1]
+check("saturated 0 clips nothing",             hiSat0 > 99000, true)
+println "         (saturated 0 max was ${hiSat0}; with the Elvis bug it was 781)"
+throwsWith("saturated 100 is rejected",        "saturated")      { OV.prepare(pr, 1, [saturated: 100]) }
+
 throwsWith("unknown contrast is rejected",     "unknown contrast") { OV.prepare(pr, 1, [contrast: "vivid"]) }
 
 // --- the projection is not modified ---------------------------------------------
@@ -242,6 +253,113 @@ OV.prepare(proj3, 2, [width: 3, contrast: "auto"])
 check("projection keeps its size and planes",
       [proj3.getWidth(), proj3.getHeight(), proj3.getStackSize()], [8, 8, 2])
 check("projection keeps its values",           val(proj3, 1), 22.0d)
+
+// ============================================================================
+println ""
+println "=== Overview.addOutlines + savePng ==="
+// Checked on the SAVED PNG -- the file a person opens -- by reading colours back.
+
+def tmp = new File(System.getProperty("java.io.tmpdir"), "test_overview_" + System.nanoTime())
+int nSaved = 0
+// NB: closure parameters must not reuse a name already declared in the script
+//     (`view`, `v`), or the script fails to compile.
+def saveAndOpen = { def vw ->
+    def f = OV.savePng(vw, new File(tmp, "out${nSaved++}.png").getPath())
+    IJ.openImage(f.getPath())
+}
+def rgb = { ImagePlus im, int x, int y -> def c = im.getProcessor().getPixel(x, y); [(c >> 16) & 255, (c >> 8) & 255, c & 255] }
+def GREY = [50, 50, 50], YELLOW = [255, 255, 0], MAGENTA = [255, 0, 255]
+
+// A flat grey 200x100 source. Shown at width 100, so the view is half size.
+def grey = { -> def ip = new ByteProcessor(200, 100); ip.setValue(50); ip.fill(); ip }
+def halfView = { -> OV.prepare(asProj(grey(), 1), 1, [width: 100, contrast: "none"]) }
+def rect = { int x, int y, int w, int h, int pos = 0 -> def r = new Roi(x, y, w, h); if (pos) r.setPosition(pos); r }
+
+// --- outlines are scaled into the view --------------------------------------------
+// Roi at (60,20) 40x40 in the source -> (30,10) 20x20 in the half-size view.
+def view = halfView()
+check("one outline drawn",                     OV.addOutlines(view, [rect(60, 20, 40, 40)]), 1)
+def png = saveAndOpen(view)
+check("saved PNG has the view's size",         [png.getWidth(), png.getHeight()], [100, 50])
+check("saved PNG is RGB",                      png.getType(), ImagePlus.COLOR_RGB)
+check("outline at the SCALED edge (30,20)",    rgb(png, 30, 20), YELLOW)
+// Where the outline would be had it not been scaled: must be untouched.
+check("nothing at the UNSCALED edge (60,40)",  rgb(png, 60, 40), GREY)
+check("inside is not filled (40,20)",          rgb(png, 40, 20), GREY)
+
+// --- line width is in output pixels ---------------------------------------------
+view = halfView(); OV.addOutlines(view, [rect(60, 20, 40, 40)], [lineWidth: 1])
+check("width 1: 2 px inside the edge is bare", rgb(saveAndOpen(view), 32, 20), GREY)
+view = halfView(); OV.addOutlines(view, [rect(60, 20, 40, 40)], [lineWidth: 5])
+check("width 5: 2 px inside the edge is drawn", rgb(saveAndOpen(view), 32, 20), YELLOW)
+
+// --- colours, and later calls on top -----------------------------------------------
+view = halfView(); OV.addOutlines(view, [rect(60, 20, 40, 40)], [color: "#00ff00"])
+check("hex colour",                            rgb(saveAndOpen(view), 30, 20), [0, 255, 0])
+view = halfView()
+OV.addOutlines(view, [rect(20, 20, 40, 40)], [color: "yellow"])   // view (10,10)-(30,30)
+OV.addOutlines(view, [rect(60, 20, 40, 40)], [color: "magenta"])  // view (30,10)-(50,30)
+png = saveAndOpen(view)
+check("first feature keeps its colour",        rgb(png, 10, 20), YELLOW)
+check("second feature has its own colour",     rgb(png, 50, 20), MAGENTA)
+check("shared edge: later call is on top",     rgb(png, 30, 20), MAGENTA)
+throwsWith("unknown colour is rejected",       "unknown colour") { OV.addOutlines(halfView(), [rect(0, 0, 4, 4)], [color: "sparkly"]) }
+throwsWith("negative line width is rejected",  "positive")       { OV.addOutlines(halfView(), [rect(0, 0, 4, 4)], [lineWidth: -1]) }
+// 0 is FALSE in Groovy: a careless `opts.lineWidth ?: 1` turns 0 into 1 silently.
+throwsWith("zero line width is rejected",      "positive")       { OV.addOutlines(halfView(), [rect(0, 0, 4, 4)], [lineWidth: 0]) }
+
+// --- modes ---------------------------------------------------------------------------
+// Two overlapping squares, view coords (10,10)-(30,30) and (20,10)-(40,30).
+// Square B's left edge at x=20 lies INSIDE square A: drawn in "all", gone in "merged".
+def overlapping = { -> [rect(20, 20, 40, 40), rect(40, 20, 40, 40)] }
+view = halfView()
+check("'all' draws every ROI",                 OV.addOutlines(view, overlapping(), [mode: "all"]), 2)
+check("'all': inner edge is drawn",            rgb(saveAndOpen(view), 20, 20), YELLOW)
+view = halfView()
+check("'merged' draws one outline",            OV.addOutlines(view, overlapping(), [mode: "merged"]), 1)
+png = saveAndOpen(view)
+check("'merged': inner edge is gone",          rgb(png, 20, 20), GREY)
+check("'merged': outer edge is kept",          rgb(png, 10, 20), YELLOW)
+check("'merged' keeps separate ROIs separate",
+      OV.addOutlines(halfView(), overlapping() + [rect(120, 20, 20, 20)], [mode: "merged"]), 2)
+view = halfView()
+check("'none' draws nothing",                  OV.addOutlines(view, overlapping(), [mode: "none"]), 0)
+check("'none': image is bare",                 rgb(saveAndOpen(view), 10, 20), GREY)
+check("empty ROI list draws nothing",          OV.addOutlines(halfView(), []), 0)
+throwsWith("unknown mode is rejected",         "unknown outline mode") { OV.addOutlines(halfView(), overlapping(), [mode: "outline"]) }
+
+// --- detection ROIs carry a slice position ------------------------------------------
+view = halfView(); OV.addOutlines(view, [rect(60, 20, 40, 40, 7)])
+check("ROI from slice 7 is still drawn",       rgb(saveAndOpen(view), 30, 20), YELLOW)
+
+// --- the caller's ROIs are not changed ---------------------------------------------
+def mine = [rect(20, 20, 40, 40, 7), rect(40, 20, 40, 40, 9)]
+def snap = { -> mine.collect { [it.getBounds().x, it.getBounds().width, it.getPosition(), it.getStrokeColor(), it.getStrokeWidth()] } }
+def beforeRois = snap()
+OV.addOutlines(halfView(), mine, [mode: "all", color: "magenta", lineWidth: 4])
+OV.addOutlines(halfView(), mine, [mode: "merged"])
+check("caller's ROIs untouched",               snap(), beforeRois)
+
+// --- the display range is what gets saved --------------------------------------------
+// prepare() only sets a display range; savePng() is where it must take effect.
+// On the dim 10-40 ramp, the brightest column (40) is white with 'auto' and
+// stays 40 with 'none'. If save ignored the range, both would read 40.
+def edge = { vw -> rgb(saveAndOpen(vw), 199, 50)[0] }
+check("'none' saves raw brightness (40)",      edge(OV.prepare(asProj(ramp8(), 1), 1, [contrast: "none"])), 40)
+def autoEdge = edge(OV.prepare(asProj(ramp8(), 1), 1))
+check("'auto' saves stretched brightness",     autoEdge >= 250, true)
+println "         (auto brightest column saved as ${autoEdge})"
+def e32 = edge(OV.prepare(asProj(r32, 1), 1, [contrast: "none"]))
+check("32-bit saves to a visible 0-255",       e32 >= 250, true)
+
+// --- files ---------------------------------------------------------------------------
+def deep = new File(tmp, "a/b/c/deep.png")
+OV.savePng(halfView(), deep.getPath())
+check("missing directories are created",       deep.isFile(), true)
+check("overview file name",
+      OV.overviewPath("/data/out", "GRV_Position010", 1), "/data/out/GRV_Position010_overview_ch1.png")
+
+tmp.deleteDir()
 
 println ""
 println "passed: ${passed}   FAILED: ${failed}"

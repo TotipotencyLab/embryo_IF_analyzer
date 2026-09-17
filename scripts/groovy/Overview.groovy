@@ -12,17 +12,31 @@
 //
 //   project()      collapse the chosen z-planes, per channel
 //   prepare()      pick a channel, set contrast, resize -> View
-//   addOutlines()  draw ROIs onto an overlay, scaled to the view   (next)
-//   savePng()      burn the overlay into pixels and write a PNG    (next)
+//   addOutlines()  draw ROIs onto an overlay, scaled to the view
+//   savePng()      burn the overlay into pixels and write a PNG
+//
+//   def OV   = ...parseClass(...)
+//   def proj = OV.project(imp, slices, "max", [dnaCh])
+//   def view = OV.prepare(proj, dnaCh, [width: 500])
+//   OV.addOutlines(view, nucRois,  [mode: "merged", color: "yellow"])
+//   OV.addOutlines(view, nuclRois, [mode: "all",    color: "magenta"])
+//   OV.savePng(view, OV.overviewPath(outDir, basename, dnaCh))
 //
 // Why not just call ZProjector: it projects one continuous range. Detection
 // accepts gapped ranges ("1-20,35-40"), and an overview has to show what
 // detection saw, so the chosen planes are gathered into a substack first.
 
 import ij.*
+import ij.gui.Overlay
+import ij.gui.Roi
+import ij.gui.ShapeRoi
+import ij.io.FileSaver
+import ij.plugin.Colors
 import ij.plugin.ContrastEnhancer
+import ij.plugin.RoiScaler
 import ij.plugin.ZProjector
 import ij.process.ImageProcessor
+import java.awt.Color
 
 class Overview {
 
@@ -49,6 +63,7 @@ class Overview {
     }
 
     static final List<String> CONTRAST = ["auto", "none"]
+    static final List<String> OUTLINE_MODES = ["all", "merged", "none"]
 
     // Accepted projection names -> the strings ZProjector.run() understands.
     static final Map<String, String> METHODS = [
@@ -166,7 +181,10 @@ class Overview {
         if (!(contrast in CONTRAST)) {
             throw new IllegalArgumentException("unknown contrast '${opts.contrast}'; use one of ${CONTRAST.join(', ')}")
         }
-        double saturated = (opts.saturated ?: 0.35) as double
+        double saturated = opt(opts, "saturated", 0.35d) as double
+        if (saturated < 0 || saturated >= 100) {
+            throw new IllegalArgumentException("saturated must be 0 to <100 percent, got ${saturated}")
+        }
 
         // Copy: the projection may be prepared again for another channel.
         ImageProcessor ip = proj.getStack().getProcessor(idx + 1).duplicate()
@@ -216,6 +234,17 @@ class Overview {
         return new View(image: img, sx: sx, sy: sy, channel: channel)
     }
 
+    // An option's value, or `dflt` when it was not given.
+    //
+    // NB: not `opts.x ?: dflt`. Groovy's Elvis operator falls back whenever the
+    //     left side is FALSE, and 0 is false -- so `saturated: 0`, which means
+    //     "clip nothing", silently became 0.35, and `lineWidth: 0` silently became
+    //     1 instead of being rejected. Only null and blank mean "not given".
+    private static Object opt(Map opts, String key, Object dflt) {
+        def v = opts[key]
+        return (v == null || v.toString().trim().isEmpty()) ? dflt : v
+    }
+
     // A size option: null, "" or 0 mean "not given"; anything else must be a
     // positive whole number.
     private static Integer sizeOpt(Object v, String name) {
@@ -225,6 +254,102 @@ class Overview {
         catch (NumberFormatException e) { throw new IllegalArgumentException("${name} must be a whole number, got '${v}'") }
         if (n < 0) throw new IllegalArgumentException("${name} must not be negative, got ${n}")
         return n == 0 ? null : n
+    }
+
+    /**
+     * Draw ROIs onto the view's overlay, scaled into the view's coordinates.
+     * Call it once per feature; later calls draw on top of earlier ones.
+     *
+     * @param rois  ROIs in the ORIGINAL image's pixel coordinates, e.g. straight
+     *              from detection. They are copied; the caller's ROIs are left
+     *              exactly as they were.
+     * @param opts  mode      : "all" (default) -- every ROI, so an object spanning
+     *                          15 slices shows 15 stacked outlines;
+     *                          "merged" -- the union of all ROIs, one outline per
+     *                          connected footprint;
+     *                          "none" -- draw nothing.
+     *              color     : a name ("yellow"), "#rrggbb", or a java.awt.Color.
+     *                          Default yellow.
+     *              lineWidth : in OUTPUT pixels, i.e. after resizing. Default 1.
+     * @return the number of outlines drawn
+     *
+     * NB on "merged": the union is taken in the 2D projection, not in 3D. Two
+     *     objects at different depths whose footprints overlap in x-y become one
+     *     outline. That matches what the projection shows, but it is not a count
+     *     of objects -- grouping across z is the R side's job.
+     *
+     * Nothing is burned into pixels here; savePng() does that.
+     */
+    static int addOutlines(View view, List<Roi> rois, Map opts = [:]) {
+        String mode = (opts.mode ?: "all").toString().toLowerCase()
+        if (!(mode in OUTLINE_MODES)) {
+            throw new IllegalArgumentException("unknown outline mode '${opts.mode}'; use one of ${OUTLINE_MODES.join(', ')}")
+        }
+        Color color = (opts.color instanceof Color) ? (Color) opts.color
+                    : Colors.decode((opts.color ?: "yellow").toString(), null)
+        if (color == null) {
+            throw new IllegalArgumentException("unknown colour '${opts.color}'; use a name such as yellow, or #rrggbb")
+        }
+        double lineWidth = opt(opts, "lineWidth", 1d) as double
+        if (lineWidth <= 0) throw new IllegalArgumentException("lineWidth must be positive, got ${opts.lineWidth}")
+
+        if (mode == "none" || !rois) return 0
+
+        // Merge in the ORIGINAL coordinates, before scaling: the union is then
+        // computed on the detected shapes themselves, not on rounded copies.
+        List<Roi> shapes = (mode == "merged") ? union(rois) : rois
+
+        def overlay = view.image.getOverlay() ?: new Overlay()
+        shapes.each { Roi r ->
+            Roi s = (view.sx == 1d && view.sy == 1d) ? (Roi) r.clone()
+                                                     : RoiScaler.scale(r, view.sx, view.sy, false)
+            // Detection sets each ROI's position to its slice. flatten() draws it
+            // on a one-plane image regardless (checked), but a displayed image
+            // filters overlay ROIs by position, so clear it on the copy.
+            s.setPosition(0)
+            s.setStrokeColor(color)
+            s.setStrokeWidth(lineWidth)
+            s.setFillColor(null)
+            overlay.add(s)
+        }
+        view.image.setOverlay(overlay)
+        return shapes.size()
+    }
+
+    // Union of all ROIs, split back into one Roi per connected piece.
+    private static List<Roi> union(List<Roi> rois) {
+        ShapeRoi u = null
+        rois.each { Roi r ->
+            def s = new ShapeRoi(r)
+            u = (u == null) ? s : u.or(s)
+        }
+        return u.getRois() as List<Roi>
+    }
+
+    /**
+     * Burn the overlay into the pixels and write an RGB PNG.
+     *
+     * This is where the display range set by prepare() takes effect: flatten()
+     * renders the image as it would be displayed. Missing directories are
+     * created.
+     */
+    static File savePng(View view, String path) {
+        def file = new File(path)
+        file.getAbsoluteFile().getParentFile()?.mkdirs()
+        ImagePlus flat = view.image.flatten()
+        try {
+            if (!new FileSaver(flat).saveAsPng(file.getPath())) {
+                throw new IOException("could not write ${file}")
+            }
+        } finally {
+            flat.close()
+        }
+        return file
+    }
+
+    /** The one place the overview file name is decided: <basename>_overview_ch<c>.png */
+    static String overviewPath(String dir, String basename, int channel) {
+        new File(dir, "${basename}_overview_ch${channel}.png").getPath()
     }
 
     /** Original channel numbers of a projection, read from its "ch<c>" labels. */
