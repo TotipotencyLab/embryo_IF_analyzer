@@ -57,6 +57,13 @@ Fiji writes, per feature per image:
 **This is a contract, not an implementation detail.** Two things depend on it and
 break silently if changed:
 
+`_config.txt` records `image_width` and `image_height` in **pixels** alongside
+`pixel_width`/`pixel_height`. The outline tables are in calibrated units, so
+these are what lets the R side reconstruct the image frame — the bounding box of
+the detected objects is not the frame, and a QC panel drawn without them is
+cropped differently from the Fiji overview PNG it is meant to sit beside.
+`montage_qc_cli.r` warns loudly rather than producing a misaligned montage.
+
 - `scripts/R/read_fiji_result.r` identifies the roi column by matching
   `\d{4}-\d{4}-\d{4}$` and joins measurements to outlines through the roi id
   **embedded in the `Label` column**. The measurement numbers can be perfectly
@@ -93,6 +100,23 @@ loop, including how to diff.
   code study and comparison. `PLA.ijm` and `measure_manual_selection.ijm` are
   still the only implementations of those two workflows.
 - `scripts/R/` holds functions `source()`d by analysis scripts, not a package.
+  `plot_features_topView()` / `union_features()` / `flip_y_image()` are the
+  geom_sf-based plotting path; `plot_outline_topView()` is the older
+  geom_polygon one and **cannot draw a union** (it flattens geometry to x/y, so
+  holes and MULTIPOLYGONs come out wrong, silently).
+- **`scripts/R_cli/` is the R command-line path**: `annotate_features_cli.r`
+  (outlines → features, + QC plot), `count_features_cli.r` (features → tidy
+  counts, the oocyte deliverable) and `montage_qc_cli.r` (the 3-panel check).
+  `cli_helpers.r` is shared by all three. Conventions — the testable
+  `<name>_cli(args)` function, the run guard, argparser's traps — are in the
+  `r-cli-convention` skill. The IF quantification CLI is deliberately deferred:
+  the background-measurement question is unsettled.
+
+  R's per-`feature_id` union is **z-aware**, so it keeps objects separate that
+  Fiji's projection union merges. On the fixture: 70 nucleus ROIs → 6 nuclei in
+  R, 5 outlines from Fiji, because one pair overlaps in x-y while sitting 30
+  slices apart. Two further nuclei are visible but fail `min_z_span` and are
+  reported as `invalid_`, not dropped — hence 8 visible, 6 counted.
 
 The macros were forked per experiment because the IJ1 macro language has no import
 mechanism — that is the problem the Groovy split exists to solve. **Do not add a
@@ -155,10 +179,19 @@ The spatial tests need a working `sf`. `helper-setup.R` probes it **in a child
 process**, since a broken `units` aborts R outright rather than raising, which
 would take the whole run down; when it cannot load they skip rather than fail.
 Note which R ran: the count differs. See `CLAUDE.local.md` for this machine.
+Under R 4.6 with the full package set the suite is **148 passed / 0 skipped**.
+
+⚠️ The suite runs **testthat edition 2** (no package `DESCRIPTION` to declare
+edition 3), where `expect_warning()` returns the expression's **value**, not the
+condition — `conditionMessage()` on the result fails. Assert warning text
+through the `regexp` argument.
 
 On the Fiji side, `tests/groovy/` synthesises its images, so those tests need no
 data: `Test_BuildMask` (watershed), `Test_Overview` (projection, contrast,
-resize, outlines, PNG) and `Test_RoiExport` (ROI zip round trip).
+resize, outlines, PNG), `Test_RoiExport` (ROI zip round trip) and
+`Test_RunConfig` (the run config, including that `Run_NucleusSelector.groovy`
+still compiles — it is parsed with its `#@` lines stripped, since those are
+SciJava directives and not Groovy).
 
 ```
 /Applications/Fiji.app/Contents/MacOS/ImageJ-macosx --headless --console \
