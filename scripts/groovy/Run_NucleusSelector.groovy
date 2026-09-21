@@ -142,6 +142,13 @@ if (saveConfig) {
         script                 : "Run_NucleusSelector.groovy " + RX.repoVersion(LIBDIR),
         imagej_version         : IJ.getVersion(),
         image_title            : imp.getTitle(),
+        // NB: width/height in PIXELS. The outline tables are written in calibrated
+        //     units, so without these the R side cannot reconstruct the image
+        //     extent -- the bounding box of the detected objects is not the frame.
+        //     A QC panel drawn from R would then be cropped differently from the
+        //     Fiji overview PNG it is meant to sit beside.
+        image_width            : imp.getWidth(),
+        image_height           : imp.getHeight(),
         image_slices           : imp.getNSlices(),
         image_channels         : imp.getNChannels(),
         pixel_width            : imp.getCalibration().pixelWidth,
