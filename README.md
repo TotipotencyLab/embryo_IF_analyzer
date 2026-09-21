@@ -26,6 +26,8 @@ reference and comparison but are no longer the primary path.
 | `NucleolusDetect.groovy` | per-nucleus, per-slice nucleolus thresholding |
 | `RoiExport.groovy` | outline `.txt`, ROI `.zip`, measurement `.txt` |
 | `RoiDetect.groovy` | mask building (blur, threshold, fill holes, watershed) and particle detection |
+| `Run_Overview.groovy` | quick-look PNG: z-projection with detected outlines drawn on |
+| `Overview.groovy` | projection, contrast, resize, outline drawing, PNG export |
 | `Inspect_ImageFile.groovy` | list the series in a file and their dimensions, without loading pixels |
 | `Inspect_Session.groovy` | report open images, the active image, ROI Manager and measurement settings |
 
@@ -49,6 +51,13 @@ that produced it.
 
 Analysis can be restricted to chosen z-slices (e.g. `1-20,35-40`), which is useful
 for cutting small fixtures out of a full stack.
+
+`Run_NucleusSelector` can also write an **overview PNG** (off by default): the DNA
+channel projected over the same slices detection used, with nuclei and nucleoli
+outlined, for a quick check that detection behaved. `Run_Overview.groovy` does the
+same with every setting exposed, and can take its outlines from saved
+`*_outline_ROIs.zip` files — so overviews can be regenerated later without
+re-running detection.
 
 Touching nuclei can be split with **watershed** (off by default). Turn it on for
 objects that threshold into one blob but are two things — a zygote's two
@@ -88,8 +97,10 @@ Rscript tests/run_tests.R
 Fiji-side checks (no data needed):
 
 ```bash
-/Applications/Fiji.app/Contents/MacOS/ImageJ-macosx --headless --console \
-  --run tests/groovy/Test_BuildMask.groovy
+for t in Test_BuildMask Test_Overview Test_RoiExport; do
+  /Applications/Fiji.app/Contents/MacOS/ImageJ-macosx --headless --console \
+    --run "tests/groovy/$t.groovy"
+done
 ```
 
 The R suite covers the Fiji→R boundary: that the roi id is recovered for every measurement

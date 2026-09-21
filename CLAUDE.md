@@ -81,6 +81,10 @@ loop, including how to diff.
   shared library, split by role (detect / export / orchestrate) rather than by
   experiment. `Inspect_*.groovy` are read-only diagnostics, written to be read as
   well as run — they carry the Groovy/ImageJ API notes.
+- `Overview.groovy` builds the quick-look PNGs (project → prepare → addOutlines →
+  savePng, each usable alone). Its `merged` outline mode unions ROIs **in the 2D
+  projection**, so objects overlapping in x-y share one outline: it is a picture,
+  not a count. On the fixture it draws 5 outlines where R groups 6 nuclei.
 - Mask building lives in `RoiDetect.buildMask()`, not inline in the runner, so a
   new assay configures it rather than copying it. Watershed is an option there
   and is **off by default**: with it off the mask step is exactly what it was
@@ -152,12 +156,13 @@ process**, since a broken `units` aborts R outright rather than raising, which
 would take the whole run down; when it cannot load they skip rather than fail.
 Note which R ran: the count differs. See `CLAUDE.local.md` for this machine.
 
-On the Fiji side, `tests/groovy/Test_BuildMask.groovy` synthesises its images, so
-it needs no data:
+On the Fiji side, `tests/groovy/` synthesises its images, so those tests need no
+data: `Test_BuildMask` (watershed), `Test_Overview` (projection, contrast,
+resize, outlines, PNG) and `Test_RoiExport` (ROI zip round trip).
 
 ```
 /Applications/Fiji.app/Contents/MacOS/ImageJ-macosx --headless --console \
-  --run tests/groovy/Test_BuildMask.groovy
+  --run tests/groovy/Test_Overview.groovy
 ```
 
 Read the FAILED count, never a bare "OK" — every check prints the value it saw.
