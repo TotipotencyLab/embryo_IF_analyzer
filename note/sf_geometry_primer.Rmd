@@ -1,0 +1,380 @@
+---
+title: "Working with `sf` geometry in this repo"
+subtitle: "From per-slice ROIs to one outline per nucleus"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 6, fig.height = 5)
+```
+
+## Why this note exists
+
+`scripts/R/` turns Fiji's per-slice ROI outlines into polygons and groups them
+into cellular features. Everything downstream — counting nuclei, drawing a QC
+overview, measuring anything per feature — depends on understanding what kind of
+object is being passed around. The types look interchangeable and are not.
+
+The concrete task that prompted this: **one nucleus produces ~12 ROIs, one per
+z-slice. The QC plot should draw one outline per nucleus, not twelve.**
+
+> **Which R.** The spatial stack works under **R 4.6** on this machine, not
+> under the rig default 4.4 — see `CLAUDE.local.md`. Pin the version without
+> hardcoding a path:
+>
+> ```
+> rig run -r 4.6 note/sf_geometry_primer.Rmd
+> ```
+>
+> Knitting also needs `ggplot2`, `knitr` and `rmarkdown`, which are currently
+> installed only under 4.4. Until they are in 4.6 too, the non-plotting chunks
+> run but the document will not knit.
+
+```{r libs, message=FALSE}
+library(dplyr); library(tidyr); library(tibble); library(stringr)
+library(sp); library(sf)
+library(ggplot2)
+
+repo <- rprojroot::find_root(rprojroot::has_file("VERSION"))
+for (f in list.files(file.path(repo, "scripts/R"), full.names = TRUE)) source(f)
+```
+
+---
+
+## 1. The three layers of `sf`
+
+`sf` ("simple features") stacks three types. Nearly every confusion comes from
+mistaking one for another.
+
+| Layer | Class | What it is | Analogy |
+|---|---|---|---|
+| `sfg` | `"XY" "POLYGON" "sfg"` | **one** geometry | a single value |
+| `sfc` | `"sfc_POLYGON" "sfc"` | a **column** of geometries, with a CRS | a vector |
+| `sf`  | `"sf" "data.frame"` | a data frame **whose geometry column is registered** | a data frame |
+
+```{r three-layers}
+# sfg -- a single polygon. A polygon is a LIST of rings: the first is the
+# outer boundary, any others are holes. Each ring must close (last == first).
+square <- st_polygon(list(cbind(c(0, 4, 4, 0, 0),
+                                c(0, 0, 4, 4, 0))))
+class(square)
+
+# sfc -- a column of them
+polys <- st_sfc(square, square + c(6, 0))
+class(polys)
+
+# sf -- a data frame that KNOWS which column is the geometry
+tbl <- st_sf(id = c("a", "b"), geometry = polys)
+class(tbl)
+```
+
+Note `square + c(6, 0)`: `sfg` objects support arithmetic, which shifts them.
+
+### The distinction that matters here
+
+A tibble can *hold* an `sfc` column without *being* an `sf` object. It looks
+identical when printed, and the geometry-aware methods do not fire.
+
+```{r sf-vs-tibble}
+plain <- tibble(id = c("a", "b"), geometry = polys)  # a tibble with a geometry column
+real  <- st_as_sf(plain)                            # now registered
+
+inherits(plain, "sf")
+inherits(real,  "sf")
+class(plain$geometry)   # identical in both cases -- this is why it is easy to miss
+```
+
+**This repo's functions return the plain kind.** `polygonize_roi_df()` and
+`define_feature_group()` both build a tibble carrying an `sfc` column; neither
+calls `st_as_sf()`. So a plain `tibble` in, a plain `tibble` out — and you must
+convert before using any `sf` method.
+
+---
+
+## 2. Load the fixture and build the features
+
+```{r load}
+outline_path <- file.path(repo, "fixture/if_data/data/GRV_Position010_nucleus_outline.txt")
+roi_df <- read.table(outline_path, header = TRUE, stringsAsFactors = FALSE) %>%
+  as_tibble() %>%
+  dplyr::select(-name)
+
+glimpse(roi_df)
+```
+
+One row per polygon **vertex**: `roi`, `z`, `x`, `y`. `polygonize_roi_df()`
+collapses the vertices of each ROI into one polygon.
+
+```{r polygonize}
+roi_pg_df <- polygonize_roi_df(roi_df)
+
+nrow(roi_df)        # vertices
+nrow(roi_pg_df)     # ROIs
+class(roi_pg_df)    # <- a tibble, NOT sf
+```
+
+`define_feature_group()` then decides which ROIs across z belong to the same
+object, by testing x-y intersection between ROIs within `max_z_dist` slices of
+each other and taking connected components of that graph.
+
+```{r features}
+feature_df <- define_feature_group(
+  roi_df,
+  roi_regex   = "^nucleus",
+  feature_prefix         = "nucleus_",
+  invalid_feature_prefix = "invalid_",
+  max_z_dist = 3,     # ROIs up to 3 slices apart may be linked
+  min_z_span = 5      # a feature must appear on >= 5 distinct slices
+)
+
+table(str_extract(feature_df$feature_id, "^[a-z]+"))
+```
+
+65 ROIs were assigned to real nuclei; 5 fell into `invalid_` groups that did not
+span enough slices. Still one row per ROI — the grouping is recorded in
+`feature_id`, the geometry is untouched.
+
+---
+
+## 3. The union: one outline per nucleus
+
+This is the answer to the original question, and it is one line.
+
+```{r union}
+nucleus_sf <- feature_df %>%
+  dplyr::filter(str_detect(feature_id, "^nucleus_")) %>%
+  st_as_sf()                                    # <-- REQUIRED, see section 1
+
+nucleus_union <- nucleus_sf %>%
+  group_by(feature_id) %>%
+  summarise(n_roi = n(),
+            z_min = min(z),
+            z_max = max(z),
+            .groups = "drop")
+
+nucleus_union
+```
+
+**`summarise()` on an `sf` object unions the geometries of each group**, because
+`sf`'s method defaults to `do_union = TRUE`. You get the merged outline for free
+alongside whatever per-group statistics you list. 65 ROIs became 6 nuclei.
+
+```{r union-checks}
+table(as.character(st_geometry_type(nucleus_union)))
+all(st_is_valid(nucleus_union))
+round(as.numeric(st_area(nucleus_union)), 1)     # square microns
+```
+
+All six collapse to a single `POLYGON` — the per-slice ROIs of one nucleus
+overlap enough that their union has no gap.
+
+### What the union actually buys us
+
+Fiji's `Overview.groovy` `merged` mode unions ROIs **in the flattened 2D
+projection**, so anything overlapping in x-y becomes one outline regardless of
+z. R groups by `feature_id`, which was built from z-aware overlap. They disagree,
+and it is easy to see why:
+
+```{r overlap-check}
+ov <- st_intersects(nucleus_union, nucleus_union, sparse = FALSE)
+diag(ov) <- FALSE
+sum(ov) / 2                                  # overlapping pairs in x-y
+
+w <- which(ov, arr.ind = TRUE)
+unique(t(apply(w, 1, function(i) sort(nucleus_union$feature_id[i]))))
+```
+
+`nucleus_1` (slices 1–5) and `nucleus_6` (slices 24–35) overlap in x-y but are
+30 slices apart. R keeps them separate; Fiji's projection merges them. **That is
+the whole of the 5-vs-6 discrepancy** — Fiji's overlay is a picture, not a count.
+
+---
+
+## 4. `do_union = FALSE` is a different thing entirely
+
+Reach for it by accident and the result still plots, still has six rows, and is
+wrong.
+
+```{r no-union}
+not_unioned <- nucleus_sf %>%
+  group_by(feature_id) %>%
+  summarise(n_roi = n(), .groups = "drop", do_union = FALSE)
+
+table(as.character(st_geometry_type(not_unioned)))
+```
+
+`MULTIPOLYGON`: all twelve per-slice rings kept side by side in one row, merely
+*collected* rather than merged. Drawn, it is twelve nested outlines, not one.
+
+```{r vertex-counts}
+data.frame(
+  feature  = nucleus_union$feature_id,
+  unioned  = sapply(seq_len(nrow(nucleus_union)), function(i) nrow(st_coordinates(nucleus_union$geometry[i]))),
+  collected = sapply(seq_len(nrow(not_unioned)),  function(i) nrow(st_coordinates(not_unioned$geometry[i])))
+)
+```
+
+---
+
+## 5. Why `plot_outline_topView()` cannot draw this
+
+`plot_outline_topView()` goes through `pg_2_coord_df()`, which flattens geometry
+to plain `x`/`y` columns and hands them to `geom_polygon(aes(group = roi))`.
+That works for the per-slice ROIs it was written for — each is one simple ring.
+
+It breaks on a union, for a structural reason:
+
+```{r coords}
+xy <- st_coordinates(nucleus_union$geometry[1])
+head(xy, 3)
+colnames(xy)
+```
+
+`st_coordinates()` returns **`L1` and `L2` alongside X and Y**: `L1` numbers the
+ring within a polygon (1 = exterior, 2+ = holes) and `L2` numbers the polygon
+within a MULTIPOLYGON. `pg_2_coord_df()` keeps only X and Y, so:
+
+* a **hole** becomes another loop of the same outline, drawn as if it were part
+  of the boundary — the ring and its interior join into one tangled shape;
+* a **MULTIPOLYGON** has all its parts concatenated into a single `group`, so
+  `geom_polygon` connects the last vertex of one part to the first of the next.
+
+Neither errors. Both draw something plausible.
+
+### Use `geom_sf`
+
+`geom_sf` consumes the geometry column directly and understands rings and
+multi-part geometries, so nothing has to be flattened.
+
+```{r plot-union, fig.height=5}
+plot_features_topView(nucleus_sf, nucleus_union, color_by = "feature_id") +
+  labs(title = "One outline per nucleus (z-aware union)")
+```
+
+`plot_features_topView()` is the library function in
+`scripts/R/plot_outline_topView.r`. It also handles the y-axis problem
+described in section 6 — see there for why that is not a one-liner.
+
+Side by side with every per-slice ROI, which is what Fiji's `all` mode shows:
+
+```{r plot-compare, fig.width=10, fig.height=5}
+per_slice <- nucleus_sf %>% mutate(panel = "per-slice ROIs (65)")
+unioned   <- nucleus_union %>% mutate(panel = "unioned features (6)")
+bb <- st_bbox(nucleus_sf); y_ref <- unname(bb["ymin"] + bb["ymax"])
+
+bind_rows(
+  dplyr::select(per_slice, feature_id, panel, geometry),
+  dplyr::select(unioned,   feature_id, panel, geometry)
+) %>%
+  flip_y_image(y_ref = y_ref) %>%
+  ggplot() +
+  geom_sf(aes(colour = feature_id), fill = NA, linewidth = 0.4) +
+  facet_wrap(~ panel) +
+  coord_sf() +
+  scale_y_continuous(breaks = flip_y_breaks(y_ref), labels = flip_y_labels(y_ref)) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+---
+
+## 6. Gotchas worth remembering
+
+**`summarise()` silently does nothing geometric on a non-`sf` tibble.** No
+error; the geometry column is simply dropped from the result. Always
+`st_as_sf()` first.
+
+**`st_as_sf()` needs to know the column.** It finds a lone `sfc` column
+automatically; with more than one, name it: `st_as_sf(df, sf_column_name = "geometry")`.
+
+**`dplyr::select()` on an `sf` object keeps the geometry whether you ask or
+not** — it is "sticky". To actually drop it use `st_drop_geometry()`.
+
+**There is no CRS here, and that is correct.** These are microns in image space,
+not positions on Earth. `st_area()` therefore returns plain numbers in µm², and
+`sf` may warn about assuming planar coordinates — which is exactly what we want.
+Never set a geographic CRS on this data.
+
+**`st_area()` returns a `units` object** when a CRS is set, and a bare numeric
+otherwise. Wrap in `as.numeric()` before comparing to a plain threshold if you
+want the same code to work either way.
+
+**Validity before union.** `st_union()` on a self-intersecting ring can produce
+garbage rather than an error. Fixture outlines are all valid, but traced ROIs
+from noisier data may not be:
+
+```{r validity}
+all(st_is_valid(nucleus_sf))
+# if this is ever FALSE:  nucleus_sf <- st_make_valid(nucleus_sf)
+```
+
+**⚠️ `coord_sf()` silently ignores `scale_y_reverse()`.** This is the nastiest
+one here. Image coordinates put the origin at the top-left with y increasing
+downward; plots do the opposite, so every image plot needs a flip. The obvious
+spelling does not work:
+
+```{r yflip-demo}
+sq <- st_sf(id = "L", geometry = st_sfc(st_polygon(list(
+  cbind(c(0, 10, 10, 6, 6, 0, 0), c(0, 0, 2, 2, 8, 8, 0))))))
+
+pp <- function(p) { r <- ggplot_build(p)$layout$panel_params[[1]]; r$y_range }
+pp(ggplot(sq) + geom_sf() + coord_sf())                      # plain
+pp(ggplot(sq) + geom_sf() + scale_y_reverse() + coord_sf())  # identical
+pp(ggplot(sq) + geom_sf() + coord_sf(ylim = c(8, 0)))        # identical
+```
+
+All three render the same picture. No warning, no error — the QC panel is just a
+vertical mirror of the Fiji PNG, which looks entirely reasonable until you try to
+compare them. (`coord_fixed()` is not an escape either: `geom_sf` requires
+`coord_sf`.)
+
+The only reliable fix is to **flip the geometry** and relabel the axis, which is
+what `flip_y_image()` / `flip_y_breaks()` / `flip_y_labels()` in
+`scripts/R/plot_outline_topView.r` do:
+
+```{r yflip-fix, eval=FALSE}
+y_ref <- unname(st_bbox(x)["ymin"] + st_bbox(x)["ymax"])
+ggplot(flip_y_image(x, y_ref)) + geom_sf() + coord_sf() +
+  scale_y_continuous(breaks = flip_y_breaks(y_ref), labels = flip_y_labels(y_ref))
+```
+
+Pass an explicit `y_ref` (the image height) whenever several panels must share
+one extent — otherwise each panel flips about its own bounding box and they
+stop being comparable.
+
+---
+
+## 7. Cheat sheet
+
+```{r cheatsheet, eval=FALSE}
+st_as_sf(df)                  # tibble-with-geometry  ->  real sf object
+st_sf(id = x, geometry = g)   # build one from scratch
+st_drop_geometry(sf)          # sf -> plain tibble (select() will not do it)
+
+st_geometry_type(sf)          # POLYGON / MULTIPOLYGON / ...
+st_is_valid(sf)               # self-intersections?
+st_make_valid(sf)             # repair them
+
+st_area(sf)                   # per row
+st_centroid(sf)               # per row
+st_bbox(sf)                   # xmin/ymin/xmax/ymax of the whole layer
+
+st_intersects(a, b, sparse = FALSE)   # logical matrix: do they touch?
+st_intersection(a, b)                 # the overlapping geometry itself
+st_union(sfc)                         # merge a whole column into one geometry
+
+group_by(sf, g) %>% summarise(...)    # per-group union + statistics  <- the workhorse
+                                      # do_union = FALSE collects instead of merging
+
+geom_sf(aes(colour = f), fill = NA)   # draws rings and multi-parts correctly
+st_coordinates(g)                     # X, Y, L1 (ring), L2 (part)
+
+# this repo (scripts/R/plot_outline_topView.r)
+union_features(sf)                    # per-slice ROIs -> one outline per feature
+plot_features_topView(roi_sf, union)  # the QC plot, y already in image orientation
+flip_y_image(sf, y_ref)               # coord_sf ignores scale_y_reverse(); flip the data
+```

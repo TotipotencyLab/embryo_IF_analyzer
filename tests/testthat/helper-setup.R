@@ -81,3 +81,23 @@ write_res_table <- function(path, labels, area = 100){
   write.table(df, path, sep = "\t", quote = FALSE, row.names = FALSE)
   path
 }
+
+# CLI helpers ------------------------------------------------------------------
+# The CLIs guard their own entry point with
+#   if (!interactive() && sys.nframe() == 0L) foo_cli()
+# so source()ing one from a test defines the function without running it.
+source_cli <- function(files){
+  for(f in files) source(file.path(repo_root(), "scripts", "R_cli", f))
+}
+
+cli_path <- function(f){
+  file.path(repo_root(), "scripts", "R_cli", f)
+}
+
+skip_if_no_pkg <- function(pkgs){
+  for(p in pkgs){
+    if(!requireNamespace(p, quietly = TRUE)){
+      testthat::skip(paste0("package not installed: ", p))
+    }
+  }
+}

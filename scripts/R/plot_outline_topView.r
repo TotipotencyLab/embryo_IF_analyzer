@@ -20,6 +20,117 @@ colorName_2_hex <- function(color_name_vec, alpha=NULL){
   return(out_hex)
 }
 
+flip_y_image <- function(st_df, y_ref=NULL){
+  # Put an sf object into image orientation (y increasing DOWNWARD).
+  #
+  # NB: neither scale_y_reverse() nor coord_sf(ylim=rev(...)) does this --
+  #     coord_sf silently ignores both, and the plot comes out mirrored while
+  #     looking entirely reasonable. Verified on ggplot2 4.0.3. The only
+  #     reliable way is to flip the geometry itself, which is what this does;
+  #     pair it with flip_y_labels() so the axis still reads true coordinates.
+  #
+  # y_ref = ymin+ymax maps the bounding box onto itself. Pass an explicit
+  # y_ref (e.g. the image height) when several plots must share an extent.
+  if(is.null(y_ref)){
+    bb <- sf::st_bbox(st_df)
+    y_ref <- unname(bb["ymin"] + bb["ymax"])
+  }
+  sf::st_geometry(st_df) <- (sf::st_geometry(st_df) * matrix(c(1, 0, 0, -1), 2, 2)) + c(0, y_ref)
+  attr(st_df, "y_ref") <- y_ref
+  return(st_df)
+}
+
+flip_y_labels <- function(y_ref){
+  # Axis labeller undoing flip_y_image() for display, so the tick labels show
+  # the original image coordinates.
+  function(breaks){ format(y_ref - breaks, trim=TRUE) }
+}
+
+flip_y_breaks <- function(y_ref){
+  # Break positions that land on round numbers in the ORIGINAL coordinates.
+  # Without this the breaks are pretty in flipped space and the labels come out
+  # as 52.178, 62.178, ... -- correct, but unreadable.
+  function(limits){
+    orig <- sort(y_ref - range(limits, na.rm=TRUE))
+    y_ref - pretty(orig)
+  }
+}
+
+plot_features_topView <- function(st_df, union_df=NULL, color_by="feature_type",
+                                  y_ref=NULL, line_width=0.7, background_width=0.2,
+                                  xlim=NULL, ylim=NULL, bare=FALSE){
+  # Top view of annotated features, drawn with geom_sf.
+  #
+  # Use this, not plot_outline_topView(), for anything that has been unioned:
+  # plot_outline_topView() flattens geometry to x/y columns for geom_polygon,
+  # which cannot represent a hole or a MULTIPOLYGON and draws both wrongly
+  # without raising anything.
+  #
+  #   st_df    per-ROI features (drawn faintly underneath); may be NULL
+  #   union_df one row per feature (drawn on top); may be NULL
+  if(is.null(st_df) && is.null(union_df)){
+    stop("Nothing to plot: both st_df and union_df are NULL")
+  }
+
+  if(is.null(y_ref)){
+    bb <- sf::st_bbox(if(is.null(st_df)) union_df else st_df)
+    y_ref <- unname(bb["ymin"] + bb["ymax"])
+  }
+
+  p <- ggplot()
+  if(!is.null(st_df)){
+    p <- p + geom_sf(data=flip_y_image(st_df, y_ref), fill=NA,
+                     colour="grey80", linewidth=background_width)
+  }
+  if(!is.null(union_df)){
+    p <- p + geom_sf(data=flip_y_image(union_df, y_ref),
+                     mapping=aes(colour=.data[[color_by]]), fill=NA, linewidth=line_width)
+  }
+
+  # NB: one coord_sf only. Adding a second later replaces this one and ggplot
+  #     says so on stderr ("Coordinate system already present"), which is easy to
+  #     scroll past -- so take the limits here rather than bolting on another.
+  p <- p + coord_sf(xlim=xlim, ylim=ylim, expand=is.null(xlim) && is.null(ylim))
+
+  if(bare){
+    # Picture mode: the drawn area IS the image frame, so the panel can sit
+    # beside a Fiji PNG of the same extent and line up. Axes and legend would
+    # each steal space and break that.
+    p <- p +
+      theme_void() +
+      theme(legend.position="none",
+            plot.margin=margin(0, 0, 0, 0),
+            panel.background=element_rect(fill="white", colour=NA))
+  }else{
+    p <- p +
+      scale_y_continuous(breaks=flip_y_breaks(y_ref), labels=flip_y_labels(y_ref)) +
+      theme_minimal() +
+      labs(x="x (um)", y="y (um)", colour=NULL)
+  }
+
+  return(p)
+}
+
+union_features <- function(st_df, group_cols=c("feature_id", "feature_type")){
+  # Collapse the per-slice ROIs of each feature into one outline.
+  #
+  # NB: st_as_sf() first. polygonize_roi_df() and define_feature_group() return
+  #     a plain tibble carrying an sfc column, NOT an sf object, and
+  #     summarise() on the unregistered tibble drops the geometry silently
+  #     instead of unioning it -- no error, no geometry.
+  if(!inherits(st_df, "sf")) st_df <- sf::st_as_sf(st_df)
+  group_cols <- base::intersect(group_cols, colnames(st_df))
+  if(length(group_cols) == 0){stop("None of the grouping columns are present")}
+
+  out <- st_df %>%
+    group_by(across(all_of(group_cols))) %>%
+    summarise(n_roi = dplyr::n(),
+              z_min = min(z, na.rm=TRUE),
+              z_max = max(z, na.rm=TRUE),
+              .groups = "drop")
+  return(out)
+}
+
 plot_outline_topView <- function(feature_df, color_by=NULL, color_map=NULL, line_alpha=0.5, line_width=1){
   # Retrieve x,y coordinate ----------------------------------------------------------------------
   feature_coord_df <- pg_2_coord_df(feature_df)

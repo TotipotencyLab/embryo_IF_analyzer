@@ -1,0 +1,4 @@
+prefix	genotype	timepoint	replicate	notes
+GRV_Position010	wt	E3.5	1	example row -- replace with your own
+GRV_Position011	ko	E3.5	1	
+GRV_Position012	wt	E4.5	2	

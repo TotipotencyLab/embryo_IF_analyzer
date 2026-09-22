@@ -32,13 +32,27 @@ sharing a common library, not one program.
    failure showed up is what is worth reading in a year. Note explicitly what
    was *not* verified.
 6. **PR, squash merge**, tag if releasing (bump `VERSION` in the tagged commit).
-7. **Doc-sync — propose, do not write.** At the end of a piece of work, say what
-   the work revealed that the docs get wrong or do not cover: a gotcha worth
-   recording, a stale claim in `CLAUDE.md` or `.claude/skills/`, a note in
-   `note/`, or a new skill worth having. **Raise it as a proposal and stop.**
-   Draft the edit only once it has been agreed. Docs describing the change being
-   shipped (README for a new option, say) travel with that change as usual; this
-   step is for captured *knowledge*, which is not the author's call alone.
+7. **Doc-sync.** Two different things, and they are not handled the same way.
+
+   **a. Format documentation travels with the change — write it, do not
+   propose it.** If the work altered any table this repo reads or writes — a
+   column, a filename pattern, a `_config.txt` field, a sample sheet rule, a
+   `feature_id` prefix — then `note/data_formats.md` is now wrong and must be
+   corrected in the same commit, along with `README.md` and
+   `config/*template*` where they are affected. `note/data_formats.md` is the
+   authoritative description of the shapes; `CLAUDE.md` explains why some are
+   dangerous; `README.md` covers the subset a user needs. A fact belongs in one
+   of them, referenced from the others — duplicating it guarantees drift.
+
+   `tests/testthat/test-data_formats.R` asserts the documented columns against
+   the code, so a format change that skips the doc shows up as a test failure
+   rather than as a surprise months later. Update the test with the doc.
+
+   **b. Captured knowledge — propose and stop.** Anything the work *revealed*
+   rather than changed: a gotcha worth recording, a stale claim in `CLAUDE.md`
+   or `.claude/skills/`, a new note, a new skill worth having. **Raise it as a
+   proposal and stop.** Draft the edit only once it has been agreed; what is
+   worth writing down is not the author's call alone.
 
 Before deleting anything, confirm git actually holds it — `**/tmp/` and
 `**/data/` mean "it is on disk" and "it is in history" are different questions.
@@ -54,8 +68,16 @@ Fiji writes, per feature per image:
 <prefix><image id>_config.txt                   every parameter used for that run
 ```
 
-**This is a contract, not an implementation detail.** Two things depend on it and
-break silently if changed:
+**This is a contract, not an implementation detail.** The field-level
+description lives in `note/data_formats.md`; what follows is why it is
+dangerous. Two things depend on it and break silently if changed:
+
+`_config.txt` records `image_width` and `image_height` in **pixels** alongside
+`pixel_width`/`pixel_height`. The outline tables are in calibrated units, so
+these are what lets the R side reconstruct the image frame — the bounding box of
+the detected objects is not the frame, and a QC panel drawn without them is
+cropped differently from the Fiji overview PNG it is meant to sit beside.
+`montage_qc_cli.r` warns loudly rather than producing a misaligned montage.
 
 - `scripts/R/read_fiji_result.r` identifies the roi column by matching
   `\d{4}-\d{4}-\d{4}$` and joins measurements to outlines through the roi id
@@ -93,6 +115,37 @@ loop, including how to diff.
   code study and comparison. `PLA.ijm` and `measure_manual_selection.ijm` are
   still the only implementations of those two workflows.
 - `scripts/R/` holds functions `source()`d by analysis scripts, not a package.
+  `plot_features_topView()` / `union_features()` / `flip_y_image()` are the
+  geom_sf-based plotting path; `plot_outline_topView()` is the older
+  geom_polygon one and **cannot draw a union** (it flattens geometry to x/y, so
+  holes and MULTIPOLYGONs come out wrong, silently).
+- **`scripts/R_cli/` is the R command-line path**: `annotate_features_cli.r`
+  (outlines → features, containment, + QC plot), `count_features_cli.r`
+  (features → tidy counts, the oocyte deliverable) and `montage_qc_cli.r` (the
+  3-panel check).
+  `cli_helpers.r` is shared by all three. Conventions — the testable
+  `<name>_cli(args)` function, the run guard, argparser's traps — are in the
+  `r-cli-convention` skill. The IF quantification CLI is deliberately deferred:
+  the background-measurement question is unsettled.
+
+  `relate_features.r` places inner features inside outer ones. **The biology is
+  declared, never hardcoded**: `--within 'nucleolus=nucleus'`. Containment is
+  the fraction of the *child* inside the parent, summed slice by slice — not on
+  the flattened 2D union, which would misassign a child when two parents
+  overlap in x-y. When the parent was not detected on a slice the child
+  occupies, the match falls back to the parent's 2D footprint **only inside the
+  parent's own z-range**, and is recorded as `gap_filled` rather than `direct`.
+  A run leaning heavily on that is telling you the *parent* detection needs
+  work. Gap-filling never modifies the parent — relating features must not
+  rewrite them. Orphans are kept with `parent_feature_id = NA` unless
+  `--require_parent`, because an orphaned nucleolus is evidence about nucleus
+  detection and dropping it destroys the evidence.
+
+  R's per-`feature_id` union is **z-aware**, so it keeps objects separate that
+  Fiji's projection union merges. On the fixture: 70 nucleus ROIs → 6 nuclei in
+  R, 5 outlines from Fiji, because one pair overlaps in x-y while sitting 30
+  slices apart. Two further nuclei are visible but fail `min_z_span` and are
+  reported as `invalid_`, not dropped — hence 8 visible, 6 counted.
 
 The macros were forked per experiment because the IJ1 macro language has no import
 mechanism — that is the problem the Groovy split exists to solve. **Do not add a
@@ -155,10 +208,21 @@ The spatial tests need a working `sf`. `helper-setup.R` probes it **in a child
 process**, since a broken `units` aborts R outright rather than raising, which
 would take the whole run down; when it cannot load they skip rather than fail.
 Note which R ran: the count differs. See `CLAUDE.local.md` for this machine.
+Under R 4.6 with the full package set the suite is **247 passed / 0 skipped**.
+`test-data_formats.R` pins the documented column sets against the code, so a
+format change that skips `note/data_formats.md` fails a test.
+
+⚠️ The suite runs **testthat edition 2** (no package `DESCRIPTION` to declare
+edition 3), where `expect_warning()` returns the expression's **value**, not the
+condition — `conditionMessage()` on the result fails. Assert warning text
+through the `regexp` argument.
 
 On the Fiji side, `tests/groovy/` synthesises its images, so those tests need no
 data: `Test_BuildMask` (watershed), `Test_Overview` (projection, contrast,
-resize, outlines, PNG) and `Test_RoiExport` (ROI zip round trip).
+resize, outlines, PNG), `Test_RoiExport` (ROI zip round trip) and
+`Test_RunConfig` (the run config, including that `Run_NucleusSelector.groovy`
+still compiles — it is parsed with its `#@` lines stripped, since those are
+SciJava directives and not Groovy).
 
 ```
 /Applications/Fiji.app/Contents/MacOS/ImageJ-macosx --headless --console \
