@@ -7,6 +7,42 @@ sharing a common library, not one program.
 
 `README.md` is for people *using* the repo. This file is for working *on* it.
 
+## Workflow
+
+1. **Orient.** Check the current state against the repo, not against memory or
+   this file. Both go stale; the code does not.
+2. **Branch.** Never commit to `main`.
+3. **Change** one thing. If a new assay needs behaviour the library lacks, add
+   the option to the library — do not fork a script.
+4. **Verify.** This is the step that earns its keep here, because the
+   characteristic failure in this repo is *silent*: measurements stay correct
+   while a join matches nothing, a filter switches units, or a mask looks
+   plausible and is wrong.
+   - Changing anything that writes the output files ⇒ re-run a reference and
+     **diff**. The ROI counts agreeing is not the check; the files agreeing is.
+   - A new option that should change nothing when off ⇒ prove it changes nothing
+     when off, and *separately* prove it does something when on. Identical
+     output can mean "correctly did nothing" or "silently never ran" — those
+     look the same and must be told apart, if necessary on a case you
+     synthesise (`tests/groovy/Test_BuildMask.groovy`).
+   - Never report a pass that could not have failed. Print the value observed,
+     not the word "OK".
+   - Say which R ran; the suite's counts differ between 4.4 and 4.6.
+5. **Commit** with the reasoning, not the diff. Why it was wrong and how the
+   failure showed up is what is worth reading in a year. Note explicitly what
+   was *not* verified.
+6. **PR, squash merge**, tag if releasing (bump `VERSION` in the tagged commit).
+7. **Doc-sync — propose, do not write.** At the end of a piece of work, say what
+   the work revealed that the docs get wrong or do not cover: a gotcha worth
+   recording, a stale claim in `CLAUDE.md` or `.claude/skills/`, a note in
+   `note/`, or a new skill worth having. **Raise it as a proposal and stop.**
+   Draft the edit only once it has been agreed. Docs describing the change being
+   shipped (README for a new option, say) travel with that change as usual; this
+   step is for captured *knowledge*, which is not the author's call alone.
+
+Before deleting anything, confirm git actually holds it — `**/tmp/` and
+`**/data/` mean "it is on disk" and "it is in history" are different questions.
+
 ## The output contract
 
 Fiji writes, per feature per image:
@@ -43,7 +79,16 @@ loop, including how to diff.
 - **`scripts/groovy/` is the supported Fiji path.** `Run_NucleusSelector.groovy`
   is the main entry point. `NucleolusDetect`, `RoiExport` and `RoiDetect` are the
   shared library, split by role (detect / export / orchestrate) rather than by
-  experiment.
+  experiment. `Inspect_*.groovy` are read-only diagnostics, written to be read as
+  well as run — they carry the Groovy/ImageJ API notes.
+- `Overview.groovy` builds the quick-look PNGs (project → prepare → addOutlines →
+  savePng, each usable alone). Its `merged` outline mode unions ROIs **in the 2D
+  projection**, so objects overlapping in x-y share one outline: it is a picture,
+  not a count. On the fixture it draws 5 outlines where R groups 6 nuclei.
+- Mask building lives in `RoiDetect.buildMask()`, not inline in the runner, so a
+  new assay configures it rather than copying it. Watershed is an option there
+  and is **off by default**: with it off the mask step is exactly what it was
+  before extraction, verified against the fixture.
 - **`scripts/fiji/` is reference only.** The IJ1 macros are kept deliberately, for
   code study and comparison. `PLA.ijm` and `measure_manual_selection.ijm` are
   still the only implementations of those two workflows.
@@ -55,6 +100,12 @@ fourth fork.** A new assay should be a new configuration of the shared library.
 
 ## Standing decisions
 
+- **Watershed forces `Prefs.blackBackground = true`.** It reads that preference
+  to decide which phase is object; left to the operator's setting it erodes the
+  background instead of splitting objects, and produces a plausible-looking mask
+  while doing it. Same reasoning as forcing Set Measurements — and it likewise
+  persists. Holes are filled before splitting, or watershed cuts through an
+  unfilled hole and shatters one object into a ring of fragments.
 - **Nucleolus thresholding:** `Default` and `Relative` work on real embryo DAPI.
   `Otsu` and `Triangle` mask essentially the whole nucleus — once the histogram is
   restricted to a single nucleus it is no longer strongly bimodal.
@@ -104,6 +155,17 @@ The spatial tests need a working `sf`. `helper-setup.R` probes it **in a child
 process**, since a broken `units` aborts R outright rather than raising, which
 would take the whole run down; when it cannot load they skip rather than fail.
 Note which R ran: the count differs. See `CLAUDE.local.md` for this machine.
+
+On the Fiji side, `tests/groovy/` synthesises its images, so those tests need no
+data: `Test_BuildMask` (watershed), `Test_Overview` (projection, contrast,
+resize, outlines, PNG) and `Test_RoiExport` (ROI zip round trip).
+
+```
+/Applications/Fiji.app/Contents/MacOS/ImageJ-macosx --headless --console \
+  --run tests/groovy/Test_Overview.groovy
+```
+
+Read the FAILED count, never a bare "OK" — every check prints the value it saw.
 
 ## Versioning
 

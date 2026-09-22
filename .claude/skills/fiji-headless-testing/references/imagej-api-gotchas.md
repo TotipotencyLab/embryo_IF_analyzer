@@ -30,6 +30,32 @@ Filtering afterwards from `roi.getStatistics().area` (pixels) and
 `roi.getLength()` (calibrated when an image is attached) mixes units and filters
 on a meaningless number.
 
+## "Slice" is two different indices
+
+`getNSlices()` is the **z depth**. `getStackSize()`, `getCurrentSlice()`,
+`setSlice()` and `Roi.getPosition()` all index the **flat c × z × t space**.
+
+Verified on a 4-channel × 50-slice × 1-frame hyperstack:
+
+```
+getNSlices()                    = 50
+getStackSize()                  = 200        // 4 * 50 * 1
+setPosition(c=2, z=7, t=1)
+  -> getCurrentSlice()          = 26         // c + (z-1) * nChannels
+  -> getZ()                     = 7
+```
+
+So a slice number taken from `getCurrentSlice()` or `roi.getPosition()` is **not**
+a z index — except on a single-channel, single-frame image, which is exactly what
+a small test image usually is. The bug hides during development and appears on
+real data.
+
+Read an axis with `getZ()` / `getC()` / `getT()`; move with `setPosition(c, z, t)`.
+
+Symptom when missed: z values correct on a one-channel test image and silently
+scaled by the channel count on a real acquisition — plausible numbers, wrong
+plane, and a downstream z-merge that quietly groups nothing.
+
 ## setSlice() drops the threshold
 
 Pass the processor explicitly instead of relying on the current slice:

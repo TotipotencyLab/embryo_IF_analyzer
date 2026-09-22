@@ -8,6 +8,7 @@
 #@ Double  (label="Nucleus: blur sigma", value=8.0) nucSigma
 #@ String  (label="Nucleus: threshold method", choices={"Huang2","Huang","Default","Otsu","Triangle","IsoData"}) nucMethod
 #@ String  (label="Nucleus: particle size (calibrated units^2)", value="80-Infinity") nucSize
+#@ Boolean (label="Nucleus: split touching nuclei (watershed)", value=false) nucWatershed
 #@ Boolean (label="Detect nucleoli", value=true) doNucleoli
 #@ Double  (label="Nucleolus: blur sigma", value=3.0) nucleolusSigma
 #@ String  (label="Nucleolus: threshold method", choices={"Relative","Default","Otsu","Triangle","Huang","IsoData"}) nucleolusMethod
@@ -20,6 +21,7 @@
 #@ Boolean (label="Save outline coordinates", value=true) saveOutlines
 #@ Boolean (label="Save measurements", value=true) saveMeasurements
 #@ Boolean (label="Save run configuration", value=true) saveConfig
+#@ Boolean (label="Save overview PNG (quick visual check)", value=false) saveOverview
 
 // Run_NucleusSelector.groovy
 //
@@ -57,9 +59,13 @@ def gcl = new GroovyClassLoader(this.class.classLoader)
 def ND = gcl.parseClass(new File(LIBDIR + "/NucleolusDetect.groovy"))
 def RX = gcl.parseClass(new File(LIBDIR + "/RoiExport.groovy"))
 def RD = gcl.parseClass(new File(LIBDIR + "/RoiDetect.groovy"))
+def OV = gcl.parseClass(new File(LIBDIR + "/Overview.groovy"))
 
 // Forced, so output columns do not depend on the operator's Fiji preferences.
 MEASUREMENTS = "area mean standard min centroid shape integrated median stack display"
+// Overview settings, fixed for the pipeline; use Run_Overview.groovy to vary them.
+OVERVIEW_WIDTH = 500
+OVERVIEW_METHOD = "max"
 IJ.run("Set Measurements...", MEASUREMENTS + " redirect=None decimal=3")
 
 def channels   = channelsCsv.split(",").collect { it.trim() as Integer }
@@ -79,10 +85,7 @@ def writeFeature = { String feature, List rois, List names, List sls ->
 }
 
 // --- Nucleus -------------------------------------------------------------
-def dna = new Duplicator().run(imp, dnaCh, dnaCh, 1, imp.getNSlices(), 1, 1)
-IJ.run(dna, "Gaussian Blur...", "sigma=${nucSigma} stack")
-IJ.run(dna, "Auto Threshold", "method=${nucMethod} ignore_black ignore_white white stack use_stack_histogram")
-IJ.run(dna, "Fill Holes", "stack")
+def dna = RD.buildMask(imp, dnaCh, nucSigma, nucMethod, true, nucWatershed)
 def nucRois   = RD.detect(dna, nucSize, "", slices, true, true)
 def nucNames  = RD.autoLabels(nucRois).collect { "nucleus_" + it }
 def nucSlices = nucRois.collect { it.getPosition() }
@@ -106,6 +109,21 @@ if (doNucleoli && !nucRois.isEmpty()) {
     nuclRois.eachWithIndex { r, i -> r.setName(nuclNames[i]) }
     mask.close()
     writeFeature("nucleolus", nuclRois, nuclNames, nuclSlices)
+}
+
+// --- Overview PNG --------------------------------------------------------
+// A quick visual check, not an input to anything: the DNA channel projected over
+// the same slices detection used, with the outlines drawn on. Fixed settings
+// here on purpose -- Run_Overview.groovy is the script for choosing them.
+if (saveOverview) {
+    def proj = OV.project(imp, slices, OVERVIEW_METHOD, [dnaCh])
+    def view = OV.prepare(proj, dnaCh, [width: OVERVIEW_WIDTH, contrast: "auto"])
+    OV.addOutlines(view, nucRois,  [mode: "merged", color: "yellow",  lineWidth: 1])
+    OV.addOutlines(view, nuclRois, [mode: "merged", color: "magenta", lineWidth: 1])
+    def png = OV.savePng(view, OV.overviewPath(outdir.getAbsolutePath(), basename, dnaCh))
+    // NB: "merged" unions the outlines in the PROJECTION, so touching or
+    //     z-overlapping objects share one outline. It is a picture, not a count.
+    IJ.log("  overview: " + png.getName())
 }
 
 // --- ROI Manager, for visual inspection only -----------------------------
@@ -139,6 +157,8 @@ if (saveConfig) {
         nucleus_blur_sigma     : nucSigma,
         nucleus_threshold      : nucMethod,
         nucleus_particle_size  : nucSize,
+        nucleus_watershed      : nucWatershed,
+        overview_saved         : saveOverview,
         nucleus_count          : nucRois.size(),
         nucleoli_enabled       : doNucleoli,
         nucleolus_blur_sigma   : nucleolusSigma,

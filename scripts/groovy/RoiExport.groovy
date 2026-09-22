@@ -6,10 +6,12 @@
 
 import ij.*
 import ij.gui.*
+import ij.io.RoiDecoder
 import ij.io.RoiEncoder
 import ij.measure.ResultsTable
 import ij.plugin.filter.Analyzer
 import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
 class RoiExport {
@@ -45,6 +47,43 @@ class RoiExport {
      * Write ROIs as an ImageJ .zip, the same thing roiManager("Save") produces,
      * but via RoiEncoder directly so no ROI Manager (and so no display) is needed.
      */
+    /**
+     * Read an ImageJ ROI zip back, without the ROI Manager (so it works headless).
+     *
+     * The name each ROI was saved under is restored onto the Roi, since that name
+     * is what ties an ROI to its row in the measurement table.
+     *
+     * @return the ROIs, in the order the zip lists them
+     */
+    static List<Roi> loadRoiZip(String path) {
+        def file = new File(path)
+        if (!file.isFile()) throw new IllegalArgumentException("no such ROI zip: ${file}")
+        def rois = []
+        def zis = new ZipInputStream(new BufferedInputStream(new FileInputStream(file)))
+        try {
+            def entry
+            while ((entry = zis.getNextEntry()) != null) {
+                if (!entry.getName().toLowerCase().endsWith(".roi")) continue
+                // NB: read the entry with an explicit loop. Groovy's `stream.bytes`
+                //     closes the stream it reads, which would end the zip after the
+                //     first entry, and InputStream.readAllBytes() needs Java 9 --
+                //     Fiji may still be on 8.
+                def buf = new ByteArrayOutputStream()
+                byte[] chunk = new byte[8192]
+                int n
+                while ((n = zis.read(chunk)) > 0) buf.write(chunk, 0, n)
+                def roi = RoiDecoder.openFromByteArray(buf.toByteArray())
+                if (roi != null) {
+                    roi.setName(entry.getName().replaceFirst(/(?i)\.roi$/, ""))
+                    rois << roi
+                }
+            }
+        } finally {
+            zis.close()
+        }
+        return rois
+    }
+
     static void saveRoiZip(List<Roi> rois, List<String> names, String path) {
         def zos = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(path)))
         def dos = new DataOutputStream(new BufferedOutputStream(zos))
