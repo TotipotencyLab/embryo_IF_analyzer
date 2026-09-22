@@ -295,7 +295,7 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 # --- private helpers ----------------------------------------------------------
 
 .read_outline <- function(path) {
-  df <- utils::read.table(path, header = TRUE, stringsAsFactors = FALSE)
+  df <- utils::read.table(path, header = TRUE, stringsAsFactors = FALSE, sep="\t")
   needed <- c("roi", "z", "x", "y")
   absent <- setdiff(needed, colnames(df))
   if (length(absent)) {
