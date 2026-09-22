@@ -48,7 +48,7 @@ suppressPackageStartupMessages({
 })()
 
 .montage_source_helpers <- function() {
-  if (exists(".cli_multi", mode = "function")) return(invisible(NULL))
+  if (exists(".cli_resolve_arg", mode = "function")) return(invisible(NULL))
   if (is.na(.THIS_DIR)) stop("cannot locate cli_helpers.r", call. = FALSE)
   sys.source(file.path(.THIS_DIR, "cli_helpers.r"), envir = globalenv())
 }
@@ -97,7 +97,7 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   feats <- readRDS(argv$features)
   if (!inherits(feats, "sf")) feats <- sf::st_as_sf(feats)
 
-  keep_features <- .cli_multi(argv$feature, "--feature")
+  keep_features <- .cli_resolve_arg(argv$feature, "--feature")
   if (length(keep_features)) {
     feats <- feats[feats$feature_type %in% keep_features, , drop = FALSE]
     if (!nrow(feats)) stop("No rows left after --feature filtering", call. = FALSE)
@@ -151,14 +151,14 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   message("Wrote ", argv$output, " (", info$width, "x", info$height, ", ",
           length(panels), " panels)")
 
-  invisible(argv$output)
+  return(invisible(argv$output))
 }
 
 # --- private helpers ----------------------------------------------------------
 
 .read_panel <- function(path, what) {
   if (!file.exists(path)) stop("No such file for ", what, ": ", path, call. = FALSE)
-  magick::image_read(path)
+  return(magick::image_read(path))
 }
 
 .find_config <- function(features_path, sample_name) {
@@ -169,7 +169,10 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     file.path(dirname(features_path), "..", paste0(sample_name, "_config.txt"))
   )
   hit <- cands[file.exists(cands)]
-  if (length(hit)) normalizePath(hit[1]) else NA_character_
+  if (length(hit)) 
+    return(normalizePath(hit[1]) )
+  else 
+    return(NA_character_)
 }
 
 .image_extent <- function(cfg_path) {
@@ -201,7 +204,7 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     return(NULL)
   }
   if (is.na(pw) || is.na(ph)) { pw <- 1; ph <- 1 }
-  list(xmax = w * pw, ymax = h * ph)
+  return(list(xmax = w * pw, ymax = h * ph))
 }
 
 .r_panel <- function(feats, unioned, extent, sample_name, path, panel_height) {
@@ -226,7 +229,7 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   h_in <- max(3, panel_height / 100)
   ggplot2::ggsave(path, p, width = h_in * max(0.6, aspect), height = h_in, dpi = 150)
-  invisible(path)
+  return(invisible(path))
 }
 
 if (!interactive() && sys.nframe() == 0L) montage_qc_cli()

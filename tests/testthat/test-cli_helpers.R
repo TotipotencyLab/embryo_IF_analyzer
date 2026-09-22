@@ -6,31 +6,31 @@
 
 source_cli("cli_helpers.r")
 
-# --- .cli_multi ---------------------------------------------------------------
+# --- .cli_resolve_arg ---------------------------------------------------------------
 
-test_that(".cli_multi normalises every 'nothing given' shape to character(0)", {
-  expect_identical(.cli_multi(NA), character(0))          # flag absent
-  expect_identical(.cli_multi(character(0)), character(0)) # --flag ''
-  expect_identical(.cli_multi(NULL), character(0))
-  expect_identical(.cli_multi(c(NA, NA)), character(0))
-  expect_identical(.cli_multi(""), character(0))
-  expect_identical(.cli_multi("   "), character(0))
+test_that(".cli_resolve_arg normalises every 'nothing given' shape to character(0)", {
+  expect_identical(.cli_resolve_arg(NA), character(0))          # flag absent
+  expect_identical(.cli_resolve_arg(character(0)), character(0)) # --flag ''
+  expect_identical(.cli_resolve_arg(NULL), character(0))
+  expect_identical(.cli_resolve_arg(c(NA, NA)), character(0))
+  expect_identical(.cli_resolve_arg(""), character(0))
+  expect_identical(.cli_resolve_arg("   "), character(0))
 })
 
-test_that(".cli_multi keeps real values and trims them", {
-  expect_identical(.cli_multi(c("a", "b")), c("a", "b"))
-  expect_identical(.cli_multi(c(" a ", "b")), c("a", "b"))
-  expect_identical(.cli_multi(c("a", NA, "b")), c("a", "b"))
+test_that(".cli_resolve_arg keeps real values and trims them", {
+  expect_identical(.cli_resolve_arg(c("a", "b")), c("a", "b"))
+  expect_identical(.cli_resolve_arg(c(" a ", "b")), c("a", "b"))
+  expect_identical(.cli_resolve_arg(c("a", NA, "b")), c("a", "b"))
   # A value containing a space stays one element -- that is the whole reason
   # the convention is space-separated arguments rather than comma-joined ones.
-  expect_identical(.cli_multi("cell type"), "cell type")
+  expect_identical(.cli_resolve_arg("cell type"), "cell type")
 })
 
-test_that(".cli_multi refuses a value that is really a flag", {
+test_that(".cli_resolve_arg refuses a value that is really a flag", {
   # This happens when a preceding argument rendered empty and swallowed the
   # next flag. Accepting it silently turns a malformed command into a run.
-  expect_error(.cli_multi(c("a", "--outdir")), "look like flags")
-  expect_error(.cli_multi("--qc_plot", "--feature"), "--feature")
+  expect_error(.cli_resolve_arg(c("a", "--outdir")), "look like flags")
+  expect_error(.cli_resolve_arg("--qc_plot", "--feature"), "--feature")
 })
 
 # --- .cli_key_values ----------------------------------------------------------
@@ -73,7 +73,7 @@ test_that(".cli_param_for accepts zero", {
   expect_identical(.cli_param_for(c(default = "0"), "nucleus", 5), 0)
 })
 
-# --- .cli_resolve_input -------------------------------------------------------
+# --- .cli_resolve_input_path -------------------------------------------------------
 
 make_input_tree <- function(){
   d <- withr::local_tempdir(.local_envir = parent.frame())
@@ -84,40 +84,40 @@ make_input_tree <- function(){
   d
 }
 
-test_that(".cli_resolve_input scans a directory by the output contract", {
+test_that(".cli_resolve_input_path scans a directory by the output contract", {
   d <- make_input_tree()
-  got <- .cli_resolve_input(d, "_(nucleus|nucleolus)_outline\\.txt$")
+  got <- .cli_resolve_input_path(d, "_(nucleus|nucleolus)_outline\\.txt$")
   expect_length(got, 3)
   expect_false(any(grepl("notes.md", got)))
 })
 
-test_that(".cli_resolve_input expands a quoted glob", {
+test_that(".cli_resolve_input_path expands a quoted glob", {
   d <- make_input_tree()
-  got <- .cli_resolve_input(file.path(d, "*_nucleus_outline.txt"),
+  got <- .cli_resolve_input_path(file.path(d, "*_nucleus_outline.txt"),
                             "_(nucleus|nucleolus)_outline\\.txt$")
   expect_length(got, 2)
 })
 
-test_that(".cli_resolve_input accepts explicit files and de-duplicates", {
+test_that(".cli_resolve_input_path accepts explicit files and de-duplicates", {
   d <- make_input_tree()
   f <- file.path(d, "S1_nucleus_outline.txt")
-  got <- .cli_resolve_input(c(f, f), "_outline\\.txt$")
+  got <- .cli_resolve_input_path(c(f, f), "_outline\\.txt$")
   expect_length(got, 1)
 })
 
-test_that(".cli_resolve_input fails loudly rather than resolving to nothing", {
+test_that(".cli_resolve_input_path fails loudly rather than resolving to nothing", {
   # The characteristic failure in this repo is the silent no-op: a run that
   # produces nothing and says it succeeded.
   d <- withr::local_tempdir()
-  expect_error(.cli_resolve_input(file.path(d, "absent.txt"), "_outline\\.txt$"),
+  expect_error(.cli_resolve_input_path(file.path(d, "absent.txt"), "_outline\\.txt$"),
                "No such file")
   expect_error(suppressWarnings(
-    .cli_resolve_input(file.path(d, "*_nucleus_outline.txt"), "_outline\\.txt$")),
+    .cli_resolve_input_path(file.path(d, "*_nucleus_outline.txt"), "_outline\\.txt$")),
     "No input files resolved")
-  expect_error(.cli_resolve_input(NA, "x"), "No value given")
+  expect_error(.cli_resolve_input_path(NA, "x"), "No value given")
 })
 
-test_that(".cli_resolve_input warns when a glob matches nothing", {
+test_that(".cli_resolve_input_path warns when a glob matches nothing", {
   d <- make_input_tree()
   # NB: under testthat edition 2 -- which is what this repo runs, having no
   #     package DESCRIPTION to declare edition 3 -- expect_warning() returns the
@@ -125,20 +125,20 @@ test_that(".cli_resolve_input warns when a glob matches nothing", {
   #     regexp argument; conditionMessage() on the result fails with
   #     "no applicable method".
   expect_warning(
-    .cli_resolve_input(c(file.path(d, "S1_nucleus_outline.txt"),
+    .cli_resolve_input_path(c(file.path(d, "S1_nucleus_outline.txt"),
                          file.path(d, "*_cell_outline.txt")),
                        "_outline\\.txt$"),
     "_cell_outline")
   got <- suppressWarnings(
-    .cli_resolve_input(c(file.path(d, "S1_nucleus_outline.txt"),
+    .cli_resolve_input_path(c(file.path(d, "S1_nucleus_outline.txt"),
                          file.path(d, "*_cell_outline.txt")),
                        "_outline\\.txt$"))
   expect_length(got, 1)   # the one real file still comes back
 })
 
-test_that(".cli_resolve_input explains a comma-split path", {
+test_that(".cli_resolve_input_path explains a comma-split path", {
   d <- withr::local_tempdir()
-  expect_error(.cli_resolve_input("S1,rep2_nucleus_outline.txt", "_outline\\.txt$"),
+  expect_error(.cli_resolve_input_path("S1,rep2_nucleus_outline.txt", "_outline\\.txt$"),
                "comma in a path")
 })
 

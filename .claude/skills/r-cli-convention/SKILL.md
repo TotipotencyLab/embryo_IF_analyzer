@@ -9,6 +9,13 @@ Adapted from the `r-cli-convention` skill in the lab's RNA-seq pipeline repo. Th
 argparser behaviour below was **re-measured on argparser 0.7.3 under R 4.6** in
 this repo, not inherited.
 
+## House style
+
+Explicit `return()` on every exit, braces on single-line `if` bodies, named
+arguments at call sites, and roxygen2 blocks on the helpers even though this is
+not a package. Defaults live in one `dflt_args` list rather than inline at each
+`.cli_param_for()` call.
+
 ## Layout
 
 - CLIs live at **`scripts/R_cli/<name>_cli.r`**, flat.
@@ -115,7 +122,7 @@ absent  : class logical   len 1   all(is.na()) TRUE
 unset   : NA
 ```
 
-Normalise them in one shared helper, `.cli_multi()`, which also **refuses a
+Normalise them in one shared helper, `.cli_resolve_arg()`, which also **refuses a
 value beginning with `--`** — that means the preceding flag was rendered empty
 and swallowed the next one.
 
@@ -201,6 +208,15 @@ another file's constant captures it before it exists. Make it a function instead
 inert, but it means sourcing pulls in their library expectations — `dplyr`,
 `sf`, `stringr` must already be attached.
 
+## Declared relationships, not hardcoded biology
+
+Where one feature contains another, the caller declares it as `child=parent`
+tokens (`--within 'nucleolus=nucleus'`) reusing `.cli_key_values()`. Nothing in
+the code knows that a nucleolus belongs in a nucleus. Validate the spec as a
+forest — no self-reference, no cycles, no child with two parents — and validate
+it **once against the whole table**, not per sample: a sample legitimately
+missing a feature type is a warning about the data, not a broken spec.
+
 ## Repo-specific rules
 
 - **`sf` needs R 4.6 here**; 4.4's CRAN binary of `units` aborts the process.
@@ -212,6 +228,11 @@ inert, but it means sourcing pulls in their library expectations — `dplyr`,
   instead of unioning it.
 - **Never write a comma into an output column** that another CLI reads back as
   a multi-value argument.
+- **A relaxation must be recorded, not just applied.** Containment matching
+  falls back to a parent's 2D footprint when the parent was not detected on a
+  slice; the result carries `parent_match = "gap_filled"` so the amount of the
+  answer resting on that fallback is visible. The same reasoning as printing
+  the effective per-feature parameters rather than leaving defaults implicit.
 
 ## Testing
 

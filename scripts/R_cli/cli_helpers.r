@@ -8,13 +8,18 @@
 # alongside scripts/R/ cannot shadow a library function.
 
 # --- multi-value arguments ----------------------------------------------------
-
-.cli_multi <- function(v, what = "argument") {
-  # Normalise the three shapes argparser uses for "nothing given" into
-  # character(0). Measured on argparser 0.7.3:
-  #   flag absent  -> NA        (length-1 LOGICAL)
-  #   --flag ''    -> character(0)
-  #   --flag a b   -> c("a", "b")
+#' Normalise a multi-value argument
+#'
+#' argparser has three different shapes for "nothing given", and they are
+#' genuinely different objects. Measured on argparser 0.7.3:
+#'   flag absent  -> NA            (length-1 LOGICAL)
+#'   --flag ''    -> character(0)
+#'   --flag a b   -> c("a", "b")
+#'
+#' @param v    the raw value from parse_args()
+#' @param what flag name, for the error message only
+#' @return character vector, empty when nothing was given
+.cli_resolve_arg <- function(v, what = "argument") {
   if (is.null(v)) return(character(0))
   if (length(v) == 0L) return(character(0))
   if (all(is.na(v))) return(character(0))
@@ -32,30 +37,40 @@
          paste(bad, collapse = ", "),
          "\n  (a preceding argument was probably rendered empty)", call. = FALSE)
   }
-  v
+  return(v)
 }
 
+#' Stop unless every required argument was supplied
+#'
+#' argparser has no required=. all(), not any(): a multi-value argument holds
+#' 2+ elements and is.na() on those returns a vector, which `if` refuses in
+#' R >= 4.2.
+#'
+#' @param argv     parsed argument list
+#' @param required character vector of long names, without the leading --
 .cli_require <- function(argv, required) {
-  # argparser has no required=. all(), not any(): a multi-value argument holds
-  # 2+ elements and is.na() on those returns a vector, which `if` refuses in
-  # R >= 4.2.
   missing <- required[vapply(required, function(a) all(is.na(argv[[a]])), logical(1))]
   if (length(missing)) {
     stop("Missing required argument(s): ", paste0("--", missing, collapse = ", "),
          call. = FALSE)
   }
-  invisible(NULL)
+  return(invisible(NULL))
 }
 
+#' Parse 'key=value' tokens into a named character vector
+#'
+#'   c("default=3", "nucleolus=1")  ->  c(default = "3", nucleolus = "1")
+#'   c("3")                         ->  c(default = "3")
+#'
+#' NB: "=" and not ",", because argparser splits nargs=Inf values on commas
+#'     even when the shell delivered them as one element.
+#'
+#' @param tokens      raw argument value
+#' @param what        flag name, for error messages only
+#' @param default_key key a bare token is filed under
+#' @return named character vector
 .cli_key_values <- function(tokens, what = "argument", default_key = "default") {
-  # Parse 'key=value' tokens into a named character vector:
-  #   c("default=3", "nucleolus=1")  ->  c(default = "3", nucleolus = "1")
-  # A bare token is taken as the default:
-  #   c("3")                         ->  c(default = "3")
-  #
-  # NB: "=" and not ",", because argparser splits nargs=Inf values on commas
-  #     even when the shell delivered them as one element.
-  tokens <- .cli_multi(tokens, what)
+  tokens <- .cli_resolve_arg(tokens, what)
   if (!length(tokens)) return(character(0))
 
   has_eq <- grepl("=", tokens, fixed = TRUE)
@@ -71,35 +86,47 @@
     stop("Duplicate key(s) in ", what, ": ",
          paste(unique(keys[duplicated(keys)]), collapse = ", "), call. = FALSE)
   }
-  stats::setNames(vals, keys)
+  return(stats::setNames(vals, keys))
 }
 
-.cli_param_for <- function(kv, feature, dflt, what = "parameter") {
-  # Look a per-feature parameter up: the feature's own value, else "default",
-  # else the built-in default. Returns a length-1 numeric.
-  if (!length(kv)) return(dflt)
-  v <- if (feature %in% names(kv)) kv[[feature]]
-       else if ("default" %in% names(kv)) kv[["default"]]
-       else return(dflt)
+#' Extract setting per feature
+#' Look a per-feature parameter up: the feature's own value, else "default",
+#' else the built-in default. Returns a length-1 numeric.
+#' @param lookup  key-value setting
+#' @param feature value within the parameter lookup
+#' @param default the default value when feature is not part of the lookup
+#' @param what    typically a flag name, for reporting when value is in the wrong format only
+.cli_param_for <- function(lookup, feature, default, what = "parameter") {
+  if (!length(lookup)) return(default)
+  v <- if (feature %in% names(lookup)) lookup[[feature]]
+       else if ("default" %in% names(lookup)) lookup[["default"]]
+       else return(default)
   n <- suppressWarnings(as.numeric(v))
   if (is.na(n)) {
     stop("Value for ", what, " (", feature, ") is not a number: ", v, call. = FALSE)
   }
-  n
+  return(n)
 }
 
 # --- input resolution ---------------------------------------------------------
 
-.cli_resolve_input <- function(input, pattern, what = "--input") {
-  # Turn --input elements into an existing, de-duplicated, sorted file list.
-  # Each element is one of:
-  #   a directory  -> scanned with `pattern`
-  #   a glob       -> Sys.glob() (covers the quoted case; an unquoted glob has
-  #                   already been expanded by the shell into many elements)
-  #   a plain path -> must exist
-  #
-  # `pattern` is the output-contract regex, e.g. "_(nucleus|nucleolus)_outline\\.txt$".
-  input <- .cli_multi(input, what)
+#' Turn --input elements into an existing, de-duplicated, sorted file list
+#'
+#' Each element is one of:
+#'   a directory  -> scanned with `pattern`
+#'   a glob       -> Sys.glob() (covers the quoted case; an unquoted glob has
+#'                   already been expanded by the shell into many elements)
+#'   a plain path -> must exist
+#'
+#' Resolving to nothing is an error. The characteristic failure in this repo is
+#' the silent no-op, and an empty glob looks exactly like a clean run.
+#'
+#' @param input   raw --input value
+#' @param pattern regex the basenames must match, e.g. "_nucleus_outline\\.txt$"
+#' @param what    flag name, for error messages only
+#' @return character vector of absolute paths
+.cli_resolve_input_path <- function(input, pattern, what = "--input") {
+  input <- .cli_resolve_arg(input, what)
   if (!length(input)) stop("No value given for ", what, call. = FALSE)
 
   out <- character(0)
@@ -134,12 +161,18 @@
     stop("No input files resolved from ", what, ". ",
          "Nothing would have been produced.", call. = FALSE)
   }
-  out
+  return(out)
 }
 
+#' Split <prefix><image id>_<feature>_outline.txt into sample and feature
+#'
+#' Drops nothing silently: files that do not name a requested feature are
+#' warned about, and none matching at all is an error.
+#'
+#' @param paths    resolved input paths
+#' @param features feature names to recognise
+#' @return data.frame(path, sample, feature)
 .cli_parse_contract <- function(paths, features) {
-  # Split <prefix><image id>_<feature>_outline.txt into sample and feature.
-  # Returns a data.frame(path, sample, feature) and drops nothing silently.
   rx <- paste0("^(.*)_(", paste(features, collapse = "|"), ")_outline\\.txt$")
   base <- basename(paths)
   ok <- grepl(rx, base)
@@ -154,11 +187,13 @@
     stop("None of the ", length(paths), " input file(s) name a requested feature (",
          paste(features, collapse = ", "), ")", call. = FALSE)
   }
-  data.frame(
-    path    = paths[ok],
-    sample  = sub(rx, "\\1", base[ok]),
-    feature = sub(rx, "\\2", base[ok]),
-    stringsAsFactors = FALSE
+  return(
+    data.frame(
+      path    = paths[ok],
+      sample  = sub(rx, "\\1", base[ok]),
+      feature = sub(rx, "\\2", base[ok]),
+      stringsAsFactors = FALSE
+    )
   )
 }
 
@@ -178,10 +213,11 @@
     utils::read.delim(path, stringsAsFactors = FALSE, check.names = FALSE)
   }
   if (!nrow(df)) stop(what, " is empty: ", path, call. = FALSE)
-  df
+  return(df)
 }
 
 .cli_read_sample_sheet <- function(path, id_column = "prefix") {
+  # Read sample sheet specific to this repo
   sheet <- .cli_read_table(path, "sample sheet")
   if (!id_column %in% colnames(sheet)) {
     stop("Sample sheet has no '", id_column, "' column. Found: ",
@@ -193,7 +229,7 @@
          paste(unique(sheet[[id_column]][duplicated(sheet[[id_column]])]),
                collapse = ", "), call. = FALSE)
   }
-  sheet
+  return(sheet)
 }
 
 .cli_apply_sample_sheet <- function(contract_df, sheet, id_column = "prefix") {
@@ -201,25 +237,26 @@
   # supplies paths -- that is --input's job.
   wanted <- sheet[[id_column]]
   keep <- contract_df$sample %in% wanted
-
+  
+  # The "sample" column is hardcoded here as the contract_df is a pipeline-internal sheet.
   unmatched_sheet <- setdiff(wanted, contract_df$sample)
   if (length(unmatched_sheet)) {
     warning(length(unmatched_sheet), " sample sheet row(s) matched no input file: ",
             paste(utils::head(unmatched_sheet, 5), collapse = ", "),
-            if (length(unmatched_sheet) > 5) ", ..." else "", call. = FALSE)
+            if (length(unmatched_sheet) > 5) {", ..."} else {""}, call. = FALSE)
   }
   dropped <- unique(contract_df$sample[!keep])
   if (length(dropped)) {
     message("  sample sheet excluded ", length(dropped), " sample(s) found on disk: ",
             paste(utils::head(dropped, 5), collapse = ", "),
-            if (length(dropped) > 5) ", ..." else "")
+            if (length(dropped) > 5) {", ..."} else {""})
   }
   if (!any(keep)) {
     stop("The sample sheet and --input have no sample in common. ",
          "On disk: ", paste(utils::head(unique(contract_df$sample), 3), collapse = ", "),
          "; in sheet: ", paste(utils::head(wanted, 3), collapse = ", "), call. = FALSE)
   }
-  contract_df[keep, , drop = FALSE]
+  return(contract_df[keep, , drop = FALSE])
 }
 
 # --- sourcing scripts/R/ ------------------------------------------------------
@@ -228,7 +265,7 @@
   cmd_args <- commandArgs(trailingOnly = FALSE)
   file_arg <- grep("^--file=", cmd_args, value = TRUE)
   if (!length(file_arg)) return(NA_character_)
-  dirname(normalizePath(sub("^--file=", "", file_arg[1]), mustWork = FALSE))
+  return(dirname(normalizePath(sub("^--file=", "", file_arg[1]), mustWork = FALSE)))
 }
 
 .source_rlib <- function(dir = NA, script_dir = NA) {
@@ -251,7 +288,7 @@
   for (f in sort(list.files(dir, pattern = "[.][Rr]$", full.names = TRUE))) {
     sys.source(f, envir = globalenv())
   }
-  invisible(NULL)
+  return(invisible(NULL))
 }
 
 .cli_need <- function(pkgs) {
@@ -263,5 +300,5 @@
          "\n  install.packages(c(", paste0('"', absent, '"', collapse = ", "), "))",
          call. = FALSE)
   }
-  invisible(NULL)
+  return(invisible(NULL))
 }

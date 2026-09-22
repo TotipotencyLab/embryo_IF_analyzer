@@ -41,7 +41,7 @@ suppressPackageStartupMessages({
 })()
 
 .count_source_helpers <- function() {
-  if (exists(".cli_multi", mode = "function")) return(invisible(NULL))
+  if (exists(".cli_resolve_arg", mode = "function")) return(invisible(NULL))
   if (is.na(.THIS_DIR)) stop("cannot locate cli_helpers.r", call. = FALSE)
   sys.source(file.path(.THIS_DIR, "cli_helpers.r"), envir = globalenv())
 }
@@ -83,7 +83,7 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     library(dplyr); library(tibble); library(stringr); library(sf)
   })
 
-  files <- .cli_resolve_input(argv$input, "_features\\.rds$")
+  files <- .cli_resolve_input_path(argv$input, "_features\\.rds$")
   samples_on_disk <- sub("_features\\.rds$", "", basename(files))
 
   sheet <- NULL
@@ -97,8 +97,8 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     samples_on_disk <- jobs$sample
   }
 
-  keep_features <- .cli_multi(argv$feature, "--feature")
-  group_by_cols <- .cli_multi(argv$group_by, "--group_by")
+  keep_features <- .cli_resolve_arg(argv$feature, "--feature")
+  group_by_cols <- .cli_resolve_arg(argv$group_by, "--group_by")
 
   outdir <- argv$outdir
   dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
@@ -196,7 +196,7 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     message("Wrote ", png_path)
   }
 
-  invisible(tidy)
+  return(invisible(tidy))
 }
 
 # --- private helpers ----------------------------------------------------------
@@ -208,7 +208,7 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   out[is.na(feature_id)] <- "failed"
   out[!is.na(feature_id) & startsWith(feature_id, "invalid_")] <- "invalid"
   out[!is.na(feature_id) & startsWith(feature_id, "failed_")]  <- "failed"
-  out
+  return(out)
 }
 
 .count_plot <- function(tidy, group_by_cols, path) {
@@ -239,7 +239,7 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   n_x <- length(unique(tidy[[x_col]]))
   ggplot2::ggsave(path, p, width = max(4, min(12, 1 + n_x * 0.5)), height = 4, dpi = 150)
-  invisible(path)
+  return(invisible(path))
 }
 
 if (!interactive() && sys.nframe() == 0L) count_features_cli()

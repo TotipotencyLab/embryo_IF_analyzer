@@ -105,12 +105,26 @@ loop, including how to diff.
   geom_polygon one and **cannot draw a union** (it flattens geometry to x/y, so
   holes and MULTIPOLYGONs come out wrong, silently).
 - **`scripts/R_cli/` is the R command-line path**: `annotate_features_cli.r`
-  (outlines → features, + QC plot), `count_features_cli.r` (features → tidy
-  counts, the oocyte deliverable) and `montage_qc_cli.r` (the 3-panel check).
+  (outlines → features, containment, + QC plot), `count_features_cli.r`
+  (features → tidy counts, the oocyte deliverable) and `montage_qc_cli.r` (the
+  3-panel check).
   `cli_helpers.r` is shared by all three. Conventions — the testable
   `<name>_cli(args)` function, the run guard, argparser's traps — are in the
   `r-cli-convention` skill. The IF quantification CLI is deliberately deferred:
   the background-measurement question is unsettled.
+
+  `relate_features.r` places inner features inside outer ones. **The biology is
+  declared, never hardcoded**: `--within 'nucleolus=nucleus'`. Containment is
+  the fraction of the *child* inside the parent, summed slice by slice — not on
+  the flattened 2D union, which would misassign a child when two parents
+  overlap in x-y. When the parent was not detected on a slice the child
+  occupies, the match falls back to the parent's 2D footprint **only inside the
+  parent's own z-range**, and is recorded as `gap_filled` rather than `direct`.
+  A run leaning heavily on that is telling you the *parent* detection needs
+  work. Gap-filling never modifies the parent — relating features must not
+  rewrite them. Orphans are kept with `parent_feature_id = NA` unless
+  `--require_parent`, because an orphaned nucleolus is evidence about nucleus
+  detection and dropping it destroys the evidence.
 
   R's per-`feature_id` union is **z-aware**, so it keeps objects separate that
   Fiji's projection union merges. On the fixture: 70 nucleus ROIs → 6 nuclei in
@@ -179,7 +193,7 @@ The spatial tests need a working `sf`. `helper-setup.R` probes it **in a child
 process**, since a broken `units` aborts R outright rather than raising, which
 would take the whole run down; when it cannot load they skip rather than fail.
 Note which R ran: the count differs. See `CLAUDE.local.md` for this machine.
-Under R 4.6 with the full package set the suite is **148 passed / 0 skipped**.
+Under R 4.6 with the full package set the suite is **196 passed / 0 skipped**.
 
 ⚠️ The suite runs **testthat edition 2** (no package `DESCRIPTION` to declare
 edition 3), where `expect_warning()` returns the expression's **value**, not the
