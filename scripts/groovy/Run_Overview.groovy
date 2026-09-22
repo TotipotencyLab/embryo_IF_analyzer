@@ -15,6 +15,7 @@
 #@ String  (label="  colour", value="magenta") roiColor2
 #@ String  (label="Outline mode", choices={"merged","all","none"}) roiMode
 #@ Double  (label="Line width (output px)", value=1.0) lineWidth
+#@ String  (label="Output file suffix ((auto) = blank when no outlines, _overlay when there are)", value="(auto)") outSuffix
 
 // Run_Overview.groovy
 //
@@ -27,7 +28,9 @@
 //                    for a whole folder later, without re-running detection.
 //   ROI Manager      whatever is currently loaded (interactive only).
 //
-// Output: <prefix><image id>_overview_ch<c>.png in the output directory.
+// Output: <prefix><image id>_overview_ch<c><suffix>.png in the output directory.
+// The suffix defaults to "" for a bare projection and "_overlay" once outlines
+// are drawn, so regenerating one never overwrites the other.
 
 import ij.*
 import ij.plugin.frame.RoiManager
@@ -83,6 +86,19 @@ if (roiSource == "ROI zip file(s)") {
     layers << [rm.getRoisAsArray() as List, roiColor]
 }
 
+// --- output name ------------------------------------------------------------
+// The raw projection and the outlined one are different pictures, and they used
+// to be written to the same name -- so producing either destroyed the other,
+// and montage_qc_cli.r wants both at once.
+//
+// "(auto)" derives the suffix from whether outlines will actually be drawn,
+// rather than defaulting to blank. A blank default would just relocate the
+// collision to a convention the operator has to remember: regenerating an
+// overlay would still overwrite the raw PNG beside it.
+def willDraw = !layers.isEmpty() && roiMode != "none"
+def suffix = (outSuffix?.trim() ?: "(auto)") == "(auto)" ? (willDraw ? OV.OVERLAY_SUFFIX : "")
+                                                         : outSuffix.trim()
+
 IJ.log("=== " + basename + " (overview) ===")
 IJ.log("  projecting " + slices.size() + " of " + imp.getNSlices() + " slices, " + method)
 
@@ -94,8 +110,12 @@ channels.each { int c ->
     layers.each { rois, colour ->
         drawn += OV.addOutlines(view, rois, [mode: roiMode, color: colour, lineWidth: lineWidth])
     }
-    def file = OV.savePng(view, OV.overviewPath(outDirPath, basename, c))
+    def file = OV.savePng(view, OV.overviewPath(outDirPath, basename, c, suffix))
+    // Display range included because "auto" stretches whatever is present: a
+    // channel holding only noise saves a convincing picture of nothing, and a
+    // narrow range is the only warning.
     IJ.log("  ch" + c + ": " + view.image.getWidth() + "x" + view.image.getHeight() +
+           ", display " + IJ.d2s(view.lo, 1) + "-" + IJ.d2s(view.hi, 1) +
            ", " + drawn + " outline(s) -> " + file.getName())
 }
 

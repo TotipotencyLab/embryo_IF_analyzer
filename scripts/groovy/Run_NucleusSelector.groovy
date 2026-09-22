@@ -69,6 +69,11 @@ OVERVIEW_METHOD = "max"
 IJ.run("Set Measurements...", MEASUREMENTS + " redirect=None decimal=3")
 
 def channels   = channelsCsv.split(",").collect { it.trim() as Integer }
+// Overviews cover the DNA channel detection used, plus every channel being
+// measured. The outlines were found on DNA, so drawing them over the other
+// channels is exactly how you check a signal against the compartment it is
+// supposed to be in.
+def ovChannels = ([dnaCh] + channels).unique().sort()
 def slices     = RD.parseSlices(zSpec, imp.getNSlices())
 def outDirPath = outdir.getAbsolutePath() + File.separator
 def basename   = outPrefix + RX.resolveImageId(imp, positionPattern)
@@ -111,19 +116,34 @@ if (doNucleoli && !nucRois.isEmpty()) {
     writeFeature("nucleolus", nuclRois, nuclNames, nuclSlices)
 }
 
-// --- Overview PNG --------------------------------------------------------
-// A quick visual check, not an input to anything: the DNA channel projected over
-// the same slices detection used, with the outlines drawn on. Fixed settings
-// here on purpose -- Run_Overview.groovy is the script for choosing them.
+// --- Overview PNGs -------------------------------------------------------
+// A quick visual check, not an input to anything: the chosen channels projected
+// over the same slices detection used. Fixed settings here on purpose --
+// Run_Overview.groovy is the script for choosing them.
+//
+// TWO files per channel, raw and outlined. They used to share one name, which
+// made them mutually exclusive: writing either destroyed the other, and
+// montage_qc_cli.r wants both side by side. One prepare() serves both saves --
+// savePng() flattens into a NEW image and leaves the view untouched, so the raw
+// copy can go out before the outlines are added.
 if (saveOverview) {
-    def proj = OV.project(imp, slices, OVERVIEW_METHOD, [dnaCh])
-    def view = OV.prepare(proj, dnaCh, [width: OVERVIEW_WIDTH, contrast: "auto"])
-    OV.addOutlines(view, nucRois,  [mode: "merged", color: "yellow",  lineWidth: 1])
-    OV.addOutlines(view, nuclRois, [mode: "merged", color: "magenta", lineWidth: 1])
-    def png = OV.savePng(view, OV.overviewPath(outdir.getAbsolutePath(), basename, dnaCh))
-    // NB: "merged" unions the outlines in the PROJECTION, so touching or
-    //     z-overlapping objects share one outline. It is a picture, not a count.
-    IJ.log("  overview: " + png.getName())
+    def proj = OV.project(imp, slices, OVERVIEW_METHOD, ovChannels)
+    ovChannels.each { int c ->
+        def view = OV.prepare(proj, c, [width: OVERVIEW_WIDTH, contrast: "auto"])
+        def raw  = OV.savePng(view, OV.overviewPath(outDirPath, basename, c, ""))
+        // NB: "merged" unions the outlines in the PROJECTION, so touching or
+        //     z-overlapping objects share one outline. It is a picture, not a count.
+        OV.addOutlines(view, nucRois,  [mode: "merged", color: "yellow",  lineWidth: 1])
+        OV.addOutlines(view, nuclRois, [mode: "merged", color: "magenta", lineWidth: 1])
+        def ovl  = OV.savePng(view, OV.overviewPath(outDirPath, basename, c, OV.OVERLAY_SUFFIX))
+        // The display range, because "auto" contrast stretches whatever is there:
+        // a channel carrying only noise has that noise stretched to full range
+        // and saves a convincing picture of nothing. A narrow range beside a wide
+        // one on another channel is the tell -- but only if it is written down.
+        IJ.log("  overview ch" + c + ": display " + IJ.d2s(view.lo, 1) + "-" + IJ.d2s(view.hi, 1) +
+               " -> " + raw.getName() + ", " + ovl.getName())
+    }
+    proj.close()
 }
 
 // --- ROI Manager, for visual inspection only -----------------------------
@@ -166,6 +186,10 @@ if (saveConfig) {
         nucleus_particle_size  : nucSize,
         nucleus_watershed      : nucWatershed,
         overview_saved         : saveOverview,
+        // Which overview files exist, so a results folder can be read later
+        // without guessing. Blank when none were written.
+        overview_channels      : (saveOverview ? ovChannels.join(",") : ""),
+        overview_overlay_suffix: (saveOverview ? OV.OVERLAY_SUFFIX : ""),
         nucleus_count          : nucRois.size(),
         nucleoli_enabled       : doNucleoli,
         nucleolus_blur_sigma   : nucleolusSigma,

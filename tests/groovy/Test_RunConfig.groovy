@@ -84,16 +84,36 @@ check("records image_width",                   src.contains("image_width"), true
 check("records image_height",                  src.contains("image_height"), true)
 check("reads them from the ImagePlus",         src.contains("imp.getWidth()") && src.contains("imp.getHeight()"), true)
 
-// Parse with the SciJava `#@` lines stripped -- they are directives to Fiji,
-// not Groovy, and would be a syntax error here.
-def stripped = src.readLines().findAll { !(it.trim().startsWith("#@")) }.join("\n")
-String parseError = null
-try {
-    new GroovyClassLoader().parseClass(stripped, "Run_NucleusSelector_stripped.groovy")
-} catch (Throwable t) {
-    parseError = t.getClass().getSimpleName() + ": " + t.getMessage()
+// The overview pair. The raw projection and the outlined one used to share one
+// file name, which made them mutually exclusive; montage_qc_cli.r needs both.
+check("records overview_channels",             src.contains("overview_channels"), true)
+// The suffix string itself lives in Overview.groovy, so the two runners cannot
+// drift apart -- a literal here would be a second source of truth.
+check("takes the suffix from the library",     src.contains("OV.OVERLAY_SUFFIX"), true)
+check("...and does not hardcode it",           src.contains('"_overlay"'), false)
+check("saves raw BEFORE adding outlines",
+      src.indexOf('overviewPath(outDirPath, basename, c, "")') < src.indexOf("addOutlines"), true)
+check("saves the overlaid copy too",
+      src.contains("overviewPath(outDirPath, basename, c, OV.OVERLAY_SUFFIX)"), true)
+check("overviews cover the measured channels", src.contains("([dnaCh] + channels).unique()"), true)
+check("logs the display range",                src.contains("view.lo") && src.contains("view.hi"), true)
+
+// Parse every runner with the SciJava `#@` lines stripped -- they are directives
+// to Fiji, not Groovy, and would be a syntax error here. This is the closest
+// cheap check to "Fiji would compile this", and it is the only coverage the
+// Run_*.groovy scripts have.
+println ""
+println "=== every Run_*.groovy still compiles ==="
+new File(LIBDIR).listFiles().findAll { it.getName().startsWith("Run_") }.sort().each { f ->
+    def body = f.getText("UTF-8").readLines().findAll { !(it.trim().startsWith("#@")) }.join("\n")
+    String err = null
+    try {
+        new GroovyClassLoader().parseClass(body, f.getName().replace(".groovy", "_stripped.groovy"))
+    } catch (Throwable t) {
+        err = t.getClass().getSimpleName() + ": " + t.getMessage()
+    }
+    check(f.getName(), err, null)
 }
-check("the runner still compiles",             parseError, null)
 
 tmp.deleteDir()
 

@@ -50,8 +50,8 @@ R reads those, merges per-slice ROIs into 3D objects, and does the analysis.
    # eyeball it: raw projection | Fiji outline | R union
    scripts/R_cli/montage_qc_cli.r \
        --features results/GRV_Position010_features.rds \
-       --projection GRV_Position010_overview_ch1.png \
-       --overlay GRV_Position010_merged_ch1.png \
+       --projection results/GRV_Position010_overview_ch1.png \
+       --overlay results/GRV_Position010_overview_ch1_overlay.png \
        --output results/GRV_Position010_montage.png
    ```
 
@@ -106,12 +106,28 @@ that produced it.
 Analysis can be restricted to chosen z-slices (e.g. `1-20,35-40`), which is useful
 for cutting small fixtures out of a full stack.
 
-`Run_NucleusSelector` can also write an **overview PNG** (off by default): the DNA
-channel projected over the same slices detection used, with nuclei and nucleoli
-outlined, for a quick check that detection behaved. `Run_Overview.groovy` does the
-same with every setting exposed, and can take its outlines from saved
-`*_outline_ROIs.zip` files — so overviews can be regenerated later without
-re-running detection.
+`Run_NucleusSelector` can also write **overview PNGs** (off by default), for a
+quick check that detection behaved. Two per channel — the bare z-projection and
+the same projection with nuclei and nucleoli outlined:
+
+```
+GRV_Position010_overview_ch1.png           raw
+GRV_Position010_overview_ch1_overlay.png   with outlines
+```
+
+They are written for the DNA channel plus every channel being measured, since
+the outlines come from DNA and drawing them over the other channels is how you
+check a signal against the compartment it should be in. Both are wanted at once
+by `montage_qc_cli.r`, which is why they are separate files.
+
+The log records the display range used per channel (`display 2.0-207.0`).
+Contrast is automatic, so a channel holding only noise has that noise stretched
+to full brightness and saves a convincing picture of nothing — a narrow range is
+the warning.
+
+`Run_Overview.groovy` does the same with every setting exposed, and can take its
+outlines from saved `*_outline_ROIs.zip` files — so overviews can be regenerated
+later without re-running detection.
 
 Touching nuclei can be split with **watershed** (off by default). Turn it on for
 objects that threshold into one blob but are two things — a zygote's two

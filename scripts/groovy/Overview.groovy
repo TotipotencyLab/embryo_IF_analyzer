@@ -47,6 +47,13 @@ class Overview {
      * addOutlines() needs them: ROIs are in the original pixel coordinates and
      * have to be scaled by the same amount to land in the right place.
      *
+     * `lo` / `hi` are the display range prepare() settled on. They are reported
+     * rather than merely applied because "auto" contrast stretches whatever is
+     * present: a channel holding nothing but noise gets that noise stretched to
+     * full range and saves a convincing picture of nothing. A narrow lo-hi next
+     * to a wide one on another channel is the tell, and it is only visible if
+     * somebody writes the numbers down.
+     *
      * Groovy writes the getters, setters and a named-argument constructor for
      * these fields, so `new View(image: imp, sx: 0.5, sy: 0.5, channel: 1)`
      * works without any constructor being declared.
@@ -56,14 +63,24 @@ class Overview {
         double sx
         double sy
         int channel
+        double lo
+        double hi
 
         String toString() {
-            "View(ch${channel}, ${image.getWidth()}x${image.getHeight()}, scale ${sx}x${sy})"
+            "View(ch${channel}, ${image.getWidth()}x${image.getHeight()}, scale ${sx}x${sy}, display ${lo}-${hi})"
         }
     }
 
     static final List<String> CONTRAST = ["auto", "none"]
     static final List<String> OUTLINE_MODES = ["all", "merged", "none"]
+
+    /**
+     * File-name suffix for the copy with outlines drawn on it; the bare
+     * projection takes "". Lives here so the two runners cannot drift apart --
+     * montage_qc_cli.r is handed these names by hand, so a mismatch would only
+     * show up as a missing file much later.
+     */
+    static final String OVERLAY_SUFFIX = "_overlay"
 
     // Accepted projection names -> the strings ZProjector.run() understands.
     static final Map<String, String> METHODS = [
@@ -247,7 +264,7 @@ class Overview {
         cal.pixelHeight = cal.pixelHeight / sy
         img.setCalibration(cal)
 
-        return new View(image: img, sx: sx, sy: sy, channel: channel)
+        return new View(image: img, sx: sx, sy: sy, channel: channel, lo: lo, hi: hi)
     }
 
     // An option's value, or `dflt` when it was not given.
@@ -363,9 +380,27 @@ class Overview {
         return file
     }
 
-    /** The one place the overview file name is decided: <basename>_overview_ch<c>.png */
-    static String overviewPath(String dir, String basename, int channel) {
-        new File(dir, "${basename}_overview_ch${channel}.png").getPath()
+    /**
+     * The one place the overview file name is decided:
+     * <basename>_overview_ch<c><suffix>.png
+     *
+     * The suffix exists because the raw projection and the same projection with
+     * outlines drawn on it are two different pictures that used to be written to
+     * one name, so producing either destroyed the other. The montage builder
+     * wants both at once.
+     *
+     * It goes AFTER the channel so that an empty suffix reproduces the original
+     * name exactly, and so `_overview_ch<c>` stays a stable stem.
+     *
+     * Deciding WHICH suffix is the caller's job, not this function's -- the
+     * runners know whether they drew anything. Anything that is not a letter,
+     * digit, dot, dash or underscore is replaced, so a suffix typed into a
+     * dialog cannot turn into a path separator and scatter files into
+     * directories.
+     */
+    static String overviewPath(String dir, String basename, int channel, String suffix = "") {
+        String s = (suffix ?: "").trim().replaceAll(/[^A-Za-z0-9._-]/, "_")
+        new File(dir, "${basename}_overview_ch${channel}${s}.png").getPath()
     }
 
     /** Original channel numbers of a projection, read from its "ch<c>" labels. */

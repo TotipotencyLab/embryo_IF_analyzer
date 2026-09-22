@@ -358,6 +358,80 @@ OV.savePng(halfView(), deep.getPath())
 check("missing directories are created",       deep.isFile(), true)
 check("overview file name",
       OV.overviewPath("/data/out", "GRV_Position010", 1), "/data/out/GRV_Position010_overview_ch1.png")
+check("no suffix == the 3-arg name",
+      OV.overviewPath("/data/out", "GRV_Position010", 1, ""),
+      OV.overviewPath("/data/out", "GRV_Position010", 1))
+check("suffix goes after the channel",
+      OV.overviewPath("/data/out", "GRV_Position010", 1, "_overlay"),
+      "/data/out/GRV_Position010_overview_ch1_overlay.png")
+// Both runners read this constant rather than writing the string themselves.
+check("the overlay suffix is published",       OV.OVERLAY_SUFFIX, "_overlay")
+check("a null suffix is the empty one",
+      OV.overviewPath("/data/out", "S", 2, null), "/data/out/S_overview_ch2.png")
+// A suffix typed into a dialog must not be able to become a path.
+check("a path separator in the suffix is neutered",
+      OV.overviewPath("/data/out", "S", 1, "_a/b"), "/data/out/S_overview_ch1_a_b.png")
+
+
+// --- raw and overlaid are two files, from ONE prepare() --------------------------
+// They used to share a name, so writing either destroyed the other. The saving
+// order matters: savePng() must flatten into a NEW image and leave the view
+// alone, or the raw copy would come out with the outlines already burned in.
+//
+// Both halves are checked. "The two files differ" alone would also pass if the
+// raw one were corrupt, so the raw is asserted to be plain grey everywhere and
+// the overlay to carry the outline colour at a known pixel.
+def pairView = halfView()
+def rawPath = new File(tmp, "pair_overview_ch1.png")
+def ovlPath = new File(tmp, "pair_overview_ch1_overlay.png")
+OV.savePng(pairView, rawPath.getPath())
+OV.addOutlines(pairView, [rect(60, 20, 40, 40)], [color: "yellow"])
+OV.savePng(pairView, ovlPath.getPath())
+
+check("both files exist",                      [rawPath.isFile(), ovlPath.isFile()], [true, true])
+def rawPng = IJ.openImage(rawPath.getPath())
+def ovlPng = IJ.openImage(ovlPath.getPath())
+check("raw has NO outline at (30,20)",         rgb(rawPng, 30, 20), GREY)
+check("overlay HAS the outline at (30,20)",    rgb(ovlPng, 30, 20), YELLOW)
+// Somewhere outside the outline the two must agree, or the raw is not the same picture.
+check("away from the outline they agree",      rgb(rawPng, 5, 5), rgb(ovlPng, 5, 5))
+rawPng.close(); ovlPng.close()
+
+
+// --- the view reports the display range it used ----------------------------------
+// prepare() applies the range; it must also hand it back, because "auto"
+// stretches noise as happily as signal and the runners log these numbers as the
+// only warning that a channel is empty.
+def noneView = OV.prepare(asProj(ramp8(), 1), 1, [contrast: "none"])
+check("View.lo/hi match 'none' full range",    [noneView.lo, noneView.hi], [0.0d, 255.0d])
+def autoView = OV.prepare(asProj(ramp8(), 1), 1)
+check("View.lo/hi match the processor",        [autoView.lo, autoView.hi], range(autoView))
+check("...and 'auto' narrowed it",             autoView.hi < 255.0d, true)
+
+// The case the logging exists for: a channel carrying nothing but a narrow band
+// of noise. 'auto' stretches that band to full brightness and saves a confident
+// picture of nothing -- the reported range is the only thing that says so.
+def noise = { int lo, int hi ->
+    def ip = new ByteProcessor(64, 64)
+    def rnd = new Random(7)
+    for (int i = 0; i < 64 * 64; i++) ip.set(i, lo + rnd.nextInt(hi - lo + 1))
+    ip
+}
+def noiseView = OV.prepare(asProj(noise(10, 19), 1), 1)
+println "         (noise channel reports ${noiseView.lo}-${noiseView.hi})"
+check("a noise channel reports a narrow range", noiseView.hi - noiseView.lo <= 20.0d, true)
+def signalView = OV.prepare(asProj(noise(10, 240), 1), 1)
+println "         (signal channel reports ${signalView.lo}-${signalView.hi})"
+check("...and a channel with signal does not", signalView.hi - signalView.lo >= 100.0d, true)
+
+// LIMITATION, pinned so it stays known: on a PERFECTLY flat channel the
+// histogram is degenerate and ImageJ's stretch falls back to the type's full
+// range. So a channel that is exactly constant -- a dead detector rather than a
+// noisy one -- reports 0-255 and looks like signal in the log. Real data is
+// never this clean, but the tell does not fire here.
+def flat40 = { -> def ip = new ByteProcessor(20, 20); ip.setValue(40); ip.fill(); ip }
+def flatView = OV.prepare(asProj(flat40(), 1), 1)
+check("a PERFECTLY flat channel reports 0-255", [flatView.lo, flatView.hi], [0.0d, 255.0d])
 
 
 // --- greyscale -----------------------------------------------------------------
