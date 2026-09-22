@@ -222,6 +222,22 @@ class Overview {
             // 500 px just picks every 8th pixel and small objects flicker in and out.
             out = ip.resize(w, h, true)
         }
+        // Force greyscale. A Bio-Formats import carries a per-channel colour LUT
+        // (green, red, blue...), savePng() calls flatten(), and flatten renders
+        // the image THROUGH its LUT -- so the quick-look PNG came out tinted by
+        // whatever colour the acquisition happened to assign that channel.
+        // Nothing was choosing colour; it was inherited. Overlay outlines are
+        // unaffected: flatten draws them on top of the rendered image.
+        //
+        // NB: getDefaultColorModel() is an INSTANCE method, not static --
+        //     ImageProcessor.getDefaultColorModel() compiles and then throws
+        //     MissingMethodException at run time.
+        //
+        // NB: BEFORE setMinAndMax, not after. setColorModel() resets the
+        //     display range, so setting it afterwards silently discarded the
+        //     contrast stretch and 'auto' saved raw brightness.
+        out.setColorModel(out.getDefaultColorModel())
+
         out.setMinAndMax(lo, hi)
 
         double sx = w / (double) W, sy = h / (double) H

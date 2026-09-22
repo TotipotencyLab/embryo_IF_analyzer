@@ -156,18 +156,80 @@ class RoiExport {
     }
 
     /** Identifier for output filenames: a token from the slice label, else the title. */
+    /**
+     * ImageJ prefixes a hyperstack slice label with the plane's coordinates:
+     *
+     *   "c:1/3 - Image002"
+     *   "c:1/4 z:1/50 - Lightning 001/Mark_and_Find 001/Position010"
+     *
+     * Those slashes are NOT path separators, and splitting the raw label on "/"
+     * therefore hands back fragments like "56 - Series001". Strip the prefix
+     * before doing anything else.
+     */
+    static String stripSliceCoords(String label) {
+        return (label ?: "").replaceFirst(/^(?:[a-zA-Z]:\d+\/\d+\s*)+-\s*/, "")
+    }
+
+    /**
+     * Bio-Formats titles a series "<file>.lif - <series name>". Keep the series
+     * name. Anchored on a real image extension followed by " - ", so a title
+     * that merely contains a dash is left alone.
+     */
+    static String stripFileTitle(String title) {
+        return (title ?: "").replaceFirst(/(?i)^.*\.(?:tif|tiff|lif|lifext|czi|nd2)\s+-\s+/, "")
+    }
+
+    /**
+     * Resolve the image id used for every output filename and for the `name`
+     * column of the outline table.
+     *
+     * The raw strings are logged before anything is extracted from them: when
+     * this picks the wrong thing, the label is the only way to see why.
+     */
     static String resolveImageId(ImagePlus imp, String pattern) {
-        String label = imp.getStack().getSliceLabel(imp.getCurrentSlice()) ?: ""
-        if (pattern && label) {
-            def hit = label.split("/").find { it.contains(pattern) }
-            if (hit) return sanitize(hit)
+        String rawLabel = imp.getStack().getSliceLabel(imp.getCurrentSlice()) ?: ""
+        String rawTitle = imp.getTitle() ?: ""
+        String label = stripSliceCoords(rawLabel)
+
+        String id = null
+        String from = null
+        if (pattern) {
+            // Search the slice label first, then the title: a single-plane
+            // series can carry the series name in the title only.
+            for (def cand : [[label, "slice label"], [stripFileTitle(rawTitle), "title"]]) {
+                if (!cand[0]) continue
+                def hit = cand[0].split("/").find { it.contains(pattern) }
+                if (hit) {
+                    // Keep from the pattern onwards, so "56 - Series001" gives
+                    // "Series001" while "Mark_and_Find 001" is kept whole.
+                    id = hit.substring(hit.indexOf(pattern))
+                    from = cand[1]
+                    break
+                }
+            }
         }
-        return sanitize(imp.getTitle())
+        if (id == null) {
+            id = stripFileTitle(rawTitle)
+            from = pattern ? "title (pattern not found)" : "title"
+        }
+
+        String out = sanitize(id)
+        IJ.log("  image id: '" + out + "'  [from " + from + "]")
+        IJ.log("      title      >>>" + rawTitle + "<<<")
+        IJ.log("      sliceLabel >>>" + rawLabel + "<<<")
+        return out
     }
 
     static String sanitize(String s) {
+        // NB: whitespace collapses to "_". The result becomes both a filename
+        //     and the `name` column of every outline row -- and that table is
+        //     tab-separated, so a value containing a space makes read.table()
+        //     see more fields than the header unless the reader names the
+        //     separator. A Leica series called "Image005 Denoised" produced
+        //     exactly that.
         return (s ?: "").replaceAll(/(?i)\.(tif|tiff|lif|lifext|czi|nd2)$/, "")
                         .replaceAll(/[\/\\:\*\?"<>\|]/, "_")
                         .trim()
+                        .replaceAll(/\s+/, "_")
     }
 }

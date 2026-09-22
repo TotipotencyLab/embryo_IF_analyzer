@@ -168,3 +168,40 @@ test_that("count writes the documented columns", {
                    c("genotype", "feature_type", "n_sample", "mean_detected",
                      "sd_detected", "total_detected"))
 })
+
+# --- whitespace in the image id ------------------------------------------------
+
+test_that(".read_outline survives a name column containing spaces", {
+  skip_if_no_pkg("argparser")
+  source_cli("annotate_features_cli.r")
+
+  # The `name` column holds the image id, and a Leica series called
+  # "Image005 Denoised" put a space in every row. read.table() defaults to
+  # splitting on ANY whitespace, so the row became six fields against a
+  # five-column header: R silently took the first as row names and every
+  # column shifted. Explicit sep = "\t" is what stops that.
+  d <- withr::local_tempdir()
+  p <- file.path(d, "S1_nucleus_outline.txt")
+  writeLines(c(
+    "name\troi\tz\tx\ty",
+    "Image005 Denoised\tnucleus_0001-0001-0433\t1\t1.5\t2.5",
+    "Image005 Denoised\tnucleus_0001-0001-0433\t1\t3.5\t4.5",
+    "Image005 Denoised\tnucleus_0001-0001-0433\t1\t5.5\t0.5"), p)
+
+  got <- .read_outline(p)
+  expect_identical(colnames(got), c("roi", "z", "x", "y"))
+  expect_identical(nrow(got), 3L)
+  expect_identical(unique(got$roi), "nucleus_0001-0001-0433")
+  expect_equal(got$x, c(1.5, 3.5, 5.5))
+  expect_equal(got$z, c(1L, 1L, 1L))
+})
+
+test_that("Groovy no longer emits an image id containing whitespace", {
+  # sanitize() collapses whitespace, so the case above should not arise from
+  # our own writer any more. Belt and braces: the reader is explicit anyway.
+  gv <- file.path(repo_root(), "scripts", "groovy", "RoiExport.groovy")
+  skip_if(!file.exists(gv), "RoiExport.groovy not present")
+  src <- paste(readLines(gv), collapse = "\n")
+  expect_match(src, "replaceAll\\(/\\\\s\\+/, \"_\"\\)",
+               info = "sanitize() must collapse whitespace to underscore")
+})

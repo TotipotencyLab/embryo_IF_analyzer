@@ -89,6 +89,61 @@ if (real.isFile()) {
     println "  skip   fixture zip not present (${real})"
 }
 
+
+// --- image id resolution -------------------------------------------------------
+// The strings below are the real ones, read off a Leica .lif and the embryo
+// fixture. ImageJ prefixes a hyperstack slice label with the plane coordinates
+// ("c:1/3 z:12/56 - Series001"), and those slashes are NOT path separators --
+// splitting the raw label on "/" handed back "56 - Series001".
+
+println ""
+println "=== resolveImageId ==="
+
+def mkImp = { String title, String label ->
+    def st = new ij.ImageStack(4, 4)
+    st.addSlice(label, new ij.process.ByteProcessor(4, 4))
+    return new ImagePlus(title, st)
+}
+
+def idCheck = { String what, String title, String label, String pattern, String want ->
+    def got = RX.resolveImageId(mkImp(title, label), pattern)
+    boolean ok = (got == want)
+    println String.format("  %-6s %-34s got=%s want=%s", ok ? "ok" : "FAILED", what, got, want)
+    ok ? passed++ : failed++
+}
+
+idCheck("lif z-stack: the reported bug",
+        "f.lif - Series001", "c:1/3 z:12/56 - Series001", "Series", "Series001")
+idCheck("lif single plane, via the title",
+        "260909_IHC.lif - Image002", "c:1/3 - Image002", "Series", "Image002")
+idCheck("embryo fixture is unchanged",
+        "x.lif-Position010-1.tif",
+        "c:1/4 z:1/50 - Lightning 001/Mark_and_Find 001/Position010", "Position", "Position010")
+idCheck("a series name containing a space",
+        "f.lif - Image005 Denoised", "c:1/3 - Image005 Denoised", "Image", "Image005_Denoised")
+idCheck("no pattern falls back to the title",
+        "f.lif - Series004", "c:1/3 - Series004", "", "Series004")
+idCheck("pattern later in a path-like label",
+        "f.tif", "c:1/2 z:3/9 - A 001/B 002/Position077", "Position", "Position077")
+
+check("stripSliceCoords leaves a bare label alone", RX.stripSliceCoords("Position010"), "Position010")
+check("stripSliceCoords on an empty label",         RX.stripSliceCoords(""), "")
+check("stripFileTitle keeps a plain title",         RX.stripFileTitle("Position010"), "Position010")
+// A dash that is not the Bio-Formats separator must survive.
+check("stripFileTitle ignores an ordinary dash",    RX.stripFileTitle("a-b-c.tif"), "a-b-c.tif")
+
+println ""
+println "=== sanitize ==="
+// The image id becomes a filename AND the `name` column of every outline row.
+// That table is tab separated, so a value containing a space makes R's
+// read.table() see more fields than the header unless it names the separator.
+check("whitespace collapses to underscore", RX.sanitize("Image005 Denoised"), "Image005_Denoised")
+check("runs of whitespace collapse to one", RX.sanitize("multi   space"), "multi_space")
+check("ends are trimmed, not underscored",  RX.sanitize("  padded  "), "padded")
+check("path characters still go",           RX.sanitize("a/b:c"), "a_b_c")
+check("a trailing extension still goes",    RX.sanitize("thing.lif"), "thing")
+check("no space survives sanitize",         RX.sanitize("a b c").contains(" "), false)
+
 tmp.deleteDir()
 
 println ""
