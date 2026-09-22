@@ -268,10 +268,28 @@
   return(dirname(normalizePath(sub("^--file=", "", file_arg[1]), mustWork = FALSE)))
 }
 
+# Functions the CLIs call out of scripts/R/. Used as the "is it loaded?" test,
+# so keep it in step with what the CLIs actually use.
+.RLIB_REQUIRED <- c("read_fiji_result", "polygonize_roi_df", "define_feature_group",
+                    "find_ROI_z_intersect", "assign_feature_parent",
+                    "union_features", "plot_features_topView")
+
+#' Source scripts/R/ into the global environment
+#'
+#' scripts/R/ is source()d, not installed, so pkg::fn does not work.
+#'
+#' @param dir        explicit path, from --rlib_path
+#' @param script_dir directory of the calling CLI, resolved at SOURCE time
 .source_rlib <- function(dir = NA, script_dir = NA) {
-  # scripts/R/ is source()d, not installed, so pkg::fn does not work.
-  # Tests pre-source it; do not source twice.
-  if (exists("polygonize_roi_df", mode = "function")) return(invisible(NULL))
+  # NB: test ALL the required functions, not one of them. A test file that
+  #     pre-sources a couple of scripts/R files leaves a partial global
+  #     environment, and a single-function guard reads that as "already
+  #     loaded" -- so the CLI runs with the rest of the library missing and
+  #     fails on whichever function it reaches first. Re-sourcing is cheap and
+  #     idempotent; guessing is not.
+  if (all(vapply(.RLIB_REQUIRED, exists, logical(1), mode = "function"))) {
+    return(invisible(NULL))
+  }
   if (length(dir) != 1L || is.na(dir)) {
     # script_dir is resolved by the caller at SOURCE time (see .THIS_DIR in each
     # CLI). Falling back to commandArgs() here is only right when Rscript ran

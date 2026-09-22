@@ -13,6 +13,60 @@ Leica .lif  ──▶  Fiji: segment + measure  ──▶  .txt  ──▶  R: 3
 Fiji writes one ROI-outline table and one measurement table per feature per image.
 R reads those, merges per-slice ROIs into 3D objects, and does the analysis.
 
+## Setting up an analysis project
+
+1. **Make a sample sheet.** Copy
+   [`config/sample_sheet_template.tsv`](config/sample_sheet_template.tsv) and
+   edit it. Only `prefix` is required — the file stem Fiji wrote, everything
+   before `_<feature>_outline.txt`:
+
+   | prefix | genotype | timepoint |
+   |---|---|---|
+   | `GRV_Position010` | wt | E3.5 |
+
+   Every other column is your own metadata. It is carried onto the outputs and
+   can be used to group the results. The sheet is optional: the CLIs also run
+   sample-unaware.
+
+2. **Run the Fiji side** to produce the outline and measurement tables
+   (see below).
+
+3. **Run the R side:**
+
+   ```bash
+   # outlines -> features, with nucleoli placed inside their nuclei
+   scripts/R_cli/annotate_features_cli.r \
+       --input raw_measurements/ --feature nucleus nucleolus \
+       --outdir results/ --sample_sheet config/samples.tsv \
+       --max_z_dist 'default=3' 'nucleolus=1' \
+       --min_z_span 'default=5' 'nucleolus=2' \
+       --within 'nucleolus=nucleus' --qc_plot
+
+   # features -> counts, grouped by your metadata
+   scripts/R_cli/count_features_cli.r \
+       --input results/ --outdir results/ \
+       --sample_sheet config/samples.tsv --group_by genotype --plot
+
+   # eyeball it: raw projection | Fiji outline | R union
+   scripts/R_cli/montage_qc_cli.r \
+       --features results/GRV_Position010_features.rds \
+       --projection GRV_Position010_overview_ch1.png \
+       --overlay GRV_Position010_merged_ch1.png \
+       --output results/GRV_Position010_montage.png
+   ```
+
+**Every table these read and write is described in
+[`note/data_formats.md`](note/data_formats.md)** — required and optional
+columns, what each output means, and which changes break the next stage.
+
+Two conventions worth knowing before you start:
+
+- Multi-value options are **space-separated**, and per-feature settings are
+  `key=value` tokens with `default=` as the fallback.
+- **Never put a comma in a value or a filename.** The argument parser splits on
+  commas even inside a quoted word, so a path containing one is silently cut in
+  half.
+
 ## Fiji side
 
 **Use the Groovy scripts in [`scripts/groovy/`](scripts/groovy/).** They are the
@@ -83,7 +137,12 @@ analysis script:
 | `find_ROI_z_intersect.r` | merge per-slice ROIs across z into 3D objects |
 | `find_overlap_roi_features.r` | overlap between feature types (e.g. spots within nuclei) |
 | `define_feature_group.r` | group ROIs into features |
+| `relate_features.r` | place inner features inside outer ones (nucleolus in nucleus) |
 | `plot_outline_topView.r`, `brewer_pal_2.r` | plotting helpers |
+
+[`scripts/R_cli/`](scripts/R_cli/) wraps these as command-line entry points —
+`annotate_features_cli.r`, `count_features_cli.r` and `montage_qc_cli.r`. Each
+takes `--help`.
 
 [`PLA_analysis/`](PLA_analysis/) contains the proximity ligation assay analysis
 (published separately) and serves as a worked example of the R side end to end.

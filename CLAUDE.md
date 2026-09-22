@@ -32,13 +32,27 @@ sharing a common library, not one program.
    failure showed up is what is worth reading in a year. Note explicitly what
    was *not* verified.
 6. **PR, squash merge**, tag if releasing (bump `VERSION` in the tagged commit).
-7. **Doc-sync — propose, do not write.** At the end of a piece of work, say what
-   the work revealed that the docs get wrong or do not cover: a gotcha worth
-   recording, a stale claim in `CLAUDE.md` or `.claude/skills/`, a note in
-   `note/`, or a new skill worth having. **Raise it as a proposal and stop.**
-   Draft the edit only once it has been agreed. Docs describing the change being
-   shipped (README for a new option, say) travel with that change as usual; this
-   step is for captured *knowledge*, which is not the author's call alone.
+7. **Doc-sync.** Two different things, and they are not handled the same way.
+
+   **a. Format documentation travels with the change — write it, do not
+   propose it.** If the work altered any table this repo reads or writes — a
+   column, a filename pattern, a `_config.txt` field, a sample sheet rule, a
+   `feature_id` prefix — then `note/data_formats.md` is now wrong and must be
+   corrected in the same commit, along with `README.md` and
+   `config/*template*` where they are affected. `note/data_formats.md` is the
+   authoritative description of the shapes; `CLAUDE.md` explains why some are
+   dangerous; `README.md` covers the subset a user needs. A fact belongs in one
+   of them, referenced from the others — duplicating it guarantees drift.
+
+   `tests/testthat/test-data_formats.R` asserts the documented columns against
+   the code, so a format change that skips the doc shows up as a test failure
+   rather than as a surprise months later. Update the test with the doc.
+
+   **b. Captured knowledge — propose and stop.** Anything the work *revealed*
+   rather than changed: a gotcha worth recording, a stale claim in `CLAUDE.md`
+   or `.claude/skills/`, a new note, a new skill worth having. **Raise it as a
+   proposal and stop.** Draft the edit only once it has been agreed; what is
+   worth writing down is not the author's call alone.
 
 Before deleting anything, confirm git actually holds it — `**/tmp/` and
 `**/data/` mean "it is on disk" and "it is in history" are different questions.
@@ -54,8 +68,9 @@ Fiji writes, per feature per image:
 <prefix><image id>_config.txt                   every parameter used for that run
 ```
 
-**This is a contract, not an implementation detail.** Two things depend on it and
-break silently if changed:
+**This is a contract, not an implementation detail.** The field-level
+description lives in `note/data_formats.md`; what follows is why it is
+dangerous. Two things depend on it and break silently if changed:
 
 `_config.txt` records `image_width` and `image_height` in **pixels** alongside
 `pixel_width`/`pixel_height`. The outline tables are in calibrated units, so
@@ -193,7 +208,9 @@ The spatial tests need a working `sf`. `helper-setup.R` probes it **in a child
 process**, since a broken `units` aborts R outright rather than raising, which
 would take the whole run down; when it cannot load they skip rather than fail.
 Note which R ran: the count differs. See `CLAUDE.local.md` for this machine.
-Under R 4.6 with the full package set the suite is **196 passed / 0 skipped**.
+Under R 4.6 with the full package set the suite is **220 passed / 0 skipped**.
+`test-data_formats.R` pins the documented column sets against the code, so a
+format change that skips `note/data_formats.md` fails a test.
 
 ⚠️ The suite runs **testthat edition 2** (no package `DESCRIPTION` to declare
 edition 3), where `expect_warning()` returns the expression's **value**, not the
