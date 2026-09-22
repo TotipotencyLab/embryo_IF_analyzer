@@ -31,13 +31,24 @@ suppressPackageStartupMessages({
 #     sourced, which is why this is a top-level assignment and not a function
 #     called later.
 .THIS_DIR <- (function() {
+  # Test route
   for (i in seq_len(sys.nframe())) {
     f <- sys.frame(i)
-    if (!is.null(f$ofile)) return(dirname(normalizePath(f$ofile, mustWork = FALSE)))
+    if (!is.null(f$ofile)){
+      return(dirname(normalizePath(f$ofile, mustWork = FALSE)))
+    }
   }
+  # Rscript CLI route
   a <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
-  if (length(a)) return(dirname(normalizePath(sub("^--file=", "", a[1]), mustWork = FALSE)))
-  NA_character_
+  if (length(a)){
+    return(dirname(normalizePath(sub("^--file=", "", a[1]), mustWork = FALSE)))
+  }
+  # Interactive session via RStudio (while developing, not real use)
+  a <- tryCatch(rstudioapi::getActiveDocumentContext()$path, error = function(e) character(0))
+  if (length(a)){
+    return(dirname(a[1]))
+  }
+  return(NA_character_)
 })()
 
 .count_source_helpers <- function() {
@@ -129,7 +140,7 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       next
     }
 
-    tab$.status <- .feature_status(tab$feature_id, tab$feature_type)
+    tab$.status <- .feature_status(tab$feature_id)
 
     counts <- tab |>
       dplyr::distinct(feature_type, feature_id, .status) |>
@@ -201,7 +212,7 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
 # --- private helpers ----------------------------------------------------------
 
-.feature_status <- function(feature_id, feature_type) {
+.feature_status <- function(feature_id) {
   # annotate_features_cli names groups <feature>_N, invalid_<feature>_N and
   # failed_<feature>_<reason>. NA means an ROI that reached no group at all.
   out <- rep("detected", length(feature_id))
@@ -211,20 +222,23 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   return(out)
 }
 
-.count_plot <- function(tidy, group_by_cols, path) {
+#' Build the count plot
+#'
+#' Separate from saving it so a test can inspect the layers. Which layers are
+#' present is the behaviour that matters here, and it is invisible in a PNG.
+.count_plot_build <- function(tidy, group_by_cols) {
   x_col <- if (length(group_by_cols)) group_by_cols[1] else "sample"
 
-  p <- ggplot2::ggplot(tidy, ggplot2::aes(x = .data[[x_col]], y = n_detected)) +
-    ggplot2::geom_col(
-      data = if (length(group_by_cols)) NULL else tidy,
-      fill = "grey70", width = 0.6) +
-    ggplot2::facet_wrap(~ feature_type, scales = "free_y") +
-    ggplot2::theme_minimal() +
-    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1)) +
-    ggplot2::labs(x = NULL, y = "features detected")
+  p <- ggplot2::ggplot(tidy, ggplot2::aes(x = .data[[x_col]], y = n_detected))
 
-  if (length(group_by_cols)) {
-    # More than one sample per group: show the points, not a bar of a mean.
+  if (!length(group_by_cols)) {
+    # One bar per sample. NB: the layer is added conditionally rather than given
+    # `data = NULL` -- NULL means "inherit the plot data", so that spelling drew
+    # the bars in both branches, overplotting one bar per sample underneath the
+    # grouped boxplot.
+    p <- p + ggplot2::geom_col(fill = "grey70", width = 0.6)
+  } else {
+    # Several samples per group: show the points, not a bar of a mean.
     p <- p + ggplot2::geom_boxplot(outlier.shape = NA, fill = NA, colour = "grey50")
     if (requireNamespace("ggbeeswarm", quietly = TRUE)) {
       p <- p + ggbeeswarm::geom_quasirandom(width = 0.15, size = 1.6, alpha = 0.85)
@@ -237,9 +251,23 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     }
   }
 
+  p <- p +
+    ggplot2::facet_wrap(~ feature_type, scales = "free_y") +
+    ggplot2::theme_minimal() +
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1)) +
+    ggplot2::labs(x = NULL, y = "features detected")
+
+  return(p)
+}
+
+
+.count_plot <- function(tidy, group_by_cols, path) {
+  p <- .count_plot_build(tidy, group_by_cols)
+  x_col <- if (length(group_by_cols)) group_by_cols[1] else "sample"
   n_x <- length(unique(tidy[[x_col]]))
   ggplot2::ggsave(path, p, width = max(4, min(12, 1 + n_x * 0.5)), height = 4, dpi = 150)
   return(invisible(path))
 }
+
 
 if (!interactive() && sys.nframe() == 0L) count_features_cli()

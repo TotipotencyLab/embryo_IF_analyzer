@@ -208,7 +208,7 @@ The spatial tests need a working `sf`. `helper-setup.R` probes it **in a child
 process**, since a broken `units` aborts R outright rather than raising, which
 would take the whole run down; when it cannot load they skip rather than fail.
 Note which R ran: the count differs. See `CLAUDE.local.md` for this machine.
-Under R 4.6 with the full package set the suite is **220 passed / 0 skipped**.
+Under R 4.6 with the full package set the suite is **247 passed / 0 skipped**.
 `test-data_formats.R` pins the documented column sets against the code, so a
 format change that skips `note/data_formats.md` fails a test.
 

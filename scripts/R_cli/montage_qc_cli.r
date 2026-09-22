@@ -38,13 +38,24 @@ suppressPackageStartupMessages({
 #     sourced, which is why this is a top-level assignment and not a function
 #     called later.
 .THIS_DIR <- (function() {
+  # Test route
   for (i in seq_len(sys.nframe())) {
     f <- sys.frame(i)
-    if (!is.null(f$ofile)) return(dirname(normalizePath(f$ofile, mustWork = FALSE)))
+    if (!is.null(f$ofile)){
+      return(dirname(normalizePath(f$ofile, mustWork = FALSE)))
+    }
   }
+  # Rscript CLI route
   a <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
-  if (length(a)) return(dirname(normalizePath(sub("^--file=", "", a[1]), mustWork = FALSE)))
-  NA_character_
+  if (length(a)){
+    return(dirname(normalizePath(sub("^--file=", "", a[1]), mustWork = FALSE)))
+  }
+  # Interactive session via RStudio (while developing, not real use)
+  a <- tryCatch(rstudioapi::getActiveDocumentContext()$path, error = function(e) character(0))
+  if (length(a)){
+    return(dirname(a[1]))
+  }
+  return(NA_character_)
 })()
 
 .montage_source_helpers <- function() {
@@ -203,7 +214,18 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
             "will NOT align with the Fiji panels.", call. = FALSE)
     return(NULL)
   }
-  if (is.na(pw) || is.na(ph)) { pw <- 1; ph <- 1 }
+  if (is.na(pw) || is.na(ph)) {
+    # Falling back to 1 makes the extent a PIXEL count while the outlines are in
+    # calibrated units, so the features would be drawn into one corner of a
+    # frame many times too large -- misaligned, and silently so, which is the
+    # one thing this CLI exists to avoid.
+    warning("This _config.txt has image_width/image_height but no ",
+            "pixel_width/pixel_height, so the frame cannot be converted to ",
+            "calibrated units. Panel (iii) will be cropped to the features' ",
+            "bounding box and will NOT align with the Fiji panels.",
+            call. = FALSE)
+    return(NULL)
+  }
   return(list(xmax = w * pw, ymax = h * ph))
 }
 

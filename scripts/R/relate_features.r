@@ -102,7 +102,15 @@ validate_within_spec <- function(within, known = NULL){
       z_max      = max(zs),
       by_z       = by_z,
       footprint  = sf::st_union(sf::st_geometry(rows))[[1]],
-      area       = sum(as.numeric(sf::st_area(sf::st_geometry(rows))))
+      # NB: measured on the SAME per-slice geometries the intersection uses,
+      #     not by summing the individual ROI areas. Where one feature holds
+      #     two overlapping ROIs on a slice, the shared area is counted once in
+      #     by_z and twice in a naive row sum -- which made the denominator
+      #     bigger than the numerator could ever be, so a child lying wholly
+      #     inside its parent scored 0.7 and could be rejected outright.
+      area       = sum(vapply(by_z, function(g){
+        as.numeric(sf::st_area(sf::st_sfc(g)))
+      }, numeric(1)))
     )
   }
   return(out)
@@ -204,11 +212,17 @@ assign_feature_parent <- function(st_df, within, min_containment = 0.5,
   }
 
   # Columns exist even when nothing is related, so downstream code never has to
-  # test for their presence.
-  st_df$parent_feature_id   <- NA_character_
-  st_df$parent_feature_type <- NA_character_
-  st_df$parent_containment  <- NA_real_
-  st_df$parent_match        <- NA_character_
+  # test for their presence. NB: length-0 vectors, not NA -- assigning a
+  # length-1 value to a zero-row frame is an error ("replacement has 1 row,
+  # data has 0"), and an empty table is a legitimate input.
+  n <- nrow(st_df)
+  st_df$parent_feature_id   <- rep(NA_character_, n)
+  st_df$parent_feature_type <- rep(NA_character_, n)
+  st_df$parent_containment  <- rep(NA_real_, n)
+  st_df$parent_match        <- rep(NA_character_, n)
+  if(n == 0){
+    return(st_df)
+  }
 
   # Validated ONCE, against the feature types present in the whole table. A
   # per-sample subset may legitimately lack a feature type -- that is a warning

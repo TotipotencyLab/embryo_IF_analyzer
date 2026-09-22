@@ -223,6 +223,7 @@
     stop("Sample sheet has no '", id_column, "' column. Found: ",
          paste(colnames(sheet), collapse = ", "), call. = FALSE)
   }
+  .cli_check_reserved(sheet, id_column)
   sheet[[id_column]] <- trimws(as.character(sheet[[id_column]]))
   if (anyDuplicated(sheet[[id_column]])) {
     stop("Duplicate '", id_column, "' in sample sheet: ",
@@ -230,6 +231,32 @@
                collapse = ", "), call. = FALSE)
   }
   return(sheet)
+}
+
+# Columns the CLIs write themselves. A sample sheet column of the same name
+# would be silently renamed by bind_cols() to `area...7`, producing a file that
+# violates the documented schema -- and the next stage then cannot find the
+# column it needs.
+.CLI_RESERVED_COLUMNS <- c("roi", "z", "area", "geometry", "sample",
+                           "feature_id", "feature_type",
+                           "parent_feature_id", "parent_feature_type",
+                           "parent_containment", "parent_match",
+                           "n_detected", "n_invalid", "n_failed", "n_roi")
+
+#' Stop if the sample sheet would collide with a column the CLI writes
+#'
+#' @param sheet     the sample sheet
+#' @param id_column the column holding the file prefix (never metadata)
+.cli_check_reserved <- function(sheet, id_column = "prefix") {
+  meta <- setdiff(colnames(sheet), id_column)
+  clash <- base::intersect(meta, .CLI_RESERVED_COLUMNS)
+  if (length(clash)) {
+    stop("Sample sheet column(s) collide with columns the output already uses: ",
+         paste(clash, collapse = ", "),
+         "\n  rename them in the sheet (e.g. ", clash[1], " -> sample_", clash[1], ")",
+         call. = FALSE)
+  }
+  return(invisible(NULL))
 }
 
 .cli_apply_sample_sheet <- function(contract_df, sheet, id_column = "prefix") {

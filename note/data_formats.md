@@ -24,6 +24,13 @@ Read by `.cli_read_sample_sheet()`. Accepted extensions: `.tsv` / `.txt`
 | `prefix` | **yes** | the file stem Fiji wrote, e.g. `GRV_Position010` — everything before `_<feature>_outline.txt`. Must be unique; whitespace is trimmed. Rename the column with `--id_column`. |
 | anything else | no | carried through verbatim onto every output row, and usable in `--group_by` |
 
+⚠️ A metadata column may not be named after one the CLIs write themselves —
+`roi`, `z`, `area`, `geometry`, `sample`, `feature_id`, `feature_type`,
+`parent_*`, `n_detected`, `n_invalid`, `n_failed`, `n_roi`. The sheet is
+rejected with the offending name rather than the column being silently renamed
+to `area...7`. (The `--id_column` itself is exempt: it is the key, not
+metadata.)
+
 Template: [`config/sample_sheet_template.tsv`](../config/sample_sheet_template.tsv).
 
 Behaviour when it is supplied:
