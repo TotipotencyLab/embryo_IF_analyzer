@@ -97,9 +97,12 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                                  "Adds a 'volume' column = area_sum x z_step. Fiji does not",
                                  "record pixel_depth in _config.txt, so it must be given here"))
   p <- add_argument(p, "--class", short = "-k", type = "character", nargs = Inf, default = NULL,
-                    help = paste("assign each feature to a class from its own statistics, as",
-                                 "'class:column=lo:hi'. Repeat for more conditions (ANDed) and",
-                                 "more classes. Flag ORDER is the priority when several match"))
+                    help = paste("assign each feature to a class from its own statistics.",
+                                 "Space-separated tokens on ONE flag, not a repeated flag:",
+                                 "--class 'big:area_med=600:Inf' 'big:circ_med=0:0.7'",
+                                 "'small:area_med=0:600'. Tokens sharing a class name are",
+                                 "ANDed; the order the names first appear is the priority",
+                                 "when a feature matches several"))
   p <- add_argument(p, "--drop_orphan_feature", short = "-D", flag = TRUE,
                     help = "drop features matching no --class [default: keep them, class = NA]")
   p <- add_argument(p, "--log_scale", short = "-x", type = "character", nargs = Inf, default = NULL,

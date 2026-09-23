@@ -91,13 +91,17 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                                  "so --feature_class_by can name a column from it (e.g. class)"))
   p <- add_argument(p, "--feature_class_by", short = "-B", type = "character", nargs = Inf, default = NULL,
                     help = paste("column(s) whose values are joined to label each outline",
-                                 "[default: feature_type]. COLUMN NAMES, not values"))
+                                 "[default: feature_type]. Space-separated on ONE flag:",
+                                 "--feature_class_by class feature_type. COLUMN NAMES,",
+                                 "not values"))
   p <- add_argument(p, "--class_sep", short = "-s", type = "character", default = "-",
                     help = "separator joining --feature_class_by values [default: -]")
   p <- add_argument(p, "--color_map", short = "-m", type = "character", nargs = Inf, default = NULL,
-                    help = paste("'<class>=<colour>' for the classes to highlight.",
-                                 "Everything else is drawn grey as one 'other' group,",
-                                 "named in the caption. Automatic colours when omitted"))
+                    help = paste("'<class>=<colour>' for the classes to highlight,",
+                                 "space-separated on ONE flag:",
+                                 "--color_map 'growing=red' 'small=blue'. Everything else is",
+                                 "drawn grey as one 'other' group, named in the caption.",
+                                 "Automatic colours when omitted"))
   p <- add_argument(p, "--force", short = "-U", flag = TRUE,
                     help = "join --feature_table even when its run_id disagrees")
   p <- add_argument(p, "--panel_height", short = "-H", type = "integer", default = 600,

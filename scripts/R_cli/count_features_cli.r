@@ -93,9 +93,11 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = paste("optional feature_stats.tsv to join on sample+feature_id,",
                                  "bringing its columns (e.g. class) in for --feature_class_by"))
   p <- add_argument(p, "--feature_class_by", short = "-B", type = "character", nargs = Inf, default = NULL,
-                    help = paste("column(s) whose values are joined into the identity of the",
-                                 "thing counted [default: feature_type]. Takes COLUMN NAMES,",
-                                 "not values -- use --feature to select feature types"))
+                    help = paste("column(s) whose values are joined into the identity of",
+                                 "the thing counted [default: feature_type]. Space-separated",
+                                 "on ONE flag: --feature_class_by class feature_type.",
+                                 "Takes COLUMN NAMES, not values -- use --feature to select",
+                                 "which feature types to include"))
   p <- add_argument(p, "--class_sep", short = "-s", type = "character", default = "-",
                     help = "separator joining --feature_class_by values [default: -]")
   p <- add_argument(p, "--force", short = "-U", flag = TRUE,
