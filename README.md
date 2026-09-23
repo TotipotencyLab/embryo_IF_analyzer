@@ -58,6 +58,12 @@ R reads those, merges per-slice ROIs into 3D objects, and does the analysis.
        --input results/ --outdir stats/ --res_dir raw_measurements/ \
        --group_by sample
 
+   # two statistics against each other, with a candidate cut-off drawn on
+   scripts/R_cli/feature_scatter_cli.r \
+       --input stats/feature_stats.tsv --outdir stats/ \
+       --plot 'area_med:ch1_signal' 'circ_med:area_med' \
+       --threshold 'area_med=400' --color_by sample
+
    # eyeball it: raw projection | Fiji outline | R union
    scripts/R_cli/montage_qc_cli.r \
        --features results/GRV_Position010_features.rds \
@@ -168,8 +174,8 @@ analysis script:
 | `plot_outline_topView.r`, `brewer_pal_2.r` | plotting helpers |
 
 [`scripts/R_cli/`](scripts/R_cli/) wraps these as command-line entry points —
-`annotate_features_cli.r`, `count_features_cli.r`, `feature_stat_cli.r` and
-`montage_qc_cli.r`. Each takes `--help`.
+`annotate_features_cli.r`, `count_features_cli.r`, `feature_stat_cli.r`,
+`feature_scatter_cli.r` and `montage_qc_cli.r`. Each takes `--help`.
 
 `feature_stat_cli.r` is the one to run **before** choosing any size or signal
 threshold. It writes one row per detected object — area, z-extent, shape and
@@ -177,6 +183,18 @@ per-channel signal — plus a multi-page PDF of the distributions, so you can se
 whether one cut-off works across every file rather than just the one you tuned
 on. Channel signal needs `--res_dir` pointing at the Fiji `_res.txt`; without it
 the run warns rather than quietly producing a table with no signal in it.
+
+`feature_scatter_cli.r` then puts two of those statistics against each other,
+which is usually where a boundary becomes visible — a cut on size alone may be
+hopeless while the same cut with circularity beside it separates cleanly. It
+reads the `feature_stats.tsv`, so it is cheap to re-run while trying pairs.
+`--show_avail_stats` lists what can go on an axis (and how many values each
+column actually holds) without drawing anything.
+
+A `--threshold` is keyed to a **column**, not to a plot: `--threshold
+'area_med=400'` is drawn on every panel where `area_med` appears, vertically
+when it is the x axis and horizontally when it is y. So a cut-off is stated once
+and cannot drift out of step between panels.
 
 **Which file holds what is read from the file itself**, not from its name: the
 `name` column gives the sample and the ROI id prefix gives the feature. So a

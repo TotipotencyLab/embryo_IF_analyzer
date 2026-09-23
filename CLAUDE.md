@@ -122,8 +122,9 @@ loop, including how to diff.
 - **`scripts/R_cli/` is the R command-line path**: `annotate_features_cli.r`
   (outlines → features, containment, + QC plot), `count_features_cli.r`
   (features → tidy counts, the oocyte deliverable), `feature_stat_cli.r`
-  (per-feature statistics and their distributions) and `montage_qc_cli.r` (the
-  3-panel check).
+  (per-feature statistics and their distributions), `feature_scatter_cli.r`
+  (two statistics against each other) and `montage_qc_cli.r` (the 3-panel
+  check).
 
   **`feature_stat_cli.r` is the threshold-finding step**, and the unit is the
   feature, not the ROI — adjacent z-slices of one object share signal through
@@ -136,6 +137,14 @@ loop, including how to diff.
   signal in it. `note/if_quantification.md` covers what these numbers do and do
   not yet support — there is no background correction, so intensities are not
   comparable between images.
+
+  `feature_scatter_cli.r` reads that CLI's **`feature_stats.tsv`**, not the
+  `.rds`: the expensive work happens once and the exploration end stays cheap to
+  re-run. Its `--threshold` is keyed to a **column, not a panel** — a cut-off is
+  a fact about a variable, so it is drawn wherever that variable appears, as a
+  vline when it is x and an hline when it is y. That deliberately removes the
+  whole question of matching lines to plots by position, and with it the recycle
+  / skip / off-by-one failures that come with it.
   `cli_helpers.r` is shared by all three. Conventions — the testable
   `<name>_cli(args)` function, the run guard, argparser's traps — are in the
   `r-cli-convention` skill. The IF quantification CLI is deliberately deferred:

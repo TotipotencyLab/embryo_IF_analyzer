@@ -89,6 +89,100 @@
   return(stats::setNames(vals, keys))
 }
 
+#' Parse 'key=value' tokens, KEEPING repeats, into a named list
+#'
+#' Unlike .cli_key_values(), a repeated key collects rather than erroring:
+#'
+#'   c("area_med=100", "area_med=400", "circ_med=0.6")
+#'     -> list(area_med = c("100", "400"), circ_med = "0.6")
+#'
+#' Needed by --threshold, where two guide lines on one variable is the normal
+#' case (a band: small below 400, growing above).
+#'
+#' @param tokens raw argument value
+#' @param what   flag name, for error messages only
+.cli_key_values_multi <- function(tokens, what = "argument") {
+  tokens <- .cli_resolve_arg(tokens, what)
+  if (!length(tokens)) return(list())
+
+  no_eq <- !grepl("=", tokens, fixed = TRUE)
+  if (any(no_eq)) {
+    stop(what, " needs 'key=value' tokens, got: ",
+         paste(tokens[no_eq], collapse = ", "), call. = FALSE)
+  }
+  keys <- trimws(sub("=.*$", "", tokens))
+  vals <- trimws(sub("^[^=]*=", "", tokens))
+  if (any(!nzchar(keys))) {
+    stop("Empty key in ", what, ": ",
+         paste(tokens[!nzchar(keys)], collapse = ", "), call. = FALSE)
+  }
+  # split() orders by factor level; keep the order the keys were first given in,
+  # so the run log reads the way the command line did.
+  out <- split(vals, factor(keys, levels = unique(keys)))
+  return(as.list(out))
+}
+
+#' Parse --plot specs: 'x:y' or 'id=x:y'
+#'
+#' The id is cosmetic -- it names the page -- because thresholds are keyed to
+#' the COLUMN, not to the plot, so nothing has to be matched up by position.
+#' Unkeyed specs get p1..pN by position.
+#'
+#' @param tokens raw argument value
+#' @param what   flag name, for error messages only
+#' @return data.frame(id, x, y)
+.cli_parse_plot_specs <- function(tokens, what = "--plot") {
+  tokens <- .cli_resolve_arg(tokens, what)
+  if (!length(tokens)) {
+    stop("No plot requested: give ", what, " 'x:y', e.g. 'area_med:ch1_signal'",
+         call. = FALSE)
+  }
+
+  ids <- character(length(tokens))
+  pairs <- character(length(tokens))
+  for (i in seq_along(tokens)) {
+    tk <- tokens[i]
+    if (grepl("=", tk, fixed = TRUE)) {
+      ids[i] <- trimws(sub("=.*$", "", tk))
+      pairs[i] <- trimws(sub("^[^=]*=", "", tk))
+      if (!nzchar(ids[i])) {
+        stop("Empty plot id in ", what, ": ", tk, call. = FALSE)
+      }
+    } else {
+      ids[i] <- ""                  # filled in below
+      pairs[i] <- trimws(tk)
+    }
+  }
+
+  parts <- strsplit(pairs, ":", fixed = TRUE)
+  bad <- vapply(parts, function(p) length(p) != 2L || any(!nzchar(trimws(p))), logical(1))
+  if (any(bad)) {
+    stop(what, " needs 'x:y' (exactly one colon, neither side empty), got: ",
+         paste(tokens[bad], collapse = ", "), call. = FALSE)
+  }
+  x <- trimws(vapply(parts, `[`, character(1), 1))
+  y <- trimws(vapply(parts, `[`, character(1), 2))
+
+  same <- x == y
+  if (any(same)) {
+    stop(what, " has the same column on both axes, which plots a diagonal and ",
+         "nothing else: ", paste(tokens[same], collapse = ", "), call. = FALSE)
+  }
+
+  # Auto-ids by position. Done AFTER the explicit ones so a collision between
+  # 'p2=a:b' and an auto-assigned p2 is caught rather than silently shadowing.
+  auto <- !nzchar(ids)
+  ids[auto] <- paste0("p", which(auto))
+  if (anyDuplicated(ids)) {
+    dup <- unique(ids[duplicated(ids)])
+    stop("Duplicate plot id(s) in ", what, ": ", paste(dup, collapse = ", "),
+         "\n  (ids not given are auto-assigned p1..pN by position, so an ",
+         "explicit 'p2=' can collide with one)", call. = FALSE)
+  }
+
+  return(data.frame(id = ids, x = x, y = y, stringsAsFactors = FALSE))
+}
+
 #' Extract setting per feature
 #' Look a per-feature parameter up: the feature's own value, else "default",
 #' else the built-in default. Returns a length-1 numeric.
