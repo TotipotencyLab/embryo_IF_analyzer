@@ -225,6 +225,21 @@ accepted; the feature table gains an `is_bridge` column and
 `feature_stat_cli.r` reports `n_bridge` / `frac_bridge` so you can see how much
 of a count rests on rejected ROIs.
 
+Once the statistics look right, `--class` names the kinds of object they
+describe:
+
+```bash
+feature_stat_cli.r --input features/ --outdir stats/ \
+  --class 'growing:area_med=600:Inf' 'small:area_med=0:600'
+```
+
+Each token is `class:column=lo:hi`, repeated for more conditions (ANDed) and
+more classes. **The flag order is the priority** when a feature matches several,
+and the run says how many did. A feature matching none is kept with `class = NA`
+unless `--drop_orphan_feature` — it is evidence about where the boundaries are
+wrong. `class` is an ordinary column, so `--group_by class` and
+`feature_scatter_cli.r --color_by class` both work.
+
 [`PLA_analysis/`](PLA_analysis/) contains the proximity ligation assay analysis
 (published separately) and serves as a worked example of the R side end to end.
 
