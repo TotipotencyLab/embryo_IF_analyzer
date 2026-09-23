@@ -114,6 +114,30 @@ shell, inside argparser. Consequences here:
   `Position010,rep2_nucleus_outline.txt` silently become two nonexistent paths.
   The input resolver must check existence and fail loudly.
 
+### ⚠️ `Rscript -e` halves backslashes
+
+Not argparser, but the same family of trap: it bites when driving these CLIs
+from a shell script. **`Rscript -e` strips one level of backslash escaping
+before R parses the string**, so a regex that is correct in a `.R` file is a
+syntax error inline. Measured:
+
+```bash
+Rscript -e 'cat(grepl("a\.b",     "a.b"))'   # Error: '\.' is an unrecognized escape
+Rscript -e 'cat(grepl("a\\.b",    "a.b"))'   # Error: '\.' is an unrecognized escape
+Rscript -e 'cat(grepl("a\\\\.b",  "a.b"))'   # TRUE
+Rscript file.R                               # TRUE with TWO backslashes in the file
+```
+
+Single-quoting does not help — the shell passes the string through untouched
+and the stripping happens inside `Rscript`. The error names `<input>` and a line
+number that refers to the `-e` text, not to any file, which is the tell.
+
+- **Put anything containing a regex in a `.R` file** and call
+  `Rscript path/to/file.R`. Do not count backslashes.
+- If it must be inline, either double them again (`\\\\.`) or dodge the issue
+  entirely with a character class: `"_features[.]rds$"` needs no backslash at
+  all.
+
 ### The three "nothing given" shapes
 
 ```
