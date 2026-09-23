@@ -183,6 +183,28 @@
   return(data.frame(id = ids, x = x, y = y, stringsAsFactors = FALSE))
 }
 
+#' Read a one-value-per-line list file
+#'
+#' For arguments that get long enough to live in a file rather than on the
+#' command line -- a list of samples to facet, say. Blank lines and anything
+#' after a # are dropped, so the file can be annotated.
+#'
+#' @param path file to read
+#' @param what flag name, for error messages only
+.cli_read_value_list <- function(path, what = "argument") {
+  if (!file.exists(path)) {
+    stop("No such file for ", what, ": ", path, call. = FALSE)
+  }
+  lines <- readLines(path, warn = FALSE)
+  lines <- sub("#.*$", "", lines)
+  lines <- trimws(lines)
+  lines <- lines[nzchar(lines)]
+  if (!length(lines)) {
+    stop("File for ", what, " holds no values: ", path, call. = FALSE)
+  }
+  return(unique(lines))
+}
+
 #' Extract setting per feature
 #' Look a per-feature parameter up: the feature's own value, else "default",
 #' else the built-in default. Returns a length-1 numeric.

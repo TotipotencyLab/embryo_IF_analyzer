@@ -72,8 +72,16 @@ feature_scatter_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = "guide line as 'column=value'; repeat a column for a band")
   p <- add_argument(p, "--facet", short = "-F", type = "character", default = "both",
                     help = "none, both, or a column name to facet by [default: both]")
+  p <- add_argument(p, "--facet_keep", short = "-k", type = "character", nargs = Inf, default = NULL,
+                    help = "values of the facet column to break out; the pooled page still uses all")
+  p <- add_argument(p, "--facet_keep_file", short = "-K", type = "character",
+                    help = "the same, one value per line (# comments allowed)")
+  p <- add_argument(p, "--facet_max", short = "-M", type = "integer", default = 16,
+                    help = "skip the faceted page past this many panels")
   p <- add_argument(p, "--color_by", short = "-c", type = "character",
                     help = "column mapped to point colour")
+  p <- add_argument(p, "--legend_max", short = "-L", type = "integer", default = 12,
+                    help = "drop the colour legend past this many levels")
   p <- add_argument(p, "--show_avail_stats", short = "-a", flag = TRUE,
                     help = "list the columns that can be plotted, then exit")
   p <- add_argument(p, "--log_x", short = "-x", type = "character", default = "auto",
@@ -141,7 +149,28 @@ feature_scatter_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
          "\n  run with --show_avail_stats to list them", call. = FALSE)
   }
 
+  # Which facet levels to break out. Two ways in, because a real run has more
+  # samples than fit comfortably on a command line.
+  facet_keep <- .cli_resolve_arg(argv$facet_keep, "--facet_keep")
+  if (!is.na(argv$facet_keep_file)) {
+    facet_keep <- unique(c(facet_keep,
+                           .cli_read_value_list(argv$facet_keep_file, "--facet_keep_file")))
+  }
+  if (length(facet_keep) && argv$facet == "none") {
+    warning("--facet_keep was given but --facet is 'none', so nothing is ",
+            "faceted and the list is unused.", call. = FALSE)
+  }
+
   .report_plan(specs, thresholds, stats)
+  if (length(facet_keep) && argv$facet != "none") {
+    fcol <- if (argv$facet == "both") "sample" else argv$facet
+    have <- unique(stats[[fcol]])
+    # The INTERSECTION, not length(facet_keep): a name that is not in the data
+    # is warned about below, and counting it here would overstate the page.
+    message("  faceting ", length(intersect(facet_keep, have)), " of ",
+            length(have), " ", fcol,
+            " level(s); the pooled page still uses all ", nrow(stats), " feature(s)")
+  }
 
   # --- draw --------------------------------------------------------------------
   outdir <- argv$outdir
@@ -150,9 +179,11 @@ feature_scatter_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   plots <- plot_feature_scatter_list(
     stats, specs, facet = argv$facet,
+    facet_keep = facet_keep, facet_max = argv$facet_max,
     color_by = color_by, thresholds = thresholds,
     log_x = argv$log_x, log_y = argv$log_y,
-    smooth = argv$smooth, corr = argv$corr)
+    smooth = argv$smooth, corr = argv$corr,
+    legend_max = argv$legend_max)
 
   if (!length(plots)) {
     stop("Nothing could be drawn: every requested pair was empty after ",

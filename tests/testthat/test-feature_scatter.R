@@ -200,6 +200,143 @@ test_that("auto-logging steps aside when a value would be dropped", {
   expect_identical(nrow(b$data[[which(geoms == "GeomPoint")]]), nrow(st))
 })
 
+# --- the colour legend ----------------------------------------------------------
+
+test_that("the legend is dropped when it would be unreadable, and kept when not", {
+  skip_if_no_pkg("ggplot2")
+  source_r_scripts("plot_feature_scatter.r")
+  suppressPackageStartupMessages(library(ggplot2))
+  legend_of <- function(p) as.character(p$theme$legend.position)
+
+  few <- fake_stats(12)                       # 2 samples
+  many <- data.frame(sample = rep(sprintf("S%02d", 1:20), each = 2),
+                     area_med = seq(100, 900, length.out = 40),
+                     ch1_signal = seq(1, 20, length.out = 40),
+                     stringsAsFactors = FALSE)
+
+  # Kept: this is the half that makes the others meaningful. Without it,
+  # "dropped" could pass because the legend was never there.
+  expect_identical(legend_of(plot_feature_scatter(few, "area_med", "ch1_signal",
+                                                  color_by = "sample")), "right")
+  # Dropped: past legend_max the key is unreadable and squeezes the panel.
+  expect_identical(legend_of(plot_feature_scatter(many, "area_med", "ch1_signal",
+                                                  color_by = "sample")), "none")
+  # Dropped: the facet strip already names it.
+  expect_identical(legend_of(plot_feature_scatter(few, "area_med", "ch1_signal",
+                                                  color_by = "sample",
+                                                  facet_by = "sample")), "none")
+  # The threshold is a parameter, not a hardcoded 12.
+  expect_identical(legend_of(plot_feature_scatter(few, "area_med", "ch1_signal",
+                                                  color_by = "sample",
+                                                  legend_max = 1)), "none")
+})
+
+test_that("dropping the legend is announced on the plot, not silent", {
+  skip_if_no_pkg("ggplot2")
+  source_r_scripts("plot_feature_scatter.r")
+  suppressPackageStartupMessages(library(ggplot2))
+  p <- plot_feature_scatter(fake_stats(12), "area_med", "ch1_signal",
+                            color_by = "sample", legend_max = 1)
+  expect_match(p$labels$subtitle, "legend omitted")
+  # ...but not when the facet strip makes it merely redundant.
+  q <- plot_feature_scatter(fake_stats(12), "area_med", "ch1_signal",
+                            color_by = "sample", facet_by = "sample")
+  expect_false(grepl("legend omitted", q$labels$subtitle))
+})
+
+test_that("the colour mapping survives even when the key is dropped", {
+  skip_if_no_pkg("ggplot2")
+  source_r_scripts("plot_feature_scatter.r")
+  suppressPackageStartupMessages(library(ggplot2))
+  p <- plot_feature_scatter(fake_stats(12), "area_med", "ch1_signal",
+                            color_by = "sample", legend_max = 1)
+  b <- ggplot2::ggplot_build(p)
+  geoms <- vapply(p$layers, function(l) class(l$geom)[1], character(1))
+  # Two samples in fake_stats(), so two colours should still be in play.
+  expect_gt(length(unique(b$data[[which(geoms == "GeomPoint")]]$colour)), 1)
+})
+
+# --- subsetting which levels get faceted --------------------------------------------
+
+test_that("facet_keep subsets the faceted page and leaves the pooled one whole", {
+  skip_if_no_pkg("ggplot2")
+  source_r_scripts("plot_feature_scatter.r")
+  suppressPackageStartupMessages(library(ggplot2))
+  st <- fake_stats(12)                        # samples A and B
+  specs <- .cli_parse_plot_specs("area_med:ch1_signal")
+  pl <- plot_feature_scatter_list(st, specs, facet = "both", facet_keep = "A")
+  expect_length(pl, 2)
+
+  n_points <- function(p) {
+    b <- ggplot2::ggplot_build(p)
+    geoms <- vapply(p$layers, function(l) class(l$geom)[1], character(1))
+    nrow(b$data[[which(geoms == "GeomPoint")]])
+  }
+  # Pooled keeps every feature; faceted keeps only sample A's.
+  expect_identical(n_points(pl[[1]]), nrow(st))
+  expect_identical(n_points(pl[[2]]), sum(st$sample == "A"))
+})
+
+test_that("facet_keep naming something absent warns", {
+  skip_if_no_pkg("ggplot2")
+  source_r_scripts("plot_feature_scatter.r")
+  suppressPackageStartupMessages(library(ggplot2))
+  specs <- .cli_parse_plot_specs("area_med:ch1_signal")
+  expect_warning(
+    plot_feature_scatter_list(fake_stats(12), specs, facet = "both",
+                              facet_keep = c("A", "ZZZ")),
+    "not in sample")
+})
+
+test_that("facet_keep matching nothing is an error, not an empty page", {
+  skip_if_no_pkg("ggplot2")
+  source_r_scripts("plot_feature_scatter.r")
+  suppressPackageStartupMessages(library(ggplot2))
+  specs <- .cli_parse_plot_specs("area_med:ch1_signal")
+  expect_error(
+    suppressWarnings(plot_feature_scatter_list(fake_stats(12), specs,
+                                               facet = "both", facet_keep = "ZZZ")),
+    "left no rows")
+})
+
+test_that("too many facets skips that page loudly and keeps the pooled one", {
+  skip_if_no_pkg("ggplot2")
+  source_r_scripts("plot_feature_scatter.r")
+  suppressPackageStartupMessages(library(ggplot2))
+  many <- data.frame(sample = rep(sprintf("S%02d", 1:20), each = 2),
+                     area_med = seq(100, 900, length.out = 40),
+                     ch1_signal = seq(1, 20, length.out = 40),
+                     stringsAsFactors = FALSE)
+  specs <- .cli_parse_plot_specs("area_med:ch1_signal")
+  pl <- expect_warning(
+    plot_feature_scatter_list(many, specs, facet = "both", facet_max = 16),
+    "past --facet_max")
+  expect_length(pl, 1)                        # pooled only
+  # Raising the cap brings it back, so the skip is the cap and not a bug.
+  pl2 <- plot_feature_scatter_list(many, specs, facet = "both", facet_max = 50)
+  expect_length(pl2, 2)
+})
+
+# --- the list file ----------------------------------------------------------------
+
+test_that("a value-list file drops comments and blanks", {
+  d <- withr::local_tempdir()
+  p <- file.path(d, "keep.txt")
+  writeLines(c("# samples of interest", "Series001", "", "  Series005  ",
+               "Series012   # a trailing comment", "Series001"), p)
+  expect_identical(.cli_read_value_list(p, "--facet_keep_file"),
+                   c("Series001", "Series005", "Series012"))
+})
+
+test_that("a missing or empty list file is named", {
+  d <- withr::local_tempdir()
+  expect_error(.cli_read_value_list(file.path(d, "nope.txt"), "--facet_keep_file"),
+               "No such file")
+  p <- file.path(d, "empty.txt")
+  writeLines(c("", "# nothing here"), p)
+  expect_error(.cli_read_value_list(p, "--facet_keep_file"), "holds no values")
+})
+
 test_that("facet 'both' gives a pooled page and a faceted one per pair", {
   skip_if_no_pkg("ggplot2")
   source_r_scripts("plot_feature_scatter.r")

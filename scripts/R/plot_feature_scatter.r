@@ -54,11 +54,13 @@ resolve_log <- function(setting, col){
 #' @param log_x,log_y "auto", "on" or "off"
 #' @param smooth     add a linear fit
 #' @param corr       report Spearman rho in the subtitle
+#' @param legend_max drop the colour legend past this many levels
 #' @return ggplot, or NULL when there is nothing to draw
 plot_feature_scatter <- function(stats, x, y, id = NULL, color_by = NULL,
                                  facet_by = NULL, thresholds = list(),
                                  log_x = "auto", log_y = "auto",
-                                 smooth = FALSE, corr = FALSE){
+                                 smooth = FALSE, corr = FALSE,
+                                 legend_max = 12){
 
   for(col in c(x, y)){
     if(!col %in% colnames(stats)){
@@ -143,6 +145,29 @@ plot_feature_scatter <- function(stats, x, y, id = NULL, color_by = NULL,
     sub <- paste0(sub, "   threshold ", paste(bits, collapse = " "))
   }
 
+  # The colour legend earns its space only sometimes.
+  #
+  #   - On a faceted panel coloured by the facet column, the strip above each
+  #     panel already says the name; the legend just repeats it.
+  #   - Past a dozen or so levels the key is unreadable AND it eats the figure:
+  #     ggplot shrinks the panel to fit the legend, so fifty samples leave a
+  #     sliver of actual chart. The colours still carry grouping structure, so
+  #     the mapping stays and only the key goes.
+  #
+  # Announced in the subtitle rather than silently, or a reader hunts for a
+  # legend that was never going to be there.
+  hide_legend <- FALSE
+  if(!is.null(color_by) && color_by %in% colnames(d)){
+    n_lev <- length(unique(d[[color_by]]))
+    redundant <- !is.null(facet_by) && identical(color_by, facet_by)
+    too_many <- n_lev > legend_max
+    hide_legend <- redundant || too_many
+    if(too_many && !redundant){
+      sub <- paste0(sub, "   legend omitted (", n_lev, " ", color_by,
+                    " levels > ", legend_max, ")")
+    }
+  }
+
   title <- paste0(y, " vs ", x)
   if(!is.null(id) && nzchar(id)){
     title <- paste0("[", id, "] ", title)
@@ -151,6 +176,13 @@ plot_feature_scatter <- function(stats, x, y, id = NULL, color_by = NULL,
   p <- p +
     ggplot2::labs(x = x, y = y, title = title, subtitle = sub) +
     ggplot2::theme_bw()
+
+  # NB: after theme_bw(), not before. theme_bw() is a COMPLETE theme, so adding
+  #     it replaces everything set by an earlier theme() call -- suppressing the
+  #     legend first and styling second silently puts the legend back.
+  if(hide_legend){
+    p <- p + ggplot2::theme(legend.position = "none")
+  }
 
   return(p)
 }
@@ -202,19 +234,54 @@ plot_feature_scatter <- function(stats, x, y, id = NULL, color_by = NULL,
 
 #' Every requested panel, ready for save_plot_list()
 #'
-#' @param stats  per-feature table
-#' @param specs  data.frame(id, x, y) from .cli_parse_plot_specs()
-#' @param facet  "none", "both", or a column name
-#' @param ...    passed to plot_feature_scatter()
+#' The pooled page ALWAYS uses every row. Only the faceted page is subset by
+#' `facet_keep` -- the point of the pair is to see the whole population once and
+#' then a readable subset of it broken out, not to answer both questions from
+#' the same reduced set.
+#'
+#' @param stats      per-feature table
+#' @param specs      data.frame(id, x, y) from .cli_parse_plot_specs()
+#' @param facet      "none", "both", or a column name
+#' @param facet_keep values of the facet column to break out; NULL = all
+#' @param facet_max  skip the faceted page past this many levels
+#' @param ...        passed to plot_feature_scatter()
 #' @return named list of ggplot
-plot_feature_scatter_list <- function(stats, specs, facet = "both", ...){
+plot_feature_scatter_list <- function(stats, specs, facet = "both",
+                                      facet_keep = NULL, facet_max = 16, ...){
   facet_col <- if(facet %in% c("none", "both")){ "sample" }else{ facet }
   want_pooled <- facet %in% c("none", "both")
   want_facet  <- facet != "none"
 
-  if(want_facet && !facet_col %in% colnames(stats)){
-    stop("--facet names a column that is not present: ", facet_col,
-         "\n  available: ", paste(colnames(stats), collapse = ", "), call. = FALSE)
+  faceted <- stats
+  if(want_facet){
+    if(!facet_col %in% colnames(stats)){
+      stop("--facet names a column that is not present: ", facet_col,
+           "\n  available: ", paste(colnames(stats), collapse = ", "), call. = FALSE)
+    }
+    if(length(facet_keep) > 0){
+      have <- unique(stats[[facet_col]])
+      absent <- setdiff(facet_keep, have)
+      if(length(absent) > 0){
+        warning("--facet_keep names ", length(absent), " value(s) not in ",
+                facet_col, ": ", paste(utils::head(absent, 5), collapse = ", "),
+                call. = FALSE)
+      }
+      faceted <- stats[stats[[facet_col]] %in% facet_keep, , drop = FALSE]
+      if(nrow(faceted) == 0){
+        stop("--facet_keep left no rows to facet.", call. = FALSE)
+      }
+    }
+    n_lev <- length(unique(faceted[[facet_col]]))
+    if(n_lev > facet_max){
+      # A page of fifty panels is not a figure. Refusing it loudly beats
+      # producing something nobody can read and calling it output.
+      warning("Faceting by ", facet_col, " would give ", n_lev,
+              " panels on one page, which is past --facet_max (", facet_max,
+              "). Skipping the faceted page; the pooled one is unaffected.",
+              "\n  Use --facet_keep to choose which to break out, or raise ",
+              "--facet_max.", call. = FALSE)
+      want_facet <- FALSE
+    }
   }
 
   out <- list()
@@ -227,7 +294,7 @@ plot_feature_scatter_list <- function(stats, specs, facet = "both", ...){
       }
     }
     if(want_facet){
-      p <- plot_feature_scatter(stats, sp$x, sp$y, id = sp$id,
+      p <- plot_feature_scatter(faceted, sp$x, sp$y, id = sp$id,
                                 facet_by = facet_col, ...)
       if(!is.null(p)){
         out[[paste0(sp$id, " ", sp$y, " vs ", sp$x, " by ", facet_col)]] <- p

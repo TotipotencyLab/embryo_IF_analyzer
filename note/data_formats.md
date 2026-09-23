@@ -315,6 +315,19 @@ upstream; this is the cheap end you re-run while trying pairs.
   for a band: `'area_med=100' 'area_med=400'`.
 - `--facet none | both | <column>`; `both` (default) writes a pooled page and a
   faceted one per pair.
+- `--facet_keep` / `--facet_keep_file` choose which levels get broken out. **The
+  pooled page always uses every row** — the point of the pair is to see the whole
+  population once and a readable subset of it beside that, not to answer both
+  questions from the same reduced set. The file form takes one value per line and
+  allows `#` comments.
+- `--facet_max` (default 16) skips the faceted page when it would exceed that
+  many panels, with a warning naming `--facet_keep`. A page of fifty panels is
+  not a figure.
+- `--legend_max` (default 12) drops the colour key past that many levels — it
+  becomes unreadable and ggplot shrinks the plot panel to make room for it. The
+  colour mapping stays; only the key goes, and the subtitle says so. The key is
+  also dropped when `--color_by` equals the facet column, since the strip above
+  each panel already names it.
 - `--show_avail_stats` lists the plottable columns with their non-NA counts and
   ranges, then exits. It needs `--input` (which channels exist depends on the
   data) but not `--outdir`.
