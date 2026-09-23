@@ -7,6 +7,15 @@
 # a feature's statistics must all fall inside.
 
 
+# Names the pipeline generates for itself, so a user class may not take them.
+# Without the reservation, --class 'other:...' would collide with the group
+# class_palette() folds unmapped classes into, and the plot would show two
+# different things under one label with nothing to say which was which.
+CLASS_UNCLASSIFIED <- "unclassified"
+CLASS_OTHER <- "other"
+CLASS_RESERVED <- c(CLASS_UNCLASSIFIED, CLASS_OTHER)
+
+
 #' Assign each feature to the first class it matches
 #'
 #' Priority is the order of `spec`, which is the order the classes were named on
@@ -14,8 +23,11 @@
 #' number of such features is reported rather than left implicit -- the choice
 #' is defensible, but only if you can see that it was made.
 #'
-#' A feature matching none is an ORPHAN: `class` is `NA` and it is kept unless
-#' `drop_orphan` says otherwise. Keeping it is the default for the same reason
+#' A feature matching none is an ORPHAN: `class` is `"unclassified"` -- a real
+#' string, not `NA` -- and it is kept unless `drop_orphan` says otherwise.
+#' The string matters: with `NA` there, `table(stats$class)` drops those rows
+#' without saying so, and the obvious way to count a classified table quietly
+#' comes out short. Keeping it is the default for the same reason
 #' relate_features.r keeps a parentless nucleolus -- an object that fits no
 #' class is evidence about the classes, and dropping it destroys the evidence.
 #'
@@ -28,6 +40,13 @@
 classify_features <- function(stats, spec, drop_orphan = FALSE){
   if(!length(spec)){
     return(stats)
+  }
+  taken <- intersect(names(spec), CLASS_RESERVED)
+  if(length(taken)){
+    stop("--class cannot use the reserved name(s): ", paste(taken, collapse = ", "),
+         "\n  '", CLASS_UNCLASSIFIED, "' is what a feature matching no class is called,",
+         " and '", CLASS_OTHER, "' is the group the plots fold unmapped classes into.",
+         "\n  Pick another name; both are settable in --color_map.", call. = FALSE)
   }
   if(!nrow(stats)){
     stats$class <- character(0)
@@ -68,7 +87,9 @@ classify_features <- function(stats, spec, drop_orphan = FALSE){
 
   n_hit <- rowSums(hits)
   first <- apply(hits, 1, function(r) if(any(r)) which(r)[1] else NA_integer_)
-  stats$class <- names(spec)[first]
+  cls <- names(spec)[first]
+  cls[is.na(cls)] <- CLASS_UNCLASSIFIED
+  stats$class <- cls
 
   n_multi <- sum(n_hit > 1)
   if(n_multi > 0){
@@ -78,9 +99,9 @@ classify_features <- function(stats, spec, drop_orphan = FALSE){
             "\n  Reorder the --class flags to change it.", call. = FALSE)
   }
 
-  n_orphan <- sum(is.na(stats$class))
+  n_orphan <- sum(stats$class == CLASS_UNCLASSIFIED)
   if(drop_orphan && n_orphan > 0){
-    stats <- stats[!is.na(stats$class), , drop = FALSE]
+    stats <- stats[stats$class != CLASS_UNCLASSIFIED, , drop = FALSE]
   }
 
   attr(stats, "n_multi") <- n_multi
@@ -102,9 +123,9 @@ class_counts <- function(stats, order = attr(stats, "class_order")){
   }
   n <- vapply(order, function(k) sum(stats$class == k, na.rm = TRUE), integer(1))
   out <- data.frame(class = order, n = as.integer(n), stringsAsFactors = FALSE)
-  n_na <- sum(is.na(stats$class))
+  n_na <- sum(stats$class == CLASS_UNCLASSIFIED, na.rm = TRUE)
   if(n_na > 0){
-    out <- rbind(out, data.frame(class = "(unclassified)", n = n_na,
+    out <- rbind(out, data.frame(class = CLASS_UNCLASSIFIED, n = n_na,
                                  stringsAsFactors = FALSE))
   }
   return(out)

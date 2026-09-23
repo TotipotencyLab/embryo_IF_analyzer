@@ -222,9 +222,11 @@ plot_outline_topView <- function(feature_df, color_by=NULL, color_map=NULL, line
 #' @param grey    colour for `other`
 #' @return list(values = recoded factor, palette = complete named vector,
 #'         other_members = the labels folded into `other`)
-class_palette <- function(values, map = NULL, other = "other", grey = "grey75"){
+class_palette <- function(values, map = NULL, other = CLASS_OTHER,
+                          grey = "grey30"){
   values <- as.character(values)
-  values[is.na(values)] <- "(unclassified)"
+  # Tables written before `class` held a real string still carry NA here.
+  values[is.na(values)] <- CLASS_UNCLASSIFIED
   present <- sort(unique(values))
 
   if(is.null(map) || !length(map)){
@@ -233,13 +235,25 @@ class_palette <- function(values, map = NULL, other = "other", grey = "grey75"){
                 palette = NULL, other_members = character(0)))
   }
 
+  # "other" is a group this function invents, so it is never in `present` --
+  # matching it against the data would drop the colour asked for. Taken from
+  # the map directly instead, and likewise "unclassified", which a caller may
+  # want to distinguish from the rest of the grey rather than fold in with it.
+  other_col <- if(other %in% names(map)) unname(map[[other]]) else grey
+  keep_unc <- CLASS_UNCLASSIFIED %in% names(map) && CLASS_UNCLASSIFIED %in% present
+
   named <- names(map)[names(map) %in% present]
   members <- setdiff(present, named)
-  lev <- c(if(length(members)) other, named)   # other FIRST: drawn underneath
+  # other FIRST so it is drawn underneath what is being inspected; then
+  # unclassified, which is background too; then the classes of interest.
+  ordered <- c(if(keep_unc) CLASS_UNCLASSIFIED, setdiff(named, CLASS_UNCLASSIFIED))
+  lev <- c(if(length(members)) other, ordered)
   recoded <- ifelse(values %in% named, values, other)
 
-  pal <- stats::setNames(rep(grey, length(lev)), lev)
-  pal[named] <- unname(map[named])
+  pal <- stats::setNames(rep(other_col, length(lev)), lev)
+  for(k in ordered){
+    pal[[k]] <- unname(map[[k]])
+  }
 
   return(list(values = factor(recoded, levels = lev),
               palette = pal,

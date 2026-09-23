@@ -163,9 +163,10 @@ join_feature_table <- function(x, tbl, cols = NULL, by = c("sample", "feature_id
 compose_feature_class <- function(tab, cols, sep = "-"){
   vals <- lapply(cols, function(cl) {
     v <- as.character(tab[[cl]])
-    # An absent class is a fact about the feature, not a blank: "(unclassified)"
-    # keeps it countable and stops paste() producing "oocyte-NA".
-    v[is.na(v) | !nzchar(v)] <- "(unclassified)"
+    # An absent class is a fact about the feature, not a blank: the literal
+    # keeps it countable and stops paste() producing "oocyte-NA". Same string
+    # classify_features() writes, so the two tables agree.
+    v[is.na(v) | !nzchar(v)] <- CLASS_UNCLASSIFIED
     v
   })
   hit <- cols[vapply(vals, function(v) any(grepl(sep, v, fixed = TRUE)), logical(1))]

@@ -275,7 +275,7 @@ Defaults to `feature_type`, so a run without it is unchanged apart from a
 The component columns are kept **beside** the composite, so nothing downstream
 has to split the label apart — which is where the separator would bite. A value
 that already contains the separator is a **warning**, and `--class_sep` picks
-another. An absent class becomes `(unclassified)`, never the string `NA`.
+another. An absent class becomes `unclassified`, never `NA` (see §5).
 
 **The annotation stays the spine and the stats table is joined onto it**, so
 `n_invalid` and `n_failed` survive. Counting from the stats table alone cannot
@@ -320,7 +320,7 @@ rejects table instead of being folded in.
 | `volume` | `area_sum × --z_step`, µm³. **Only when `--z_step` is given** — the run says so when it is not, since an absent column is otherwise indistinguishable from a missing feature |
 | `circ_med`, `circ_min` | only when the `_res.txt` was found |
 | `ch<N>_signal` | one column per channel measured; only when the `_res.txt` was found |
-| `class` | the `--class` a feature matched, `NA` when none; only when `--class` was given |
+| `class` | the `--class` a feature matched, or `unclassified`; only when `--class` was given |
 | *metadata* | every non-`prefix` sample sheet column, when supplied. `is_bridge` is **not** carried through: it is an ROI-level fact that varies within a feature, and `n_bridge` / `frac_bridge` are the feature-level answer |
 
 ⚠️ Every statistic above **excludes bridge ROIs** (`n_roi` and `n_z`
@@ -391,10 +391,22 @@ Taking the first is defensible; doing so invisibly is not. Swapping two
 measurement table was found has not been shown to lie inside the range, and
 treating unknown as a match would invent class members.
 
-A feature matching no class is an **orphan**: `class` is `NA` and it is kept,
+A feature matching no class is an **orphan**: `class` is the literal string
+`unclassified` and it is kept,
 the same reasoning as a parentless nucleolus in `relate_features.r` — an object
 that fits no class is evidence about the *classes*, and dropping it destroys
 the evidence. `--drop_orphan_feature` removes them once you have looked.
+
+⚠️ **`unclassified` is a string, not `NA`, and this is deliberate.** With
+`NA` there, `table(stats$class)` — the obvious way to count a classified table
+— drops those rows without saying so and comes out short. Measured on real
+data: 17 features, `table()` reporting 15.
+
+**`unclassified` and `other` are reserved class names.** `--class 'other:...'`
+is an error. `unclassified` is what a feature matching no class is called, and
+`other` is the group the plots fold unmapped classes into — a user class of
+either name would put two different things under one label with nothing to say
+which was which. Both are settable in `--color_map`.
 
 The biology is declared, never hardcoded. Nothing in the code knows what an
 oocyte is; it knows a class is a set of ranges. Because `class` is an ordinary
@@ -491,9 +503,22 @@ Panel (iii) takes the same `--feature_table` / `--feature_class_by` /
 `class` rather than by `feature_type`.
 
 `--color_map 'growing=red' 'small=blue'` highlights the classes under
-inspection. Everything else — including orphans — is drawn grey as a single
-`other` group, so invalid and unclassified features are still visible without
-competing for attention.
+inspection. Everything else — including orphans — is drawn as a single `other`
+group in **`grey30`**, so invalid and unclassified features are still visible
+without competing for attention. It is that dark on purpose: the per-ROI
+outlines underneath are `grey80`, and a lighter `other` was indistinguishable
+from them.
+
+Both reserved names are settable here, and they are the exception to the
+"names a class that is not present" warning — `other` never appears in the
+data, being the group this step invents:
+
+```bash
+--color_map 'growing=red' 'other=grey60' 'unclassified=gold'
+```
+
+Naming `unclassified` also **pulls it out of `other`** into its own level, for
+when the orphans are what you want to look at.
 
 ⚠️ **The colour map is always complete.** Measured on ggplot2 4.0.3, a level
 missing from `scale_colour_manual(values=)` is drawn in `na.value` grey

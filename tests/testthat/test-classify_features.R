@@ -24,7 +24,8 @@ test_that("a class is a set of ranges its members must all fall inside", {
   source_r_scripts("classify_features.r")
   out <- classify_features(.fake(), .spec("big:area_med=1000:Inf",
                                           "small:area_med=0:200"))
-  expect_identical(out$class, c("small", NA, "big", "small", NA, "big"))
+  expect_identical(out$class, c("small", "unclassified", "big",
+                                "small", "unclassified", "big"))
 })
 
 test_that("several tokens for one class are ANDed", {
@@ -32,7 +33,10 @@ test_that("several tokens for one class are ANDed", {
   # Large AND round. nucleus_3 is large but circ 0.6, nucleus_6 large but 0.55.
   out <- classify_features(.fake(), .spec("biground:area_med=1000:Inf",
                                           "biground:circ_med=0.7:1"))
-  expect_true(all(is.na(out$class)))
+  # A real string, not NA: table(stats$class) drops NA without saying so, and
+  # the obvious way to count a classified table then comes out short.
+  expect_true(all(out$class == "unclassified"))
+  expect_false(anyNA(out$class))
 
   loosened <- classify_features(.fake(), .spec("biground:area_med=1000:Inf",
                                                "biground:circ_med=0.5:1"))
@@ -72,12 +76,12 @@ test_that("an orphan is kept by default and dropped only when asked", {
 
   kept <- classify_features(.fake(), spec)
   expect_identical(nrow(kept), 6L)
-  expect_identical(sum(is.na(kept$class)), 4L)
+  expect_identical(sum(kept$class == "unclassified"), 4L)
   expect_identical(attr(kept, "n_orphan"), 4L)
 
   dropped <- classify_features(.fake(), spec, drop_orphan = TRUE)
   expect_identical(nrow(dropped), 2L)
-  expect_false(any(is.na(dropped$class)))
+  expect_false(any(dropped$class == "unclassified"))
   # The count survives the drop, so the run can still say what it removed.
   expect_identical(attr(dropped, "n_orphan"), 4L)
 })
@@ -88,7 +92,7 @@ test_that("NA never matches a range", {
   # invent members of a class.
   source_r_scripts("classify_features.r")
   out <- classify_features(.fake(), .spec("bright:ch1_signal=0:Inf"))
-  expect_true(is.na(out$class[5]))          # the NA row
+  expect_identical(out$class[5], "unclassified")   # the NA-signal row
   expect_identical(sum(out$class == "bright", na.rm = TRUE), 5L)
 })
 
@@ -135,7 +139,7 @@ test_that("class_counts lists classes in priority order, orphans last", {
   out <- classify_features(.fake(), .spec("big:area_med=1000:Inf",
                                           "small:area_med=0:200"))
   cc <- class_counts(out)
-  expect_identical(cc$class, c("big", "small", "(unclassified)"))
+  expect_identical(cc$class, c("big", "small", "unclassified"))
   expect_identical(cc$n, c(2L, 2L, 2L))
 })
 
@@ -182,4 +186,17 @@ test_that("--drop_orphan_feature without --class says so rather than passing", {
       "--input", feat, "--outdir", out, "--res_dir", fixture_dir(),
       "--no_plot", "--drop_orphan_feature"))),
     "does nothing without --class")
+})
+
+test_that("a reserved name cannot be used as a class", {
+  source_r_scripts("classify_features.r")
+  # Without this, --class 'other:...' collides with the group the plots fold
+  # unmapped classes into, and one label would mean two different things.
+  expect_error(classify_features(.fake(), .spec("other:area_med=0:Inf")),
+               "reserved name")
+  expect_error(classify_features(.fake(), .spec("unclassified:area_med=0:Inf")),
+               "reserved name")
+  # The message has to say where to go instead.
+  expect_error(classify_features(.fake(), .spec("other:area_med=0:Inf")),
+               "--color_map")
 })

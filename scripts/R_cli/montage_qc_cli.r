@@ -101,6 +101,7 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                                  "space-separated on ONE flag:",
                                  "--color_map 'growing=red' 'small=blue'. Everything else is",
                                  "drawn grey as one 'other' group, named in the caption.",
+                                 "'other' and 'unclassified' are settable here too.",
                                  "Automatic colours when omitted"))
   p <- add_argument(p, "--force", short = "-U", flag = TRUE,
                     help = "join --feature_table even when its run_id disagrees")
@@ -185,7 +186,9 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       stop("--color_map has unusable colour(s): ", paste(bad, collapse = ", "),
            "\n  use an R colour name (see colors()) or #RRGGBB", call. = FALSE)
     }
-    unknown <- setdiff(names(cmap), unique(valid$feature_class))
+    # The reserved names are legitimate targets even though "other" never
+    # appears in the data -- it is the group the unmapped classes fold into.
+    unknown <- setdiff(names(cmap), c(unique(valid$feature_class), CLASS_RESERVED))
     if (length(unknown)) {
       warning("--color_map names class(es) not present: ", paste(unknown, collapse = ", "),
               "\n  present: ", paste(sort(unique(valid$feature_class)), collapse = ", "),

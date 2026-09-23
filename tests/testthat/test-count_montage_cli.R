@@ -205,7 +205,7 @@ test_that("--feature_class_by composes a label, keeping the components", {
   # Composite AND components, so nothing downstream has to split the label.
   expect_true(all(c("feature_class", "class", "feature_type") %in% colnames(got)))
   expect_true(all(got$feature_class == paste(got$class, got$feature_type, sep = "-") |
-                    grepl("^\\(unclassified\\)-", got$feature_class)))
+                    grepl("^unclassified-", got$feature_class)))
   # The fate accounting survives, which is the reason the annotation stays the
   # spine rather than counting from the stats table.
   expect_true(all(c("n_detected", "n_invalid", "n_failed", "n_roi") %in% colnames(got)))
@@ -263,7 +263,7 @@ test_that("an absent class becomes (unclassified), never 'NA'", {
   d <- data.frame(class = c("big", NA, ""), feature_type = "nucleus",
                   stringsAsFactors = FALSE)
   expect_identical(compose_feature_class(d, "class", "-"),
-                   c("big", "(unclassified)", "(unclassified)"))
+                   c("big", "unclassified", "unclassified"))
 })
 
 test_that("class_palette never leaves a level for ggplot to grey out silently", {
@@ -281,7 +281,7 @@ test_that("class_palette never leaves a level for ggplot to grey out silently", 
   expect_false(any(is.na(pal$palette)))
   expect_identical(unname(pal$palette[["growing"]]), "red")
   # And what got folded in is recoverable, for the caption.
-  expect_setequal(pal$other_members, c("small", "debris", "(unclassified)"))
+  expect_setequal(pal$other_members, c("small", "debris", "unclassified"))
 })
 
 test_that("other is the FIRST level, so it draws underneath", {
@@ -296,7 +296,7 @@ test_that("no --color_map leaves the classes alone", {
   source_r_scripts("plot_outline_topView.r")
   pal <- class_palette(c("growing", "small", NA))
   expect_null(pal$palette)
-  expect_setequal(levels(pal$values), c("growing", "small", "(unclassified)"))
+  expect_setequal(levels(pal$values), c("growing", "small", "unclassified"))
   expect_length(pal$other_members, 0)
 })
 
@@ -343,4 +343,35 @@ test_that("the montage labels outlines by class and names the rest in the captio
     "--feature_class_by", "class",
     "--color_map", "big=red")))))
   expect_true(file.exists(out))
+})
+
+test_that("--color_map can set the greys, which are not in the data", {
+  # "other" is a group class_palette() invents, so matching it against the
+  # data's values would drop the colour that was asked for.
+  source_r_scripts(c("classify_features.r", "plot_outline_topView.r"))
+  v <- c("growing", "small", "debris", "unclassified")
+
+  pal <- class_palette(v, c(growing = "red", other = "black", unclassified = "grey90"))
+  expect_identical(unname(pal$palette[["other"]]), "black")
+  expect_identical(unname(pal$palette[["unclassified"]]), "grey90")
+  # Named explicitly, unclassified keeps its own level instead of folding in.
+  expect_true("unclassified" %in% levels(pal$values))
+  expect_false("unclassified" %in% pal$other_members)
+  # Background first, inspected classes last.
+  expect_identical(levels(pal$values), c("other", "unclassified", "growing"))
+})
+
+test_that("unclassified folds into other unless it is named", {
+  source_r_scripts(c("classify_features.r", "plot_outline_topView.r"))
+  pal <- class_palette(c("growing", "unclassified"), c(growing = "red"))
+  expect_false("unclassified" %in% levels(pal$values))
+  expect_true("unclassified" %in% pal$other_members)
+})
+
+test_that("the default other is dark enough to separate from the ROI outlines", {
+  # The per-ROI features underneath are drawn grey80; an 'other' at grey75 was
+  # indistinguishable from them.
+  source_r_scripts(c("classify_features.r", "plot_outline_topView.r"))
+  pal <- class_palette(c("a", "b"), c(a = "red"))
+  expect_identical(unname(pal$palette[["other"]]), "grey30")
 })

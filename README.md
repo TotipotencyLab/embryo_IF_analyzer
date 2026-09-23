@@ -235,8 +235,9 @@ feature_stat_cli.r --input features/ --outdir stats/ \
 
 Each token is `class:column=lo:hi`, repeated for more conditions (ANDed) and
 more classes. **The flag order is the priority** when a feature matches several,
-and the run says how many did. A feature matching none is kept with `class = NA`
-unless `--drop_orphan_feature` — it is evidence about where the boundaries are
+and the run says how many did. A feature matching none is kept as
+`class = "unclassified"` — a string, not `NA`, so `table()` cannot drop it
+silently — unless `--drop_orphan_feature` — it is evidence about where the boundaries are
 wrong. `class` is an ordinary column, so `--group_by class` and
 `feature_scatter_cli.r --color_by class` both work.
 
