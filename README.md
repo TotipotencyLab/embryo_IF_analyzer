@@ -211,6 +211,20 @@ Two size filters, and they are **not** interchangeable:
 | `--roi_area 'nucleus=80:Inf'` | on each ROI, **before** grouping | removing interior slices can split one object into two |
 | `--feature_area 'nucleus=400:Inf'` | on the finished feature | safe; prefer this one |
 
+When a pre-grouping filter is the right tool anyway, `--bridge_roi` stops it
+cutting objects in half:
+
+```bash
+--min_circularity 'nucleus=0.9' --bridge_roi circularity
+```
+
+The rejected ROIs stay in the overlap graph as **edges only** — they can hold an
+object together across the gap the filter opened, but cannot seed a feature and
+do not count toward `--min_z_span`. `circularity`, `roi_area` and `all` are
+accepted; the feature table gains an `is_bridge` column and
+`feature_stat_cli.r` reports `n_bridge` / `frac_bridge` so you can see how much
+of a count rests on rejected ROIs.
+
 [`PLA_analysis/`](PLA_analysis/) contains the proximity ligation assay analysis
 (published separately) and serves as a worked example of the R side end to end.
 

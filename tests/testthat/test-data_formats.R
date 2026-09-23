@@ -103,8 +103,8 @@ test_that("annotate writes the documented columns", {
     "--min_z_span", "default=5", "nucleolus=2",
     "--within", "nucleolus=nucleus")))
 
-  documented <- c("roi", "z", "area", "feature_id", "feature_type", "sample",
-                  "parent_feature_id", "parent_feature_type",
+  documented <- c("roi", "z", "area", "is_bridge", "feature_id", "feature_type",
+                  "sample", "parent_feature_id", "parent_feature_type",
                   "parent_containment", "parent_match")
   expect_identical(colnames(tsv), documented)
 
