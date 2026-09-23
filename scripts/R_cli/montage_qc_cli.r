@@ -86,6 +86,20 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = "Fiji _config.txt, for the image extent [default: found beside --features]")
   p <- add_argument(p, "--feature", short = "-f", type = "character", nargs = Inf, default = NULL,
                     help = "restrict panel (iii) to these feature type(s)")
+  p <- add_argument(p, "--feature_table", short = "-T", type = "character",
+                    help = paste("optional feature_stats.tsv, joined on sample+feature_id,",
+                                 "so --feature_class_by can name a column from it (e.g. class)"))
+  p <- add_argument(p, "--feature_class_by", short = "-B", type = "character", nargs = Inf, default = NULL,
+                    help = paste("column(s) whose values are joined to label each outline",
+                                 "[default: feature_type]. COLUMN NAMES, not values"))
+  p <- add_argument(p, "--class_sep", short = "-s", type = "character", default = "-",
+                    help = "separator joining --feature_class_by values [default: -]")
+  p <- add_argument(p, "--color_map", short = "-m", type = "character", nargs = Inf, default = NULL,
+                    help = paste("'<class>=<colour>' for the classes to highlight.",
+                                 "Everything else is drawn grey as one 'other' group,",
+                                 "named in the caption. Automatic colours when omitted"))
+  p <- add_argument(p, "--force", short = "-U", flag = TRUE,
+                    help = "join --feature_table even when its run_id disagrees")
   p <- add_argument(p, "--panel_height", short = "-H", type = "integer", default = 600,
                     help = "height in px each panel is scaled to")
   p <- add_argument(p, "--no_labels", short = "-N", flag = TRUE,
@@ -132,12 +146,77 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   valid <- .cli_valid_rows(feats)
   if (!nrow(valid)) stop("No valid features to draw in panel (iii)", call. = FALSE)
-  unioned <- union_features(valid)
+
+  # --- how each outline is labelled -------------------------------------------
+  class_by <- .cli_resolve_arg(argv$feature_class_by, "--feature_class_by")
+  if (is.null(class_by) || !length(class_by)) class_by <- "feature_type"
+
+  if (!is.na(argv$feature_table)) {
+    if (!file.exists(argv$feature_table)) {
+      stop("--feature_table not found: ", argv$feature_table, call. = FALSE)
+    }
+    ftab <- utils::read.delim(argv$feature_table, stringsAsFactors = FALSE)
+    if (!"sample" %in% colnames(valid)) valid$sample <- sample_name
+    geom <- sf::st_geometry(valid)
+    tab <- sf::st_drop_geometry(valid)
+    tab <- join_feature_table(tab, ftab, force = argv$force)
+    valid <- sf::st_set_geometry(tab, geom)
+  }
+
+  absent_cb <- setdiff(class_by, colnames(valid))
+  if (length(absent_cb)) {
+    stop("--feature_class_by column(s) not found: ", paste(absent_cb, collapse = ", "),
+         "\n  available: ", paste(colnames(sf::st_drop_geometry(valid)), collapse = ", "),
+         if (is.na(argv$feature_table)) "\n  (a column from the stats table needs --feature_table)" else "",
+         call. = FALSE)
+  }
+  valid$feature_class <- compose_feature_class(sf::st_drop_geometry(valid),
+                                               class_by, argv$class_sep)
+
+  cmap <- .cli_key_values(argv$color_map, "--color_map")
+  cmap <- if (length(cmap)) unlist(cmap) else NULL
+  if (!is.null(cmap)) {
+    bad <- cmap[!(cmap %in% grDevices::colors() | grepl("^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$", cmap))]
+    if (length(bad)) {
+      stop("--color_map has unusable colour(s): ", paste(bad, collapse = ", "),
+           "\n  use an R colour name (see colors()) or #RRGGBB", call. = FALSE)
+    }
+    unknown <- setdiff(names(cmap), unique(valid$feature_class))
+    if (length(unknown)) {
+      warning("--color_map names class(es) not present: ", paste(unknown, collapse = ", "),
+              "\n  present: ", paste(sort(unique(valid$feature_class)), collapse = ", "),
+              call. = FALSE)
+    }
+  }
+
+  # union AFTER the class is assigned, and carry it through the grouping or the
+  # summarise drops it.
+  unioned <- union_features(valid,
+                            group_cols = c("feature_id", "feature_type", "feature_class"))
   message("Panel (iii): ", nrow(feats), " ROIs -> ", nrow(unioned), " unioned feature(s)")
 
+  pal <- class_palette(unioned$feature_class, cmap)
+  unioned$feature_class <- pal$values
+
   r_png <- tempfile(fileext = ".png")
-  .r_panel(feats, unioned, extent, sample_name, r_png, argv$panel_height)
-  panels[[paste0("R union, z-aware (", nrow(unioned), ")")]] <- magick::image_read(r_png)
+  .r_panel(feats, unioned, extent, sample_name, r_png, argv$panel_height,
+           palette = pal$palette)
+
+  # The panel is deliberately legend-free so it lines up with the Fiji PNGs
+  # beside it, so the key goes in the caption instead. Naming what is inside
+  # "other" is the point: a grey blob nobody can identify is how a QC panel
+  # quietly stops being a QC panel.
+  cap <- paste0("R union, z-aware (", nrow(unioned), ")")
+  if (!is.null(pal$palette)) {
+    named <- setdiff(names(pal$palette), "other")
+    cap <- paste0(cap, " | ",
+                  paste(sprintf("%s=%s", named, pal$palette[named]), collapse = " "))
+    if (length(pal$other_members)) {
+      cap <- paste0(cap, " | other(", length(pal$other_members), "): ",
+                    paste(pal$other_members, collapse = ", "))
+    }
+  }
+  panels[[cap]] <- magick::image_read(r_png)
 
   if (length(panels) < 2) {
     warning("Only one panel available; a montage of one panel is just the panel.",
@@ -229,7 +308,8 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   return(list(xmax = w * pw, ymax = h * ph))
 }
 
-.r_panel <- function(feats, unioned, extent, sample_name, path, panel_height) {
+.r_panel <- function(feats, unioned, extent, sample_name, path, panel_height,
+                     palette = NULL) {
   # y_ref decides what the flip pivots about. With a known frame, flip about the
   # frame so the panel matches the Fiji PNG; otherwise about the data's own
   # bounding box, which is the best available but is a different crop.
@@ -238,13 +318,14 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   # shrink the picture relative to the other two panels. The montage caption
   # carries the labelling instead.
   if (!is.null(extent)) {
-    p <- plot_features_topView(feats, unioned, color_by = "feature_type",
+    p <- plot_features_topView(feats, unioned, color_by = "feature_class",
                                y_ref = extent$ymax,
                                xlim = c(0, extent$xmax), ylim = c(0, extent$ymax),
-                               bare = TRUE)
+                               bare = TRUE, palette = palette)
     aspect <- extent$xmax / extent$ymax
   } else {
-    p <- plot_features_topView(feats, unioned, color_by = "feature_type", bare = TRUE)
+    p <- plot_features_topView(feats, unioned, color_by = "feature_class",
+                               bare = TRUE, palette = palette)
     bb <- sf::st_bbox(feats)
     aspect <- unname((bb["xmax"] - bb["xmin"]) / (bb["ymax"] - bb["ymin"]))
   }

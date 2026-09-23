@@ -51,10 +51,22 @@ suppressPackageStartupMessages({
   return(NA_character_)
 })()
 
-.count_source_helpers <- function() {
-  if (exists(".cli_resolve_arg", mode = "function")) return(invisible(NULL))
-  if (is.na(.THIS_DIR)) stop("cannot locate cli_helpers.r", call. = FALSE)
-  sys.source(file.path(.THIS_DIR, "cli_helpers.r"), envir = globalenv())
+.count_source_helpers <- function(rlib = NA) {
+  if (!exists(".cli_resolve_arg", mode = "function")) {
+    if (is.na(.THIS_DIR)) stop("cannot locate cli_helpers.r", call. = FALSE)
+    sys.source(file.path(.THIS_DIR, "cli_helpers.r"), envir = globalenv())
+  }
+  # Only the one file, not the whole of scripts/R/. This CLI reads finished
+  # tables and does no geometry, so pulling in the sf-dependent library would
+  # add failure modes it cannot hit.
+  if (!exists("join_feature_table", mode = "function")) {
+    dir <- if (is.na(rlib)) file.path(.THIS_DIR, "..", "R") else rlib
+    f <- file.path(dir, "feature_join.r")
+    if (!file.exists(f)) {
+      stop("cannot locate feature_join.r; pass --rlib_path", call. = FALSE)
+    }
+    sys.source(f, envir = globalenv())
+  }
 }
 
 # ------------------------------------------------------------------------------
@@ -77,6 +89,17 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = "sample sheet column holding the file prefix")
   p <- add_argument(p, "--group_by", short = "-g", type = "character", nargs = Inf, default = NULL,
                     help = "metadata column(s) to summarise over, e.g. genotype timepoint")
+  p <- add_argument(p, "--feature_table", short = "-T", type = "character",
+                    help = paste("optional feature_stats.tsv to join on sample+feature_id,",
+                                 "bringing its columns (e.g. class) in for --feature_class_by"))
+  p <- add_argument(p, "--feature_class_by", short = "-B", type = "character", nargs = Inf, default = NULL,
+                    help = paste("column(s) whose values are joined into the identity of the",
+                                 "thing counted [default: feature_type]. Takes COLUMN NAMES,",
+                                 "not values -- use --feature to select feature types"))
+  p <- add_argument(p, "--class_sep", short = "-s", type = "character", default = "-",
+                    help = "separator joining --feature_class_by values [default: -]")
+  p <- add_argument(p, "--force", short = "-U", flag = TRUE,
+                    help = "join --feature_table even when its run_id disagrees")
   p <- add_argument(p, "--feature", short = "-f", type = "character", nargs = Inf, default = NULL,
                     help = "restrict to these feature type(s) [default: all present]")
   p <- add_argument(p, "--output_prefix", short = "-P", type = "character", default = "",
@@ -88,6 +111,8 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   argv <- parse_args(p, argv = args)
   .cli_require(argv, c("input", "outdir"))
+
+  .count_source_helpers(argv$rlib_path)
 
   .cli_need(c("dplyr", "tibble", "stringr", "sf"))
   suppressPackageStartupMessages({
@@ -110,6 +135,23 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   keep_features <- .cli_resolve_arg(argv$feature, "--feature")
   group_by_cols <- .cli_resolve_arg(argv$group_by, "--group_by")
+
+  # Column NAMES, joined into the identity of the thing counted. --feature
+  # takes values and selects; this takes columns and labels. They sit next to
+  # each other and are easy to confuse, so the help says so too.
+  class_by <- .cli_resolve_arg(argv$feature_class_by, "--feature_class_by")
+  if (is.null(class_by) || !length(class_by)) class_by <- "feature_type"
+  class_sep <- argv$class_sep
+  if (!nzchar(class_sep)) stop("--class_sep cannot be empty", call. = FALSE)
+
+  ftab <- NULL
+  if (!is.na(argv$feature_table)) {
+    if (!file.exists(argv$feature_table)) {
+      stop("--feature_table not found: ", argv$feature_table, call. = FALSE)
+    }
+    ftab <- utils::read.delim(argv$feature_table, stringsAsFactors = FALSE)
+    message("Joining ", basename(argv$feature_table), " (", nrow(ftab), " feature rows)")
+  }
 
   outdir <- argv$outdir
   dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
@@ -142,9 +184,28 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
     tab$.status <- .feature_status(tab$feature_id)
 
+    if (!is.null(ftab)) {
+      if (!"sample" %in% colnames(tab)) tab$sample <- smp
+      # Only the detected features are in a per-feature table; invalid and
+      # failed rows are legitimately absent and must not read as misses.
+      tab <- join_feature_table(tab, ftab, force = argv$force,
+                                expect = tab$.status == "detected")
+    }
+
+    absent_cb <- setdiff(class_by, colnames(tab))
+    if (length(absent_cb)) {
+      stop("--feature_class_by column(s) not found: ", paste(absent_cb, collapse = ", "),
+           "\n  available: ", paste(setdiff(colnames(tab), ".status"), collapse = ", "),
+           if (is.null(ftab)) "\n  (a column from the stats table needs --feature_table)" else "",
+           call. = FALSE)
+    }
+
+    tab$.class <- compose_feature_class(tab, class_by, class_sep)
+
     counts <- tab |>
-      dplyr::distinct(feature_type, feature_id, .status) |>
-      dplyr::count(feature_type, .status, name = "n") |>
+      dplyr::distinct(dplyr::across(dplyr::all_of(c(class_by, ".class"))),
+                      feature_id, .status) |>
+      dplyr::count(dplyr::across(dplyr::all_of(c(class_by, ".class"))), .status, name = "n") |>
       tidyr::pivot_wider(names_from = ".status", values_from = "n", values_fill = 0)
 
     for (col in c("detected", "invalid", "failed")) {
@@ -154,14 +215,16 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       dplyr::mutate(sample = smp,
                     # unname(): vapply over a character vector names the result
                     # after its input, which would leak into the written TSV.
-                    n_roi = unname(vapply(feature_type,
-                                          function(ft) sum(tab$feature_type == ft), integer(1)))) |>
-      dplyr::select(sample, feature_type, n_detected = detected,
-                    n_invalid = invalid, n_failed = failed, n_roi)
+                    n_roi = unname(vapply(.class,
+                                          function(cl) sum(tab$.class == cl), integer(1)))) |>
+      dplyr::select(sample, feature_class = ".class",
+                    dplyr::all_of(class_by),
+                    n_detected = detected, n_invalid = invalid,
+                    n_failed = failed, n_roi)
 
     per_sample[[smp]] <- counts
     message("  ", smp, ": ",
-            paste(sprintf("%s=%d", counts$feature_type, counts$n_detected), collapse = ", "))
+            paste(sprintf("%s=%d", counts$feature_class, counts$n_detected), collapse = ", "))
   }
 
   if (!length(per_sample)) stop("Nothing was counted.", call. = FALSE)

@@ -25,8 +25,9 @@ Read by `.cli_read_sample_sheet()`. Accepted extensions: `.tsv` / `.txt`
 | anything else | no | carried through verbatim onto every output row, and usable in `--group_by` |
 
 ⚠️ A metadata column may not be named after one the CLIs write themselves —
-`roi`, `z`, `area`, `is_bridge`, `geometry`, `sample`, `feature_id`, `feature_type`,
-`parent_*`, `n_detected`, `n_invalid`, `n_failed`, `n_roi`. The sheet is
+`roi`, `z`, `area`, `is_bridge`, `geometry`, `sample`, `run_id`, `feature_id`, `feature_type`,
+`parent_*`, `feature_class`, `n_detected`, `n_invalid`, `n_failed`, `n_roi`.
+The sheet is
 rejected with the offending name rather than the column being silently renamed
 to `area...7`. (The `--id_column` itself is exempt: it is the key, not
 metadata.)
@@ -230,6 +231,7 @@ cannot read R. Columns, in both:
 | `feature_id` | chr | group this ROI belongs to, see §5 |
 | `feature_type` | chr | `nucleus`, `nucleolus`, … |
 | `sample` | chr | the `prefix` |
+| `run_id` | chr | 10 hex characters identifying the annotate run, see §5 |
 | `parent_feature_id` | chr | `NA` unless `--within` was given |
 | `parent_feature_type` | chr | |
 | `parent_containment` | dbl | 0–1, fraction of the child inside the parent |
@@ -248,8 +250,42 @@ cannot read R. Columns, in both:
 <outdir>/<output_prefix>feature_counts.png          only with --plot
 ```
 
-`feature_counts.tsv`: `sample`, `feature_type`, `n_detected`, `n_invalid`,
+`feature_counts.tsv`: `sample`, `feature_class`, the `--feature_class_by`
+component columns (`feature_type` by default), `n_detected`, `n_invalid`,
 `n_failed`, `n_roi`, plus metadata columns.
+
+#### `--feature_class_by` — what is being counted
+
+Three flags sit next to each other and are easy to confuse, so the difference
+is behavioural, not just wording:
+
+| flag | takes | does |
+|---|---|---|
+| `--feature` | **values** | which feature types to include |
+| `--feature_class_by` | **columns** | joined into `feature_class`, the identity of the thing counted |
+| `--group_by` | **columns** | kept separate — the strata counts are broken down by |
+
+```bash
+--feature_table stats/feature_stats.tsv --feature_class_by class feature_type
+```
+
+Defaults to `feature_type`, so a run without it is unchanged apart from a
+`feature_class` column that equals `feature_type`.
+
+The component columns are kept **beside** the composite, so nothing downstream
+has to split the label apart — which is where the separator would bite. A value
+that already contains the separator is a **warning**, and `--class_sep` picks
+another. An absent class becomes `(unclassified)`, never the string `NA`.
+
+**The annotation stays the spine and the stats table is joined onto it**, so
+`n_invalid` and `n_failed` survive. Counting from the stats table alone cannot
+produce them: it holds only valid features, and that accounting is what
+separates "few objects here" from "most of them failed a filter". The join is
+scoped so that `invalid_*` and `failed_*` rows are not reported as misses —
+they are legitimately absent from a per-feature table.
+
+⚠️ The join is guarded by `run_id`; see §5. Joining a stats table from a
+different annotate run would otherwise match at ~100% and be wrong.
 
 `n_detected` is the count. The other three are why it is trustworthy: a sample
 whose objects mostly failed the z-span filter must not look like a sample that
@@ -450,6 +486,36 @@ different settings can be compared with `--facet source_file`.
 
 ### `montage_qc_cli.r`
 
+Panel (iii) takes the same `--feature_table` / `--feature_class_by` /
+`--class_sep` as `count_features_cli.r`, so an outline can be coloured by
+`class` rather than by `feature_type`.
+
+`--color_map 'growing=red' 'small=blue'` highlights the classes under
+inspection. Everything else — including orphans — is drawn grey as a single
+`other` group, so invalid and unclassified features are still visible without
+competing for attention.
+
+⚠️ **The colour map is always complete.** Measured on ggplot2 4.0.3, a level
+missing from `scale_colour_manual(values=)` is drawn in `na.value` grey
+*and dropped from the legend*, so a real class vanishes from the figure's
+account of itself. `class_palette()` therefore **recodes** the unmapped classes
+into one `other` level rather than letting them fall through, and puts `other`
+**first** so it is drawn underneath. See `.claude/skills/r-ggplot`.
+
+The panel has **no legend on purpose** — it is drawn to the image frame so it
+lines up with the Fiji PNGs beside it, and a legend would steal width and break
+that. The key goes in the panel caption instead, which also names what is
+inside `other`:
+
+```
+R union, z-aware (17) | growing=red | other(1): small
+```
+
+A `--color_map` colour that is not an R colour name or `#RRGGBB` is refused
+before ggplot sees it; one naming a class that is not present warns.
+
+
+
 One PNG, panels left to right: raw z-projection, Fiji overlay, R union. The
 first two are the Fiji overview pair described in §2 — `--projection` takes the
 unsuffixed PNG and `--overlay` the `_overlay` one, both for the same channel.
@@ -514,6 +580,31 @@ mismatch; it is provenance.
 To test whether a row is a real detected feature, compare against the row's own
 `feature_type` (`startsWith(feature_id, paste0(feature_type, "_"))`), never
 against a hardcoded list of names — `.cli_valid_rows()` does this.
+
+### `run_id` — which annotate run produced this
+
+Ten hex characters, hashed from the effective parameters, the repo `VERSION`,
+and a fingerprint of the resolved input files (basename and size). Written by
+`annotate_features_cli.r` onto every row, and carried through by
+`feature_stat_cli.r`.
+
+It exists because **`feature_id` is sequential within an image and means
+nothing across runs.** Two annotate runs over the same images produce the same
+sample names *and* the same `nucleus_1`, `nucleus_2`, … So joining one run's
+per-feature table onto another run's annotation matches on
+`sample` + `feature_id` at essentially **100%** and attaches every value to the
+wrong object. The obvious guard — reporting the match rate — reads *perfect*
+in exactly the case that is broken.
+
+`join_feature_table()` compares the two `run_id`s and **stops** when they
+disagree, naming both. `--force` overrides it and downgrades the stop to a
+warning. A table written before `run_id` existed joins with a warning saying
+the check could not be made.
+
+Identical parameters over identical inputs give an identical id, so a re-run
+joins cleanly. What it does **not** catch: an input file edited in place to the
+same byte length. Hashing the outline tables' contents would, at the cost of
+reading every input on a large batch.
 
 ### `is_bridge` — an ROI that holds an object together but is not evidence of it
 

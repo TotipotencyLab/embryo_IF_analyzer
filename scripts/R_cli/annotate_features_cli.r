@@ -208,6 +208,33 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   # get the right files onto the list.
   pattern <- if(is.na(argv$input_pattern)) "_outline\\.txt$" else argv$input_pattern
   files <- .cli_resolve_input_path(argv$input, pattern)
+
+  # Provenance. feature_id is sequential per image and means nothing across
+  # runs, so a table joined onto the WRONG run's annotation matches on
+  # sample+feature_id at ~100% and attaches every value to the wrong object.
+  # run_id is what makes that detectable downstream; see scripts/R/feature_join.r.
+  #
+  # The hash covers the effective parameters, the repo version and the input
+  # fingerprint (name and size, not content -- see run_input_fingerprint()).
+  run_id <- run_id_from(c(
+    "annotate_features_cli",
+    paste0("version=", tryCatch(readLines(file.path(.THIS_DIR, "..", "..", "VERSION"),
+                                          warn = FALSE)[1],
+                                error = function(e) "unknown")),
+    paste0("feature=", paste(features, collapse = " ")),
+    paste0("max_z_dist=", paste(unlist(max_z_dist), collapse = " ")),
+    paste0("min_z_span=", paste(unlist(min_z_span), collapse = " ")),
+    paste0("min_circularity=", paste(unlist(min_circ), collapse = " ")),
+    paste0("min_intersect_ratio=", paste(unlist(min_int_ratio), collapse = " ")),
+    paste0("roi_area=", paste(unlist(roi_area), collapse = " ")),
+    paste0("feature_area=", paste(unlist(feature_area), collapse = " ")),
+    paste0("bridge_roi=", paste(bridge_spec, collapse = " ")),
+    paste0("rename=", paste(names(rename), unlist(rename), collapse = " ")),
+    paste0("within=", paste(names(within), unlist(within), collapse = " ")),
+    paste0("min_containment=", paste(unlist(min_contain), collapse = " ")),
+    paste0("require_parent=", isTRUE(argv$require_parent)),
+    run_input_fingerprint(files)))
+  message("run_id: ", run_id)
   jobs <- .cli_scan_inputs(files, features)
   jobs <- .cli_apply_rename(jobs, rename)
 
@@ -352,6 +379,7 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       meta[[argv$id_column]] <- NULL
       if (ncol(meta)) sample_df <- dplyr::bind_cols(sample_df, meta[rep(1, nrow(sample_df)), , drop = FALSE])
     }
+    sample_df$run_id <- run_id
     sample_sf <- sf::st_as_sf(sample_df)
     
     # --- containment ----------------------------------------------------------
