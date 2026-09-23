@@ -63,6 +63,33 @@ suppressPackageStartupMessages({
 
 # ------------------------------------------------------------------------------
 
+# The pre-grouping ROI filters whose rejects may bridge a z-gap, named as the
+# CLI flag that creates them rather than as the library's internal reason
+# string. --min_circularity works by setting the `include` column, which is why
+# the two vocabularies differ at all.
+#
+# --input's own name filter is absent on purpose: it rejects on feature
+# IDENTITY, not quality, so bridging it would let an ROI of one feature type
+# glue two objects of another together.
+.BRIDGEABLE <- c("circularity", "roi_area")
+.BRIDGE_REASON <- c(circularity = "include", roi_area = "area")
+
+#' Resolve --bridge_roi into the library's reason strings
+#'
+#' @param x Raw argument value.
+#' @return Character vector of reasons for `define_feature_group()`, or NULL.
+.cli_bridge_spec <- function(x) {
+  v <- .cli_resolve_arg(x, "--bridge_roi")
+  if (is.null(v) || !length(v)) return(NULL)
+  if ("all" %in% v) return(unname(.BRIDGE_REASON[.BRIDGEABLE]))
+  bad <- setdiff(v, .BRIDGEABLE)
+  if (length(bad)) {
+    stop("--bridge_roi takes ", paste(.BRIDGEABLE, collapse = ", "), " or 'all'; got: ",
+         paste(bad, collapse = ", "), call. = FALSE)
+  }
+  return(unname(.BRIDGE_REASON[v]))
+}
+
 annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   
   # Warnings are this stage's feedback channel: an ROI dropped for too few
@@ -101,6 +128,11 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = "keep only ROIs in this area range, BEFORE grouping, e.g. 'nucleus=80:Inf'")
   p <- add_argument(p, "--feature_area", short = "-A", type = "character", nargs = Inf, default = NULL,
                     help = "keep only features whose mean ROI area is in this range, e.g. 'nucleus=400:Inf'")
+  p <- add_argument(p, "--bridge_roi", short = "-b", type = "character", nargs = Inf, default = NULL,
+                    help = paste("pre-grouping filters whose rejects should bridge a z-gap",
+                                 "instead of being dropped:", paste(.BRIDGEABLE, collapse = " "),
+                                 "or 'all'. A bridge ROI forms edges only -- it cannot seed a",
+                                 "feature and does not count toward --min_z_span"))
   p <- add_argument(p, "--rename", short = "-n", type = "character", nargs = Inf, default = NULL,
                     help = "relabel a feature for reporting, as 'old=new', e.g. 'nucleus=oocyte'")
   p <- add_argument(p, "--within", short = "-w", type = "character", nargs = Inf, default = NULL,
@@ -137,6 +169,7 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   min_int_ratio <- .cli_key_values(argv$min_intersect_ratio, "--min_intersect_ratio")
   min_contain   <- .cli_key_values(argv$min_containment,     "--min_containment")
   roi_area      <- .cli_key_ranges(argv$roi_area,            "--roi_area")
+  bridge_spec   <- .cli_bridge_spec(argv$bridge_roi)
   feature_area  <- .cli_key_ranges(argv$feature_area,        "--feature_area")
 
   # 'old=new'. Applied to the REPORTING name only, at load, so everything
@@ -271,6 +304,7 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
         #     the new name would quietly select nothing.
         roi_regex           = paste0("^", roi_prefix),
         roi_area_range      = if (is.null(eff_roi_area)) c(0, Inf) else eff_roi_area,
+        bridge_roi          = bridge_spec,
         max_z_dist          = eff_z_dist,
         min_z_span          = eff_z_span,
         min_intersect_ratio = eff_ratio,
@@ -292,7 +326,18 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
               " min_intersect_ratio=", eff_ratio,
               if (!is.null(eff_roi_area))  paste0(" roi_area=", rng(eff_roi_area)) else "",
               if (!is.null(eff_feat_area)) paste0(" feature_area=", rng(eff_feat_area)) else "",
+              if (!is.null(bridge_spec))   paste0(" bridge=", paste(bridge_spec, collapse = "+")) else "",
               "]")
+    if (!is.null(bridge_spec) && "is_bridge" %in% colnames(feature_group)) {
+      n_br <- sum(feature_group$is_bridge, na.rm = TRUE)
+      if (n_br > 0) {
+        message("      ", n_br, " ROI(s) kept as bridges (edges only, not counted toward min_z_span)")
+      } else {
+        # Bridging on and nothing bridged is worth saying: it means the filter
+        # rejected nothing, so the flag had no opportunity to act.
+        message("      no ROI was rejected by a bridgeable filter, so nothing bridged")
+      }
+    }
     } # end for k
     
     if (!length(per_feature)) {

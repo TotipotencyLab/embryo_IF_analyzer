@@ -164,8 +164,16 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     res <- .read_res_for(feats, path, res_dirs)
     if (!is.null(res)) n_with_signal <- n_with_signal + 1L
 
+    # Everything that is not a known per-ROI column is treated as sample
+    # metadata and carried through. is_bridge belongs in this list: it is an
+    # ROI-level fact that VARIES within a feature, so leaving it out made
+    # summarise_feature_stats() warn about a metadata column varying and then
+    # take an arbitrary first value -- producing an is_bridge column on the
+    # per-feature table that invites exactly the wrong filter. n_bridge and
+    # frac_bridge are the feature-level answer.
     meta_cols <- setdiff(colnames(sf::st_drop_geometry(feats)),
-                         c("roi", "z", "area", "feature_id", "feature_type", "sample",
+                         c("roi", "z", "area", "is_bridge",
+                           "feature_id", "feature_type", "sample",
                            "parent_feature_id", "parent_feature_type",
                            "parent_containment", "parent_match"))
     st <- summarise_feature_stats(feats, res = res,
