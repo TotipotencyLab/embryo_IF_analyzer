@@ -50,6 +50,11 @@ sandbox
 # User-specific files
 .Ruserdata
 
+# Default graphics device output. A CLI that opens a device without an explicit
+# file, or any plotting done from Rscript, drops this in the working directory —
+# so it appears at the repo root, named after nothing, belonging to no run.
+Rplots.pdf
+
 # Example code in package build process
 *-Ex.R
 
