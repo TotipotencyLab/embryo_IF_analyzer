@@ -52,6 +52,8 @@ Per feature, per image. `<prefix>` is the operator's `--output_prefix`,
 <prefix><image id>_<feature>_outline_ROIs.zip   ImageJ ROIs
 <prefix><image id>_<feature>_res.txt            measurements
 <prefix><image id>_config.txt                   every parameter used
+<prefix><image id>_overview_ch<c>.png           quick-look projection      (optional)
+<prefix><image id>_overview_ch<c>_overlay.png   the same, outlines drawn   (optional)
 ```
 
 `<feature>` is `nucleus` or `nucleolus` today. The R side derives both the
@@ -82,6 +84,45 @@ label, the title is tried the same way; Bio-Formats titles a series
 `<file>.lif - <series name>`, and the file part is removed. The raw title and
 slice label are logged on every run, so a wrong id can be diagnosed from the
 log alone.
+
+### Overview PNGs — quick-look only, never an input to a measurement
+
+Written by `Run_NucleusSelector.groovy` (when "Save overview PNG" is on) and by
+`Run_Overview.groovy`. The name is decided in one place,
+`Overview.overviewPath(dir, basename, channel, suffix)`:
+
+```
+<prefix><image id>_overview_ch<c><suffix>.png
+```
+
+| Suffix | Contents |
+|---|---|
+| *(empty)* | the bare z-projection |
+| `_overlay` | the same projection with detected outlines drawn on |
+
+**The suffix is what makes the two coexist.** They shared one name until now, so
+writing either destroyed the other — and `montage_qc_cli.r` needs both at once,
+as `--projection` and `--overlay`.
+
+`Run_NucleusSelector` writes both, for the DNA channel **plus every channel in
+`channels_measured`** — the outlines come from DNA, so drawing them over the
+other channels is how a signal is checked against its compartment. Which files
+exist is recorded in `_config.txt` as `overview_channels` and
+`overview_overlay_suffix`. `Run_Overview` derives its suffix from whether it
+actually drew anything, and takes an override.
+
+⚠️ Outlines are drawn in `merged` mode: ROIs are unioned **in the 2D
+projection**, so two objects overlapping in x-y share one outline however far
+apart they are in z. It is a picture, not a count — that is the whole reason
+the montage puts it beside R's z-aware union.
+
+⚠️ Contrast is `auto`, which stretches whatever is present. **A channel holding
+only noise gets that noise stretched to full brightness and saves a convincing
+picture of nothing.** Both runners log the display range per channel for this
+reason (`display 10.0-19.0` is noise; `display 10.0-240.0` is signal). The one
+case the tell misses is a *perfectly* constant channel, where the histogram is
+degenerate and ImageJ falls back to the type's full range — pinned in
+`Test_Overview`.
 
 ### `_outline.txt` — one row per polygon vertex
 
@@ -132,6 +173,7 @@ Provenance, read long after the run. Fields that other code depends on:
 | `image_width`, `image_height` | **pixels.** `montage_qc_cli.r`, to draw its panel over the same frame as the Fiji PNG |
 | `pixel_width`, `pixel_height`, `pixel_unit` | the same, to convert that frame to µm |
 | `script` | records the repo `VERSION` that produced the directory |
+| `overview_channels`, `overview_overlay_suffix` | which overview PNGs exist, so a results folder can be read later without guessing. Blank when none were written |
 
 Everything else is a record of the run's parameters. A key that is absent must
 be handled, not assumed: configs written before a field existed are still valid
@@ -190,7 +232,9 @@ genuinely has few objects.
 
 ### `montage_qc_cli.r`
 
-One PNG, panels left to right: raw z-projection, Fiji overlay, R union.
+One PNG, panels left to right: raw z-projection, Fiji overlay, R union. The
+first two are the Fiji overview pair described in §2 — `--projection` takes the
+unsuffixed PNG and `--overlay` the `_overlay` one, both for the same channel.
 
 ---
 
@@ -248,6 +292,7 @@ with the older macros. `read_fiji_result()` finds the id by matching
 | changing the `_outline.txt` filename pattern | breaks sample/feature recovery; needs `--input_pattern` and a doc update here |
 | changing `Set Measurements` | breaks the `Label` join; the measurements stay correct while the join returns nothing |
 | changing the ROI name format | breaks the roi-id regex in `read_fiji_result()` |
+| changing the overview `_overlay` suffix | cheap, but `--projection`/`--overlay` are passed by hand, so an old results folder keeps the old names |
 
 The rows in bold-adjacent territory share one property: **the numbers stay
 right while the join matches nothing**. Verify a format change by diffing a
