@@ -153,6 +153,27 @@ test_that("rename changes the reporting name and leaves the ROI matcher alone", 
   expect_identical(out$roi_prefix, "nucleus")
 })
 
+test_that("a per-feature lookup accepts several candidate keys, in order", {
+  lk <- c(nucleus = "2", default = "9")
+  # The reporting name is tried first, then the name Fiji wrote.
+  expect_equal(.cli_param_for(lk, c("oocyte", "nucleus"), 99), 2)
+  # When the first candidate IS keyed, it wins over the later one.
+  lk2 <- c(oocyte = "5", nucleus = "2")
+  expect_equal(.cli_param_for(lk2, c("oocyte", "nucleus"), 99), 5)
+  # Neither keyed: "default" before the built-in.
+  expect_equal(.cli_param_for(lk, c("cell", "cytoplasm"), 99), 9)
+  expect_equal(.cli_param_for(c(nucleus = "2"), c("cell"), 99), 99)
+})
+
+test_that("a key matching no feature is reported, not quietly ignored", {
+  expect_warning(
+    .cli_check_param_keys(list("--max_z_dist" = c(nucelus = "2")), known = "nucleus"),
+    "matching no feature")
+  expect_silent(
+    .cli_check_param_keys(list("--max_z_dist" = c(nucleus = "2", default = "3")),
+                          known = "nucleus"))
+})
+
 test_that("renaming something absent warns instead of passing silently", {
   jobs <- data.frame(path = "p", sample = "S1", roi_prefix = "nucleus",
                      from = "content", feature = "nucleus",
@@ -307,8 +328,45 @@ test_that("a renamed feature still matches its ROIs and relabels every id", {
 
   f <- readRDS(ren)
   expect_identical(unique(f$feature_type), "oocyte")
+  expect_identical(nrow(f), nrow(readRDS(plain)))
   expect_true(all(grepl("oocyte", f$feature_id[!is.na(f$feature_id)])))
   expect_false(any(grepl("nucleus", f$feature_id[!is.na(f$feature_id)])))
   # The ROI ids themselves are Fiji's and must be untouched.
   expect_true(all(grepl("^nucleus_", f$roi)))
+})
+
+test_that("per-feature settings keyed by the OLD name survive a rename", {
+  skip_if_no_sf()
+  skip_if_no_pkg("argparser")
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  source_cli("annotate_features_cli.r")
+
+  # Found on real data: --rename moved the lookup key to the new name, so
+  # 'nucleus=2' matched nothing and max_z_dist silently reverted from 2 to its
+  # built-in 3 (and min_z_span from 3 to 5). The run still printed a tidy
+  # summary with the wrong numbers in it.
+  tuned <- c("--max_z_dist", "nucleus=2", "--min_z_span", "nucleus=3")
+  plain <- run_annotate(withr::local_tempdir(), tuned)
+  ren   <- run_annotate(withr::local_tempdir(), c(tuned, "--rename", "nucleus=oocyte"))
+
+  expect_identical(n_valid(ren, "oocyte"), n_valid(plain, "nucleus"))
+
+  # And the settings must genuinely be in force, or the check above would pass
+  # simply because both runs used the same defaults.
+  untuned <- run_annotate(withr::local_tempdir())
+  expect_false(identical(n_valid(plain, "nucleus"), n_valid(untuned, "nucleus")))
+})
+
+test_that("a mistyped per-feature key warns rather than evaporating", {
+  skip_if_no_sf()
+  skip_if_no_pkg("argparser")
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  source_cli("annotate_features_cli.r")
+
+  d <- withr::local_tempdir()
+  expect_warning(
+    suppressMessages(annotate_features_cli(c(
+      "--input", fixture_file("nucleus", "outline"), "--outdir", d,
+      "--feature", "nucleus", "--max_z_dist", "nucelus=2"))),
+    "matching no feature")
 })

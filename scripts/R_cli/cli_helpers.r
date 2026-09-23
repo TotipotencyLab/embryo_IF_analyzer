@@ -92,20 +92,52 @@
 #' Extract setting per feature
 #' Look a per-feature parameter up: the feature's own value, else "default",
 #' else the built-in default. Returns a length-1 numeric.
+#'
+#' `feature` may name SEVERAL keys, tried in order. That is what makes
+#' --rename safe: after 'nucleus=oocyte' the reporting name is "oocyte" but the
+#' operator may well have written --max_z_dist 'nucleus=2' against the name Fiji
+#' produced. Passing c("oocyte", "nucleus") accepts either. Without it the key
+#' matched nothing and the flag silently fell back to the built-in default --
+#' the run looked fine and used the wrong number.
+#'
 #' @param lookup  key-value setting
-#' @param feature value within the parameter lookup
+#' @param feature key(s) to try, in order, before "default"
 #' @param default the default value when feature is not part of the lookup
 #' @param what    typically a flag name, for reporting when value is in the wrong format only
 .cli_param_for <- function(lookup, feature, default, what = "parameter") {
   if (!length(lookup)) return(default)
-  v <- if (feature %in% names(lookup)) lookup[[feature]]
+  hit <- feature[feature %in% names(lookup)]
+  v <- if (length(hit)) lookup[[hit[1]]]
        else if ("default" %in% names(lookup)) lookup[["default"]]
        else return(default)
   n <- suppressWarnings(as.numeric(v))
   if (is.na(n)) {
-    stop("Value for ", what, " (", feature, ") is not a number: ", v, call. = FALSE)
+    stop("Value for ", what, " (", feature[1], ") is not a number: ", v, call. = FALSE)
   }
   return(n)
+}
+
+#' Warn about per-feature keys that match no feature in this run
+#'
+#' A key nobody claims is almost always a typo or a stale name, and its flag
+#' then does nothing at all. Silence there is the repo's characteristic failure:
+#' the run looks clean and used a value the operator did not ask for.
+#'
+#' @param lookups named list of key-value/range lookups, named by flag
+#' @param known   every feature name a key may legitimately use
+.cli_check_param_keys <- function(lookups, known) {
+  for (what in names(lookups)) {
+    keys <- names(lookups[[what]])
+    if (!length(keys)) next
+    orphan <- setdiff(keys, c(known, "default"))
+    if (length(orphan)) {
+      warning(what, " has key(s) matching no feature in this run: ",
+              paste(orphan, collapse = ", "),
+              "\n  features present: ", paste(sort(unique(known)), collapse = ", "),
+              "\n  that setting is being IGNORED.", call. = FALSE)
+    }
+  }
+  return(invisible(NULL))
 }
 
 # --- input resolution ---------------------------------------------------------
@@ -430,11 +462,13 @@
 }
 
 #' Look a per-feature RANGE up, with the same default/fallback rule as
-#' .cli_param_for(). Returns NULL when nothing applies, so a caller can tell
-#' "not given" from "given as 0:Inf".
+#' .cli_param_for(), including its several-candidate-keys behaviour. Returns
+#' NULL when nothing applies, so a caller can tell "not given" from
+#' "given as 0:Inf".
 .cli_range_for <- function(lookup, feature, what = "parameter") {
   if (!length(lookup)) return(NULL)
-  if (feature %in% names(lookup)) return(lookup[[feature]])
+  hit <- feature[feature %in% names(lookup)]
+  if (length(hit)) return(lookup[[hit[1]]])
   if ("default" %in% names(lookup)) return(lookup[["default"]])
   return(NULL)
 }

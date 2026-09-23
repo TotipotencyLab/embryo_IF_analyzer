@@ -183,6 +183,17 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     message("  ", from_name, " file(s) identified from the FILENAME, not their content")
   }
 
+  # A per-feature key nobody claims does nothing at all, and the run still
+  # prints a tidy summary -- so say so rather than letting the flag evaporate.
+  .cli_check_param_keys(
+    list("--max_z_dist"          = max_z_dist,
+         "--min_z_span"          = min_z_span,
+         "--min_circularity"     = min_circ,
+         "--min_intersect_ratio" = min_int_ratio,
+         "--roi_area"            = roi_area,
+         "--feature_area"        = feature_area),
+    known = unique(c(jobs$feature, jobs$roi_prefix)))
+
   if (!is.na(argv$sample_sheet)) {
     sheet <- .cli_read_sample_sheet(path = argv$sample_sheet, id_column = argv$id_column)
     jobs <- .cli_apply_sample_sheet(contract_df = jobs, sheet = sheet, id_column = argv$id_column)
@@ -227,8 +238,9 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       .cli_check_identity(roi_df$roi, path, roi_prefix)
 
       # Optional circularity pre-filter, which needs the measurement table.
-      circ_cut <- if (feat %in% names(min_circ) || "default" %in% names(min_circ)) {
-        .cli_param_for(lookup=min_circ, feature=feat, default=dflt_args$min_circularity, what="--min_circularity")
+      circ_keys <- unique(c(feat, roi_prefix))
+      circ_cut <- if (any(circ_keys %in% names(min_circ)) || "default" %in% names(min_circ)) {
+        .cli_param_for(lookup=min_circ, feature=circ_keys, default=dflt_args$min_circularity, what="--min_circularity")
       } else NA_real_
       if (!is.na(circ_cut)) {
         roi_df <- .apply_circularity(roi_df, path, circ_cut)
@@ -238,15 +250,18 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       # so running it at min_z_span = 5 quietly returns a fraction of the real
       # count -- which is why the effective values are printed per feature
       # rather than left implicit.
-      eff_z_dist <- .cli_param_for(max_z_dist,    feat, dflt_args$max_z_dist,          "--max_z_dist")
-      eff_z_span <- .cli_param_for(min_z_span,    feat, dflt_args$min_z_span,          "--min_z_span")
-      eff_ratio  <- .cli_param_for(min_int_ratio, feat, dflt_args$min_intersect_ratio, "--min_intersect_ratio")
-      # Ranges are looked up under BOTH names, so --roi_area can be written
-      # against whichever the operator is thinking in after a --rename.
-      eff_roi_area  <- .cli_range_for(roi_area,     feat, "--roi_area")
-      if (is.null(eff_roi_area))  eff_roi_area  <- .cli_range_for(roi_area,     roi_prefix, "--roi_area")
-      eff_feat_area <- .cli_range_for(feature_area, feat, "--feature_area")
-      if (is.null(eff_feat_area)) eff_feat_area <- .cli_range_for(feature_area, roi_prefix, "--feature_area")
+      # EVERY per-feature setting is looked up under both the reporting name and
+      # the name Fiji wrote, reporting name first. After --rename the operator's
+      # 'nucleus=2' would otherwise match nothing and the flag would fall back to
+      # the built-in default -- silently, with the run still printing a tidy
+      # summary. Found exactly that way on the oocyte data: renaming quietly
+      # moved max_z_dist from 2 to 3 and min_z_span from 3 to 5.
+      keys <- unique(c(feat, roi_prefix))
+      eff_z_dist <- .cli_param_for(max_z_dist,    keys, dflt_args$max_z_dist,          "--max_z_dist")
+      eff_z_span <- .cli_param_for(min_z_span,    keys, dflt_args$min_z_span,          "--min_z_span")
+      eff_ratio  <- .cli_param_for(min_int_ratio, keys, dflt_args$min_intersect_ratio, "--min_intersect_ratio")
+      eff_roi_area  <- .cli_range_for(roi_area,     keys, "--roi_area")
+      eff_feat_area <- .cli_range_for(feature_area, keys, "--feature_area")
 
       feature_group <- define_feature_group(
         roi_df,
