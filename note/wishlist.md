@@ -18,6 +18,14 @@
   it actually happen.
 - IF quantification CLI: needs the background measurement question settled
   first (empty space vs cytoplasm, and nucleus vs cytoplasm signal).
+- `features_config.txt`: the R side's equivalent of Fiji's `_config.txt`. The
+  annotate CLI already stamps a `run_id` on its output and `join_feature_table()`
+  refuses a join across two runs — but the id is a 10-character hash, so the
+  refusal says *that* two tables disagree and nothing about *how*. A sidecar
+  written next to `features.rds`, holding the resolved inputs and the effective
+  parameters the hash was taken over, turns an opaque mismatch into a diff and
+  lets a results directory explain itself months later. The guard works without
+  it; this is the diagnosis half. Deferred, not rejected.
 
 This means the Groovy scripts may have to defined into different levels:
 - lowest level: utility function - for small individual step
