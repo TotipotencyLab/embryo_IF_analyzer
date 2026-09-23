@@ -104,7 +104,7 @@ test_that("annotate writes the documented columns", {
     "--within", "nucleolus=nucleus")))
 
   documented <- c("roi", "z", "area", "is_bridge", "feature_id", "feature_type",
-                  "sample", "parent_feature_id", "parent_feature_type",
+                  "sample", "run_id", "parent_feature_id", "parent_feature_type",
                   "parent_containment", "parent_match")
   expect_identical(colnames(tsv), documented)
 
@@ -151,8 +151,11 @@ test_that("count writes the documented columns", {
   out <- withr::local_tempdir()
   counts <- suppressMessages(count_features_cli(c("--input", feat, "--outdir", out)))
   expect_identical(colnames(counts),
-                   c("sample", "feature_type", "n_detected", "n_invalid",
-                     "n_failed", "n_roi"))
+                   c("sample", "feature_class", "feature_type", "n_detected",
+                     "n_invalid", "n_failed", "n_roi"))
+  # With the default --feature_class_by the composite IS the feature type, so
+  # the extra column is a rename of nothing rather than a change of meaning.
+  expect_identical(counts$feature_class, counts$feature_type)
 
   d <- withr::local_tempdir()
   sheet <- file.path(d, "s.tsv")

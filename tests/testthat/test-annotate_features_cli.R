@@ -167,7 +167,8 @@ test_that("annotate_features_cli finds 6 nuclei and 7 nucleoli on the fixture", 
   # The tidy table must not lose or invent rows.
   expect_identical(nrow(res), 97L)
   expect_setequal(colnames(res),
-                  c("roi", "z", "area", "is_bridge", "feature_id", "feature_type", "sample"))
+                  c("roi", "z", "area", "is_bridge", "feature_id", "feature_type",
+                    "sample", "run_id"))
 })
 
 test_that("annotate_features_cli writes a QC plot only when asked", {

@@ -59,9 +59,19 @@ suppressPackageStartupMessages({
 })()
 
 .stat_source_helpers <- function() {
-  if (exists(".cli_resolve_arg", mode = "function")) return(invisible(NULL))
-  if (is.na(.THIS_DIR)) stop("cannot locate cli_helpers.r", call. = FALSE)
-  sys.source(file.path(.THIS_DIR, "cli_helpers.r"), envir = globalenv())
+  if (!exists(".cli_resolve_arg", mode = "function")) {
+    if (is.na(.THIS_DIR)) stop("cannot locate cli_helpers.r", call. = FALSE)
+    sys.source(file.path(.THIS_DIR, "cli_helpers.r"), envir = globalenv())
+  }
+  # The reserved class names are needed while BUILDING the parser, and
+  # .source_rlib() does not run until after parse_args() -- it takes
+  # --rlib_path, which does not exist yet. Sourcing the one file here keeps the
+  # help text and the check that enforces it reading from the same constant;
+  # spelling the names into the help string instead is how the two drift.
+  if (!exists("CLASS_RESERVED")) {
+    f <- file.path(.THIS_DIR, "..", "R", "classify_features.r")
+    if (file.exists(f)) sys.source(f, envir = globalenv())
+  }
 }
 
 # ------------------------------------------------------------------------------
@@ -96,6 +106,24 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = paste("distance between slices, in the outline unit (microns).",
                                  "Adds a 'volume' column = area_sum x z_step. Fiji does not",
                                  "record pixel_depth in _config.txt, so it must be given here"))
+  p <- add_argument(p, "--class", short = "-k", type = "character", nargs = Inf, default = NULL,
+                    help = paste("assign each feature to a class from its own statistics.",
+                                 "Space-separated tokens on ONE flag, not a repeated flag:",
+                                 "--class 'big:area_med=600:Inf' 'big:circ_med=0:0.7'",
+                                 "'small:area_med=0:600'. Tokens sharing a class name are",
+                                 "ANDed; the order the names first appear is the priority",
+                                 "when a feature matches several.",
+                                 "RESERVED, and refused as class names:",
+                                 paste(if (exists("CLASS_RESERVED")) CLASS_RESERVED
+                                       else c("unclassified", "other"), collapse = " and "),
+                                 "-- the first is what a feature matching no class is called,",
+                                 "the second is the group the plots fold unmapped classes",
+                                 "into. Both are settable in montage_qc_cli.r --color_map"))
+  p <- add_argument(p, "--drop_orphan_feature", short = "-D", flag = TRUE,
+                    help = paste("drop features matching no --class [default: keep them,",
+                                 "class =", paste0("'", if (exists("CLASS_UNCLASSIFIED"))
+                                                           CLASS_UNCLASSIFIED else "unclassified", "'"),
+                                 "-- a string, not NA, so table() cannot drop them silently]"))
   p <- add_argument(p, "--log_scale", short = "-x", type = "character", nargs = Inf, default = NULL,
                     help = paste("columns to draw on a log10 axis, as names or globs:",
                                  "--log_scale volume 'area_*'. Quote a glob so the shell",
@@ -220,6 +248,32 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   if (!is.null(sheet)) {
     stats <- .cli_join_sheet(stats, sheet, argv$id_column)
+  }
+
+  # Before the --group_by check on purpose, so `--group_by class` can name the
+  # column this step creates.
+  class_spec <- .cli_class_spec(argv$class)
+  if (length(class_spec)) {
+    stats <- classify_features(stats, class_spec,
+                               drop_orphan = argv$drop_orphan_feature)
+    cc <- class_counts(stats)
+    message("Classes (priority ", paste(names(class_spec), collapse = " > "), "):")
+    for (i in seq_len(nrow(cc))) {
+      message("  ", format(cc$class[i], width = max(nchar(cc$class))), "  ", cc$n[i])
+    }
+    n_orphan <- attr(stats, "n_orphan")
+    if (!is.null(n_orphan) && n_orphan > 0) {
+      if (argv$drop_orphan_feature) {
+        message("  dropped ", n_orphan, " feature(s) matching no class (--drop_orphan_feature)")
+      } else {
+        # Kept, and said out loud: an unclassified feature is evidence about
+        # the class boundaries, not a nuisance row.
+        message("  kept ", n_orphan, " unclassified feature(s); ",
+                "--drop_orphan_feature removes them")
+      }
+    }
+  } else if (isTRUE(argv$drop_orphan_feature)) {
+    warning("--drop_orphan_feature does nothing without --class", call. = FALSE)
   }
 
   missing_group <- setdiff(group_by, colnames(stats))

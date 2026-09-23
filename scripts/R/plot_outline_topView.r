@@ -58,7 +58,7 @@ flip_y_breaks <- function(y_ref){
 
 plot_features_topView <- function(st_df, union_df=NULL, color_by="feature_type",
                                   y_ref=NULL, line_width=0.7, background_width=0.2,
-                                  xlim=NULL, ylim=NULL, bare=FALSE){
+                                  xlim=NULL, ylim=NULL, bare=FALSE, palette=NULL){
   # Top view of annotated features, drawn with geom_sf.
   #
   # Use this, not plot_outline_topView(), for anything that has been unioned:
@@ -85,6 +85,11 @@ plot_features_topView <- function(st_df, union_df=NULL, color_by="feature_type",
   if(!is.null(union_df)){
     p <- p + geom_sf(data=flip_y_image(union_df, y_ref),
                      mapping=aes(colour=.data[[color_by]]), fill=NA, linewidth=line_width)
+  }
+
+  # A complete map, never a partial one -- see class_palette().
+  if(!is.null(palette)){
+    p <- p + scale_colour_manual(values=palette, drop=FALSE)
   }
 
   # NB: one coord_sf only. Adding a second later replaces this one and ggplot
@@ -198,4 +203,59 @@ plot_outline_topView <- function(feature_df, color_by=NULL, color_map=NULL, line
   }
   
   return(p)
+}
+
+#' Build a complete colour map over the classes actually present
+#'
+#' ⚠️ Never hand ggplot a partial `values=`. Measured on ggplot2 4.0.3: a level
+#' absent from `values` is drawn in `na.value` grey -- indistinguishable from a
+#' genuine NA -- AND is dropped from the legend entirely. The figure then
+#' silently denies that the class exists. See .claude/skills/r-ggplot.
+#'
+#' So the classes that were not named are RECODED into one `other` level rather
+#' than left to fall through, and `other` is put FIRST so it is drawn
+#' underneath the classes being inspected.
+#'
+#' @param values  character vector of class labels present in the data
+#' @param map     named character vector, class -> colour; NULL for automatic
+#' @param other   label for everything unmapped
+#' @param grey    colour for `other`
+#' @return list(values = recoded factor, palette = complete named vector,
+#'         other_members = the labels folded into `other`)
+class_palette <- function(values, map = NULL, other = CLASS_OTHER,
+                          grey = "grey30"){
+  values <- as.character(values)
+  # Tables written before `class` held a real string still carry NA here.
+  values[is.na(values)] <- CLASS_UNCLASSIFIED
+  present <- sort(unique(values))
+
+  if(is.null(map) || !length(map)){
+    # Automatic: every class keeps its own level and ggplot picks the colours.
+    return(list(values = factor(values, levels = present),
+                palette = NULL, other_members = character(0)))
+  }
+
+  # "other" is a group this function invents, so it is never in `present` --
+  # matching it against the data would drop the colour asked for. Taken from
+  # the map directly instead, and likewise "unclassified", which a caller may
+  # want to distinguish from the rest of the grey rather than fold in with it.
+  other_col <- if(other %in% names(map)) unname(map[[other]]) else grey
+  keep_unc <- CLASS_UNCLASSIFIED %in% names(map) && CLASS_UNCLASSIFIED %in% present
+
+  named <- names(map)[names(map) %in% present]
+  members <- setdiff(present, named)
+  # other FIRST so it is drawn underneath what is being inspected; then
+  # unclassified, which is background too; then the classes of interest.
+  ordered <- c(if(keep_unc) CLASS_UNCLASSIFIED, setdiff(named, CLASS_UNCLASSIFIED))
+  lev <- c(if(length(members)) other, ordered)
+  recoded <- ifelse(values %in% named, values, other)
+
+  pal <- stats::setNames(rep(other_col, length(lev)), lev)
+  for(k in ordered){
+    pal[[k]] <- unname(map[[k]])
+  }
+
+  return(list(values = factor(recoded, levels = lev),
+              palette = pal,
+              other_members = members))
 }
