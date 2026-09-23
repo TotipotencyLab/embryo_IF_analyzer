@@ -354,25 +354,38 @@ upstream; this is the cheap end you re-run while trying pairs.
   colour mapping stays; only the key goes, and the subtitle says so. The key is
   also dropped when `--color_by` equals the facet column, since the strip above
   each panel already names it.
-- `--show_avail_stats` lists the plottable columns with their non-NA counts and
-  ranges, then exits. It needs `--input` (which channels exist depends on the
+- `--show_avail_stats` lists the plottable columns with their non-NA counts,
+  ranges and spans, then exits. It needs `--input` (which channels exist depends on the
   data) but not `--outdir`.
 
-⚠️ `area_*` **and `volume`** are drawn on a **log axis by default**, because
-they span orders of magnitude here; everything else is linear. `volume` is
-`area_sum × z_step` — the same quantity in different units — so the two must
-share an axis choice, or identical data reads as two different results. A
-logged axis says `(log10)` in its label, since that is the only thing
-distinguishing such a pair on sight.
+⚠️ **Nothing is drawn on a log axis unless you ask.** `--log_scale` names the
+columns, as names or globs, and applies wherever they appear:
 
-The rule keys on the column **name**, which is its weakness: a new column with
-the same distribution gets a linear axis because it is spelled differently, and
-nothing warns. A purely data-driven rule would be scale-invariant but would
-also log `z_min`, a slice index that spans 42× on real data and means nothing
-logged. `--log_x` / `--log_y`
-(`auto`/`on`/`off`) override it. A log axis that would drop a zero or negative
-value falls back to linear **with a warning** rather than silently losing the
-point.
+```bash
+--log_scale volume 'area_*'
+```
+
+Quote a glob so the shell does not expand it against filenames. A pattern that
+matches no column is a **warning**, not a silent linear plot.
+
+Keyed to the **column, not the axis** — the same reasoning as `--threshold`:
+whether a quantity wants a log scale is a fact about the quantity, not about
+which axis it happened to land on.
+
+Two automatic rules were tried and removed, both because the reader could not
+see them. Keyed on the *name*, `area_sum` was logged and `volume` was not —
+although `volume` **is** `area_sum × z_step`, so a change of units silently
+flipped the scale and identical data read as two different results. Keyed on
+the *data* (log when the span exceeds ~20×) it is at least unit-invariant, but
+on real data it logs `z_min`, a slice index spanning 42× that means nothing
+logged.
+
+`--show_avail_stats` prints each column's **span** (max/min over positive
+values) and lists the wide ones, so the choice is informed rather than guessed.
+Span is the right statistic for it precisely because it does not change with
+the units. A logged axis says `(log10)` in its label. A log axis that would
+drop a zero or negative value falls back to linear **with a warning** rather
+than silently losing the point.
 
 `--smooth` and `--corr` are off by default on purpose: per-sample n here is
 single digits, where a fit is noise with a ribbon around it and a coefficient
