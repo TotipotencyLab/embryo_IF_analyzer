@@ -82,9 +82,14 @@ aggregate_roi_stat <- function(value, weight, stat = "wmean"){
 #' @param channel_stat aggregation for the per-channel signal, see
 #'                     aggregate_roi_stat()
 #' @param meta_cols    extra columns to carry through, constant within a feature
+#' @param z_step       distance between slices, in the same unit as the
+#'                     outlines (microns). When given, adds a `volume` column.
+#'                     Not read from `_config.txt`: the Groovy side records
+#'                     pixel_width and pixel_height but not pixel_depth, so for
+#'                     existing results it has to be supplied.
 #' @return tibble, one row per sample + feature_id
 summarise_feature_stats <- function(st_df, res = NULL, channel_stat = "wmean",
-                                    meta_cols = character(0)){
+                                    meta_cols = character(0), z_step = NULL){
 
   tab <- st_df
   if(inherits(tab, "sf")){
@@ -155,6 +160,7 @@ summarise_feature_stats <- function(st_df, res = NULL, channel_stat = "wmean",
     dplyr::group_by(sample, feature_type, feature_id) %>%
     dplyr::summarise(n_bridge  = sum(is_bridge),
                      n_roi_all = dplyr::n(),
+                     n_z_all   = dplyr::n_distinct(z),
                      # Max SEED ROIs on any one slice. One object contributes
                      # one ROI per slice -- define_feature_group() assumes no
                      # two polygons overlap within a slice -- so anything above
@@ -196,8 +202,31 @@ summarise_feature_stats <- function(st_df, res = NULL, channel_stat = "wmean",
   geo <- dplyr::left_join(geo, bridge_n, by = c("sample", "feature_type", "feature_id"))
   geo$n_bridge  <- ifelse(is.na(geo$n_bridge), 0L, as.integer(geo$n_bridge))
   geo$n_roi_all <- ifelse(is.na(geo$n_roi_all), geo$n_roi, as.integer(geo$n_roi_all))
+  geo$n_z_all   <- ifelse(is.na(geo$n_z_all),   geo$n_z,   as.integer(geo$n_z_all))
   geo$frac_bridge <- ifelse(geo$n_roi_all > 0, geo$n_bridge / geo$n_roi_all, NA_real_)
   geo$max_roi_per_z <- ifelse(is.na(geo$max_roi_per_z), 1L, as.integer(geo$max_roi_per_z))
+
+  # Volume by the Cavalieri estimate: summed cross-sectional area times the
+  # slice spacing. area_sum alone is already the shape-free size measure --
+  # area_med only stands in for size while the object is a sphere, which a
+  # growing oocyte is not -- and z_step just puts it in real units.
+  #
+  # It is an UNDERCOUNT wherever the object was missed on a slice inside its
+  # own range: no interpolation is done, and z_gaps is the column that says how
+  # much of the object is missing. Bridges are excluded with everything else.
+  if(!is.null(z_step)){
+    # Validated before the NA test: `&&` on a length-2 value raises R's own
+    # error about the condition's length, which says nothing about z_step.
+    if(!is.numeric(z_step) || length(z_step) != 1L){
+      stop("z_step must be a single positive number", call. = FALSE)
+    }
+    if(!is.na(z_step)){
+      if(z_step <= 0){
+        stop("z_step must be a single positive number", call. = FALSE)
+      }
+      geo$volume <- geo$area_sum * z_step
+    }
+  }
 
   # --- shape ----------------------------------------------------------------------
   if("circ" %in% colnames(valid)){

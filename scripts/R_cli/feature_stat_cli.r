@@ -92,6 +92,10 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = "statistics to plot [default: every numeric one present]")
   p <- add_argument(p, "--channel_stat", short = "-c", type = "character", default = "wmean",
                     help = "per-channel aggregation: wmean, mean, median, sd, min, max, sum")
+  p <- add_argument(p, "--z_step", short = "-z", type = "numeric", default = NA,
+                    help = paste("distance between slices, in the outline unit (microns).",
+                                 "Adds a 'volume' column = area_sum x z_step. Fiji does not",
+                                 "record pixel_depth in _config.txt, so it must be given here"))
   p <- add_argument(p, "--plot_type", short = "-t", type = "character", nargs = Inf, default = NULL,
                     help = "any of box, violin, quasirandom [default: box quasirandom]")
   p <- add_argument(p, "--colour_by", short = "-C", type = "character",
@@ -170,7 +174,8 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                            "parent_containment", "parent_match"))
     st <- summarise_feature_stats(feats, res = res,
                                   channel_stat = argv$channel_stat,
-                                  meta_cols = meta_cols)
+                                  meta_cols = meta_cols,
+                                  z_step = if (is.na(argv$z_step)) NULL else argv$z_step)
     if (!nrow(st)) next
     per_file[[path]] <- st
     rejects[[path]] <- feature_reject_counts(feats)

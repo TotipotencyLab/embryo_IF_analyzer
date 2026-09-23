@@ -1,3 +1,40 @@
+#' Would this bridge weld two objects that sit side by side?
+#'
+#' One object contributes one ROI per z-slice -- `define_feature_group()`
+#' assumes no two polygons overlap within a slice -- so a group holding two
+#' ORDINARY ROIs on the same slice is not one object followed through z, it is
+#' two objects fused. That is the difference between the two things a bridge
+#' can do: rescuing a pinched object joins components that are DISJOINT in z,
+#' while a merged mask joins components that COEXIST on the same slices.
+#'
+#' Measured on real oocyte data: a circularity cut rejects the mask covering
+#' two touching oocytes precisely BECAUSE it is a figure-of-eight, so bridging
+#' those rejects hands back what the filter was removing.
+#'
+#' Counted as a DELTA, not as a presence. The seed pass can legitimately leave
+#' a component already stacked (a run with no circularity filter does this on
+#' real data), and testing for "any duplicate" would then refuse every later
+#' bridge touching it for a collision it did not cause.
+#'
+#' @param node_df Node table with `z`, `is_bridge` and `feature_group`.
+#' @param new_idx Row indices of the edge's two endpoints.
+#' @param groups Group numbers those endpoints already belong to.
+#' @return `TRUE` if the merge would create a new same-slice collision.
+.stacks_seeds <- function(node_df, new_idx, groups){
+  seed_z <- function(idx){
+    idx <- idx[!node_df$is_bridge[idx]]
+    return(node_df$z[idx])
+  }
+  idx_all <- unique(c(new_idx, which(node_df$feature_group %in% groups)))
+  after <- sum(duplicated(seed_z(idx_all)))
+
+  before <- 0
+  for(g in groups){
+    before <- before + sum(duplicated(seed_z(which(node_df$feature_group == g))))
+  }
+  return(after > before)
+}
+
 #' Warning text for "no ordinary ROI survived a pre-grouping filter"
 #'
 #' Keeps the original wording as a prefix so existing callers matching on it
@@ -253,27 +290,56 @@ define_feature_group <- function(roi_df,
   #     1:nrow() would then iterate over c(1, 0) and index rows that do not
   #     exist. With seq_len() the loop is simply skipped and every ROI falls
   #     through to the "overlap" fail bucket, which is the correct answer.
+  # Edges are processed in two passes: ordinary ROIs first, then the bridges.
+  #
+  # Order matters because only the second pass is guarded. Running the seed
+  # edges first means the ordinary components are fully formed before any
+  # bridge is asked to join them, so the guard below is deciding about real
+  # components rather than about whatever half-built fragments the edge order
+  # happened to produce. It also keeps a run with no bridges byte-identical:
+  # every edge is a seed edge and the loop is exactly what it was.
+  edge_is_bridge <- rep(FALSE, nrow(roi_edge_mat))
+  if(nrow(roi_edge_mat) > 0 && any(roi_node_df$is_bridge)){
+    br <- roi_node_df$roi_id[roi_node_df$is_bridge]
+    edge_is_bridge <- (roi_edge_mat[, 1] %in% br) | (roi_edge_mat[, 2] %in% br)
+  }
+
   feature_count <- 0
-  for(i in seq_len(nrow(roi_edge_mat))){
-    cur_idx <- which(roi_node_df$roi_id %in% roi_edge_mat[i, ])
-    # Check if any of these two already has group number assign to it
-    cur_nuc_num <- unique(roi_node_df$feature_group[cur_idx]) %>% 
-      subset(., !is.na(.))
-    
-    # Assign nucleus ID
-    if(length(cur_nuc_num)==0){
-      # i.e., new nucleus found!
-      feature_count <- feature_count +1
-      roi_node_df$feature_group[cur_idx] <- feature_count
-      
-    }else if(length(cur_nuc_num)==1){
-      # Adding new ROI to the existing group
-      roi_node_df$feature_group[cur_idx] <- cur_nuc_num
-      
-    }else if(length(cur_nuc_num)==2){
-      # Joining the two assigned nucleus together
-      cur_idx <- which(roi_node_df$feature_group %in% cur_nuc_num)
-      roi_node_df$feature_group[cur_idx] <- min(cur_nuc_num)
+  # `guard` is FALSE for the seed pass and TRUE for the bridge pass.
+  for(guard in c(FALSE, TRUE)){
+    rows <- which(edge_is_bridge == guard)
+    # Sorted, so a refusal does not depend on the order find_ROI_z_intersect()
+    # happened to return its pairs in.
+    if(length(rows) > 1){
+      rows <- rows[order(roi_edge_mat[rows, 1], roi_edge_mat[rows, 2])]
+    }
+    for(i in rows){
+      cur_idx <- which(roi_node_df$roi_id %in% roi_edge_mat[i, ])
+      # Check if any of these two already has group number assign to it
+      cur_nuc_num <- unique(roi_node_df$feature_group[cur_idx]) %>% 
+        subset(., !is.na(.))
+
+      if(guard && .stacks_seeds(roi_node_df, cur_idx, cur_nuc_num)){
+        # Refused: see .stacks_seeds(). The bridge keeps whatever group it has
+        # already; nothing is dropped, the merge simply does not happen.
+        next
+      }
+
+      # Assign nucleus ID
+      if(length(cur_nuc_num)==0){
+        # i.e., new nucleus found!
+        feature_count <- feature_count +1
+        roi_node_df$feature_group[cur_idx] <- feature_count
+        
+      }else if(length(cur_nuc_num)==1){
+        # Adding new ROI to the existing group
+        roi_node_df$feature_group[cur_idx] <- cur_nuc_num
+        
+      }else if(length(cur_nuc_num)==2){
+        # Joining the two assigned nucleus together
+        cur_idx <- which(roi_node_df$feature_group %in% cur_nuc_num)
+        roi_node_df$feature_group[cur_idx] <- min(cur_nuc_num)
+      }
     }
   }
   

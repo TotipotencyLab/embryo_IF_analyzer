@@ -165,18 +165,20 @@ test_that("feature_stats reports n_bridge and frac_bridge", {
   expect_identical(st$n_roi, 6L)
   expect_identical(st$n_z, 6L)
 
-  # n_roi_all keeps the bridges visible beside the seed-only count.
+  # n_roi_all / n_z_all keep the bridges visible beside the seed-only counts.
   expect_identical(st$n_roi_all, 9L)
+  expect_identical(st$n_z_all, 9L)
+  expect_identical(st$n_z, 6L)
   # One object followed through z: never two ROIs on one slice.
   expect_identical(st$max_roi_per_z, 1L)
 })
 
-test_that("max_roi_per_z exposes a bridge that welded two side-by-side objects", {
-  # This is the failure seen on the real oocyte data: a rejected ROI that is a
-  # MERGED MASK of two neighbours forms edges to both and fuses them. The
-  # rescue case and this one are both "a bridge joined two components", so the
-  # count alone cannot tell them apart -- but a feature holding two ROIs on one
-  # slice is not one object followed through z.
+test_that("a bridge may not weld two objects that sit side by side", {
+  # The failure seen on the real oocyte data: a rejected ROI that is a MERGED
+  # MASK of two neighbours forms edges to both and fuses them. The rescue case
+  # and this one are both "a bridge joined two components", so the count alone
+  # cannot tell them apart -- but a feature holding two seeds on one slice is
+  # not one object followed through z.
   .setup()
   source_r_scripts("feature_stats.r")
 
@@ -198,15 +200,40 @@ test_that("max_roi_per_z exposes a bridge that welded two side-by-side objects",
   off <- .run_group(o, roi_area_range = c(50, 2000))
   expect_identical(.n_valid(off), 2L)
 
-  # With bridging: the mask fuses them into one.
+  # With bridging the mask is kept and touches both -- but the merge it would
+  # make is refused, because the two objects occupy the SAME slices. Before the
+  # guard this returned 1.
   on <- .run_group(o, roi_area_range = c(50, 2000), bridge_roi = "area")
-  expect_identical(.n_valid(on), 1L)
+  expect_identical(.n_valid(on), 2L)
 
   on$feature_type <- "nucleus"; on$sample <- "S1"
   st <- summarise_feature_stats(sf::st_as_sf(on))
-  expect_identical(st$max_roi_per_z, 2L)   # the tell
-  expect_identical(st$n_roi, 18L)          # both objects' seeds
-  expect_identical(st$n_roi_all, 21L)
+  # Neither survivor holds two seeds on one slice.
+  expect_identical(unique(st$max_roi_per_z), 1L)
+  expect_identical(sum(st$n_roi), 18L)     # both objects' seeds, still there
+})
+
+test_that("the guard blocks only the lateral merge, not the z-gap rescue", {
+  # The two cases must be told apart, or the guard has just disabled bridging.
+  .setup()
+  # Same geometry as above, but the second object sits BELOW the first in z
+  # instead of beside it -- the pinched-object case, which must still merge.
+  lower <- do.call(rbind, lapply(1:3, function(i){
+    .sq(sprintf("nucleus_%04d-0001-0433", i), i, half = 10, cx = 0)
+  }))
+  upper <- do.call(rbind, lapply(7:9, function(i){
+    .sq(sprintf("nucleus_%04d-0002-0433", i), i, half = 10, cx = 0)
+  }))
+  gapfill <- do.call(rbind, lapply(4:6, function(i){
+    .sq(sprintf("nucleus_%04d-0003-0433", i), i, half = 30, cx = 0)
+  }))
+  o <- rbind(lower, upper, gapfill)
+
+  # Apart without the bridge: two 3-slice groups, both below min_z_span=5.
+  expect_identical(.n_valid(.run_group(o, roi_area_range = c(50, 2000))), 0L)
+  # Joined with it: the components share no slice, so the guard allows it.
+  expect_identical(
+    .n_valid(.run_group(o, roi_area_range = c(50, 2000), bridge_roi = "area")), 1L)
 })
 
 test_that("a table written before bridging existed still summarises", {
@@ -221,4 +248,24 @@ test_that("a table written before bridging existed still summarises", {
   st <- summarise_feature_stats(sf::st_as_sf(on))
   expect_identical(st$n_bridge, 0L)
   expect_equal(st$frac_bridge, 0)
+})
+
+test_that("volume is Cavalieri on the seeds, and only when z_step is given", {
+  .setup()
+  source_r_scripts("feature_stats.r")
+
+  on <- .run_group(.pinched_object(), bridge_roi = "area")
+  on$feature_type <- "nucleus"; on$sample <- "S1"
+  sf_on <- sf::st_as_sf(on)
+
+  # Absent by default: a volume nobody asked for would be in unknown units.
+  expect_false("volume" %in% colnames(summarise_feature_stats(sf_on)))
+
+  st <- summarise_feature_stats(sf_on, z_step = 0.5)
+  # Six seed slices of 20x20 = 400 each; the three 4x4 bridges are excluded.
+  expect_equal(st$area_sum, 6 * 400)
+  expect_equal(st$volume, 6 * 400 * 0.5)
+
+  expect_error(summarise_feature_stats(sf_on, z_step = -1), "positive")
+  expect_error(summarise_feature_stats(sf_on, z_step = c(1, 2)), "single")
 })

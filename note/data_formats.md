@@ -277,10 +277,11 @@ rejects table instead of being folded in.
 | `n_roi`, `n_z` | **seed** ROIs in the feature, and distinct slices — bridges excluded |
 | `z_min`, `z_max`, `z_span` | extent; `z_span` = max − min + 1 |
 | `z_gaps` | `z_span − n_z` — slices inside the object's range where it was not detected |
-| `n_roi_all` | every ROI in the feature, bridges included; equals `n_roi` when nothing bridged |
+| `n_roi_all`, `n_z_all` | every ROI in the feature and every slice it touches, bridges included; equal `n_roi` / `n_z` when nothing bridged |
 | `n_bridge`, `frac_bridge` | bridge ROIs in the feature, and their share of `n_roi_all`; `0` unless `--bridge_roi` was used |
 | `max_roi_per_z` | most **seed** ROIs the feature has on any one slice. **`> 1` means it spans objects sitting side by side**, not one object followed through z. Bridges are excluded: a bridge often lies *over* what it connects, so counting them would read `2` on a good rescue |
-| `area_med`, `area_mean`, `area_max`, `area_sum` | per-slice ROI area, µm² |
+| `area_med`, `area_mean`, `area_max`, `area_sum` | per-slice ROI area, µm². `area_sum` is the shape-free size measure — see below |
+| `volume` | `area_sum × --z_step`, µm³. Only when `--z_step` is given |
 | `circ_med`, `circ_min` | only when the `_res.txt` was found |
 | `ch<N>_signal` | one column per channel measured; only when the `_res.txt` was found |
 | *metadata* | every non-`prefix` sample sheet column, when supplied |
@@ -292,6 +293,19 @@ bridges, a threshold read off one of these plots would not mean the same thing
 as the same number handed to the filter. `frac_bridge` is how you see how much
 of a feature is resting on rejected ROIs — a high value is evidence that the
 *filter* needs adjusting, not a result to trust. See §5.
+
+⚠️ **`area_med` is only a size measure while the object is a sphere.** A
+median cross-section stands in for size when every section is a circle of
+predictable radius, which holds for immature and fully grown oocytes but *not*
+for growing ones, which are visibly irregular. `area_sum` — summed
+cross-sectional area — is the shape-free alternative, and `--z_step` turns it
+into a real volume by the Cavalieri estimate (`area_sum × z_step`).
+
+`--z_step` has to be supplied because **Fiji's `_config.txt` records
+`pixel_width` and `pixel_height` but not `pixel_depth`**, so the slice spacing
+is not recoverable from a results directory. `volume` is also an *undercount*
+wherever the object was missed on a slice inside its own range — nothing is
+interpolated, and `z_gaps` is the column that says how much is missing.
 
 `ch<N>_signal` is aggregated by `--channel_stat`, default **`wmean`** — the mean
 weighted by ROI area. A plain mean lets a feature's small tapering end slices
@@ -449,6 +463,24 @@ oversight. The other two reject on *quality*, and a low-quality ROI of the
 right feature is still that feature. The name filter rejects on *identity* — an
 ROI of a different feature type — and letting one form edges would glue two
 unrelated objects into a single feature.
+
+**A bridge may not merge two components that share a z-slice.** One object
+contributes one ROI per slice, so a feature holding two seeds on one slice is
+two objects fused, not one object followed through z. That is the difference
+between the two things a bridge can do: rescuing a pinched object joins
+components that are *disjoint* in z, while a merged mask joins components that
+*coexist* on the same slices. The refusal is counted as a delta rather than as
+a presence, because the seed pass can legitimately leave a component already
+stacked and a later bridge must not be blamed for a collision it did not cause.
+Seed edges are processed before bridge edges so the guard decides about
+finished components; a run with no bridges is unaffected.
+
+⚠️ **The guard only separates objects that sit side by side.** Two distinct
+objects stacked in *z* are indistinguishable, by topology alone, from one
+pinched object — measured on real data, a small oocyte pair 4 slices apart
+stays merged. Telling those apart needs geometry, not graph structure: whether
+the merged object's z-extent is plausible for its cross-sectional area, which
+is what `--z_step` and `volume` exist to make answerable.
 
 `is_bridge` is present in the output whether or not anything bridges, so a
 reader never has to test for the column before using it. `feature_stat_cli.r`
