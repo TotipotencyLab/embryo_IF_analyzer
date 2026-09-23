@@ -523,9 +523,14 @@
 #'
 #' @param sheet     the sample sheet
 #' @param id_column the column holding the file prefix (never metadata)
-.cli_check_reserved <- function(sheet, id_column = "prefix") {
+#' @param extra     further column names this particular CLI writes, beyond the
+#'                  shared reserved set -- feature_stat_cli.r computes its own
+#'                  (area_med, ch1_signal, ...), and a sheet column of the same
+#'                  name would otherwise be silently renamed to `area_med.x` by
+#'                  the join instead of being rejected.
+.cli_check_reserved <- function(sheet, id_column = "prefix", extra = character(0)) {
   meta <- setdiff(colnames(sheet), id_column)
-  clash <- base::intersect(meta, .CLI_RESERVED_COLUMNS)
+  clash <- base::intersect(meta, unique(c(.CLI_RESERVED_COLUMNS, extra)))
   if (length(clash)) {
     stop("Sample sheet column(s) collide with columns the output already uses: ",
          paste(clash, collapse = ", "),

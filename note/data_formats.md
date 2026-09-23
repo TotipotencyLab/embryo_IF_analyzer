@@ -257,6 +257,44 @@ genuinely has few objects.
 `feature_counts_summary.tsv`: the `--group_by` columns, `feature_type`,
 `n_sample`, `mean_detected`, `sd_detected`, `total_detected`.
 
+### `feature_stat_cli.r`
+
+```
+<outdir>/<output_prefix>feature_stats.tsv     one row per detected FEATURE
+<outdir>/<output_prefix>feature_rejects.tsv   what did not become one
+<outdir>/<output_prefix>feature_stats.pdf     one page per statistic, unless --no_plot
+```
+
+The unit is the feature, not the ROI: adjacent z-slices of one object share
+signal through the point-spread function, so ROIs are not replicates. Only rows
+naming a real feature are summarised; `invalid_*` and `failed_*` go to the
+rejects table instead of being folded in.
+
+| Column | Notes |
+|---|---|
+| `sample`, `feature_type`, `feature_id` | the key |
+| `n_roi`, `n_z` | ROIs in the feature, and distinct slices |
+| `z_min`, `z_max`, `z_span` | extent; `z_span` = max − min + 1 |
+| `z_gaps` | `z_span − n_z` — slices inside the object's range where it was not detected |
+| `area_med`, `area_mean`, `area_max`, `area_sum` | per-slice ROI area, µm² |
+| `circ_med`, `circ_min` | only when the `_res.txt` was found |
+| `ch<N>_signal` | one column per channel measured; only when the `_res.txt` was found |
+| *metadata* | every non-`prefix` sample sheet column, when supplied |
+
+`ch<N>_signal` is aggregated by `--channel_stat`, default **`wmean`** — the mean
+weighted by ROI area. A plain mean lets a feature's small tapering end slices
+vote as loudly as its equator. See `note/if_quantification.md`.
+
+⚠️ The measurement tables are found as `<sample>_<roi prefix>_res.txt`, where
+the prefix comes from the **`roi` column**, not from `feature_type`. After a
+`--rename` those differ, and the file on disk carries the original. Not finding
+them is a **loud warning**, never a silent run without signal.
+
+`feature_rejects.tsv`: `sample`, `feature_type`, `bucket`, `n_roi`, where
+`bucket` is `feature`, `invalid`, `failed` or `unassigned`. It exists so that a
+thin distribution can be read as either "few objects here" or "most of them
+failed a filter".
+
 ### `montage_qc_cli.r`
 
 One PNG, panels left to right: raw z-projection, Fiji overlay, R union. The

@@ -53,6 +53,11 @@ R reads those, merges per-slice ROIs into 3D objects, and does the analysis.
        --input results/ --outdir results/ \
        --sample_sheet config/samples.tsv --group_by genotype --plot
 
+   # per-feature statistics + distribution plots, for choosing thresholds
+   scripts/R_cli/feature_stat_cli.r \
+       --input results/ --outdir stats/ --res_dir raw_measurements/ \
+       --group_by sample
+
    # eyeball it: raw projection | Fiji outline | R union
    scripts/R_cli/montage_qc_cli.r \
        --features results/GRV_Position010_features.rds \
@@ -163,8 +168,15 @@ analysis script:
 | `plot_outline_topView.r`, `brewer_pal_2.r` | plotting helpers |
 
 [`scripts/R_cli/`](scripts/R_cli/) wraps these as command-line entry points —
-`annotate_features_cli.r`, `count_features_cli.r` and `montage_qc_cli.r`. Each
-takes `--help`.
+`annotate_features_cli.r`, `count_features_cli.r`, `feature_stat_cli.r` and
+`montage_qc_cli.r`. Each takes `--help`.
+
+`feature_stat_cli.r` is the one to run **before** choosing any size or signal
+threshold. It writes one row per detected object — area, z-extent, shape and
+per-channel signal — plus a multi-page PDF of the distributions, so you can see
+whether one cut-off works across every file rather than just the one you tuned
+on. Channel signal needs `--res_dir` pointing at the Fiji `_res.txt`; without it
+the run warns rather than quietly producing a table with no signal in it.
 
 **Which file holds what is read from the file itself**, not from its name: the
 `name` column gives the sample and the ROI id prefix gives the feature. So a
