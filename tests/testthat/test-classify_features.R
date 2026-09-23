@@ -200,3 +200,28 @@ test_that("a reserved name cannot be used as a class", {
   expect_error(classify_features(.fake(), .spec("other:area_med=0:Inf")),
                "--color_map")
 })
+
+test_that("the help names the reserved classes, from the constants themselves", {
+  # Spelling the names into the help string is how the help and the check that
+  # enforces it drift apart, so the help reads the same constant -- which means
+  # the constant must be available while the PARSER is built, before
+  # .source_rlib() runs. That ordering is the fragile part and is what broke.
+  #
+  # Run as a SUBPROCESS: argparser's --help calls quit(), which inside testthat
+  # would end the whole run rather than fail one expectation.
+  skip_if_no_pkg("argparser")
+  source_r_scripts("classify_features.r")
+
+  rscript <- file.path(R.home("bin"), "Rscript")
+  skip_if_not(file.exists(rscript), "Rscript not found")
+  out <- suppressWarnings(system2(rscript, c(cli_path("feature_stat_cli.r"), "--help"),
+                                  stdout = TRUE, stderr = TRUE))
+  txt <- paste(out, collapse = " ")
+
+  expect_match(txt, "RESERVED", fixed = TRUE)
+  for (nm in CLASS_RESERVED) {
+    expect_match(txt, nm, fixed = TRUE)
+  }
+  # And the default is described as it now behaves, not as class = NA.
+  expect_match(txt, "a string, not NA", fixed = TRUE)
+})

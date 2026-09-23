@@ -59,9 +59,19 @@ suppressPackageStartupMessages({
 })()
 
 .stat_source_helpers <- function() {
-  if (exists(".cli_resolve_arg", mode = "function")) return(invisible(NULL))
-  if (is.na(.THIS_DIR)) stop("cannot locate cli_helpers.r", call. = FALSE)
-  sys.source(file.path(.THIS_DIR, "cli_helpers.r"), envir = globalenv())
+  if (!exists(".cli_resolve_arg", mode = "function")) {
+    if (is.na(.THIS_DIR)) stop("cannot locate cli_helpers.r", call. = FALSE)
+    sys.source(file.path(.THIS_DIR, "cli_helpers.r"), envir = globalenv())
+  }
+  # The reserved class names are needed while BUILDING the parser, and
+  # .source_rlib() does not run until after parse_args() -- it takes
+  # --rlib_path, which does not exist yet. Sourcing the one file here keeps the
+  # help text and the check that enforces it reading from the same constant;
+  # spelling the names into the help string instead is how the two drift.
+  if (!exists("CLASS_RESERVED")) {
+    f <- file.path(.THIS_DIR, "..", "R", "classify_features.r")
+    if (file.exists(f)) sys.source(f, envir = globalenv())
+  }
 }
 
 # ------------------------------------------------------------------------------
@@ -102,9 +112,18 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                                  "--class 'big:area_med=600:Inf' 'big:circ_med=0:0.7'",
                                  "'small:area_med=0:600'. Tokens sharing a class name are",
                                  "ANDed; the order the names first appear is the priority",
-                                 "when a feature matches several"))
+                                 "when a feature matches several.",
+                                 "RESERVED, and refused as class names:",
+                                 paste(if (exists("CLASS_RESERVED")) CLASS_RESERVED
+                                       else c("unclassified", "other"), collapse = " and "),
+                                 "-- the first is what a feature matching no class is called,",
+                                 "the second is the group the plots fold unmapped classes",
+                                 "into. Both are settable in montage_qc_cli.r --color_map"))
   p <- add_argument(p, "--drop_orphan_feature", short = "-D", flag = TRUE,
-                    help = "drop features matching no --class [default: keep them, class = NA]")
+                    help = paste("drop features matching no --class [default: keep them,",
+                                 "class =", paste0("'", if (exists("CLASS_UNCLASSIFIED"))
+                                                           CLASS_UNCLASSIFIED else "unclassified", "'"),
+                                 "-- a string, not NA, so table() cannot drop them silently]"))
   p <- add_argument(p, "--log_scale", short = "-x", type = "character", nargs = Inf, default = NULL,
                     help = paste("columns to draw on a log10 axis, as names or globs:",
                                  "--log_scale volume 'area_*'. Quote a glob so the shell",
