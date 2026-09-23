@@ -359,6 +359,80 @@ check("missing directories are created",       deep.isFile(), true)
 check("overview file name",
       OV.overviewPath("/data/out", "GRV_Position010", 1), "/data/out/GRV_Position010_overview_ch1.png")
 
+
+// --- greyscale -----------------------------------------------------------------
+// A Bio-Formats import carries a per-channel colour LUT, and savePng() calls
+// flatten(), which renders the image THROUGH that LUT -- so the quick-look PNG
+// came out tinted whatever colour the acquisition assigned the channel.
+// Verified on a real .lif: isColorLut was true.
+//
+// Both halves matter. Asserting only "the image is grey" would also pass on an
+// image that lost its overlay, so the coloured outline is checked too.
+
+println ""
+println "=== greyscale ==="
+
+def greenLut = { ->
+    byte[] r = new byte[256], g = new byte[256], b = new byte[256]
+    for (int i = 0; i < 256; i++) { r[i] = 0; g[i] = (byte) i; b[i] = 0 }
+    return new java.awt.image.IndexColorModel(8, 256, r, g, b)
+}
+
+// One channel, mid-grey, wearing a green LUT.
+def tinted = { ->
+    def st = new ij.ImageStack(40, 40)
+    def bp = new ij.process.ByteProcessor(40, 40)
+    bp.setValue(200); bp.fill()
+    bp.setColorModel(greenLut())
+    st.addSlice("c1", bp)
+    def i = new ImagePlus("tinted", st)
+    i.setDimensions(1, 1, 1)
+    return i
+}
+
+def rgbAt = { ImagePlus flatImp, int x, int y ->
+    int px = flatImp.getProcessor().getPixel(x, y)
+    return [(px >> 16) & 0xff, (px >> 8) & 0xff, px & 0xff]
+}
+
+def tintedProj = OV.project(tinted(), null, "max", [1])
+def tintedView = OV.prepare(tintedProj, 1, [contrast: "none", width: 40])
+
+// The prepared processor must no longer carry a colour LUT.
+check("prepare() strips the colour LUT",   tintedView.image.getProcessor().isColorLut(), false)
+
+def greyPng = new File(tmp, "grey.png")
+OV.savePng(tintedView, greyPng.getPath())
+def readBack = IJ.openImage(greyPng.getPath())
+def mid = rgbAt(readBack, 20, 20)
+check("written PNG is grey, not green",    mid[0] == mid[1] && mid[1] == mid[2], true)
+check("...and keeps its brightness",       mid[0] > 0, true)
+readBack.close()
+
+// Now the same thing with a coloured outline on top: the image stays grey and
+// the outline stays coloured.
+def outlineView = OV.prepare(tintedProj, 1, [contrast: "none", width: 40])
+def box = new ij.gui.Roi(5, 5, 30, 30)
+box.setPosition(1)
+OV.addOutlines(outlineView, [box], [mode: "all", color: "red", lineWidth: 3])
+def bothPng = new File(tmp, "grey_with_outline.png")
+OV.savePng(outlineView, bothPng.getPath())
+def both = IJ.openImage(bothPng.getPath())
+
+def centre = rgbAt(both, 20, 20)
+check("interior is still grey",            centre[0] == centre[1] && centre[1] == centre[2], true)
+
+// Somewhere on the outline there must be a pixel that is NOT grey.
+boolean anyColour = false
+for (int x = 0; x < 40 && !anyColour; x++) {
+    for (int y = 0; y < 40 && !anyColour; y++) {
+        def c = rgbAt(both, x, y)
+        if (!(c[0] == c[1] && c[1] == c[2])) anyColour = true
+    }
+}
+check("the outline is still coloured",     anyColour, true)
+both.close()
+
 tmp.deleteDir()
 
 println ""

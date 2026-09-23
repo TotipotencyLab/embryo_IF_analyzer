@@ -59,11 +59,35 @@ sample and the feature from this filename, so the pattern is load-bearing —
 `--input_pattern` overrides it, but whatever replaces it must still let
 `<sample>` and `<feature>` be recovered from the basename.
 
+### `<image id>` — how it is resolved
+
+`RoiExport.resolveImageId(imp, positionPattern)`, and it **never contains
+whitespace**: `sanitize()` collapses runs of whitespace to `_`, because the id
+is written into the `name` column of the tab-separated outline table as well as
+into filenames.
+
+ImageJ prefixes a hyperstack slice label with the plane's coordinates, and
+**those slashes are not path separators**:
+
+```
+"c:1/3 - Image002"
+"c:1/4 z:1/50 - Lightning 001/Mark_and_Find 001/Position010"
+"c:1/3 z:12/56 - Series001"
+```
+
+So the coordinate prefix is stripped first, then the `/`-segment containing
+`positionPattern` is found, then everything before the pattern is dropped —
+`56 - Series001` becomes `Series001`. If the pattern matches nothing in the
+label, the title is tried the same way; Bio-Formats titles a series
+`<file>.lif - <series name>`, and the file part is removed. The raw title and
+slice label are logged on every run, so a wrong id can be diagnosed from the
+log alone.
+
 ### `_outline.txt` — one row per polygon vertex
 
 | Column | Type | Notes |
 |---|---|---|
-| `name` | chr | ROI name, see §5 |
+| `name` | chr | the image id — **never contains whitespace**, see §2 |
 | `roi` | chr | ROI id, `SSSS-NNNN-YYYY` |
 | `z` | int | 1-based slice |
 | `x`, `y` | dbl | **calibrated units (µm), not pixels** |
