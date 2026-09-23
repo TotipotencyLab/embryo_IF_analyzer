@@ -330,3 +330,57 @@ test_that("--group_by naming a column that is absent fails with the available on
       "--group_by", "genotype", "--no_plot"))),
     "not present")
 })
+
+test_that("is_bridge does not leak onto the per-feature table", {
+  # It is an ROI-level fact and VARIES within a bridged feature, so carrying it
+  # through as sample metadata made summarise_feature_stats() warn and then
+  # take an arbitrary first value -- yielding an is_bridge column on a table
+  # whose unit is the feature, which invites exactly the wrong filter.
+  # n_bridge / frac_bridge are the feature-level answer.
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2"))
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  source_cli("annotate_features_cli.r")
+  source_cli("feature_stat_cli.r")
+
+  feat <- withr::local_tempdir()
+  suppressMessages(annotate_features_cli(c(
+    "--input", fixture_dir(), "--feature", "nucleus", "--outdir", feat,
+    "--roi_area", "nucleus=100:Inf", "--bridge_roi", "roi_area")))
+
+  # The flag must actually have bridged something, or this proves nothing.
+  rds <- readRDS(list.files(feat, "_features[.]rds$", full.names = TRUE)[1])
+  expect_true(any(rds$is_bridge))
+
+  out <- withr::local_tempdir()
+  st <- suppressMessages(feature_stat_cli(
+    c("--input", feat, "--outdir", out, "--no_plot", "--res_dir", fixture_dir())))
+
+  expect_false("is_bridge" %in% colnames(st))
+  expect_true(all(c("n_bridge", "frac_bridge", "n_roi_all", "n_z_all") %in% colnames(st)))
+  expect_gt(sum(st$n_bridge), 0)
+})
+
+test_that("volume appears only with --z_step, and is area_sum x z_step", {
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2"))
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  source_cli("annotate_features_cli.r")
+  source_cli("feature_stat_cli.r")
+
+  feat <- withr::local_tempdir()
+  suppressMessages(annotate_features_cli(c(
+    "--input", fixture_dir(), "--feature", "nucleus", "--outdir", feat)))
+
+  out <- withr::local_tempdir()
+  plain <- suppressMessages(feature_stat_cli(
+    c("--input", feat, "--outdir", out, "--no_plot", "--res_dir", fixture_dir())))
+  expect_false("volume" %in% colnames(plain))
+
+  out2 <- withr::local_tempdir()
+  with_z <- suppressMessages(feature_stat_cli(
+    c("--input", feat, "--outdir", out2, "--no_plot", "--res_dir", fixture_dir(),
+      "--z_step", "0.5")))
+  expect_true("volume" %in% colnames(with_z))
+  expect_equal(with_z$volume, with_z$area_sum * 0.5)
+})
