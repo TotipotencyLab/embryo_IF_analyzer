@@ -128,14 +128,24 @@ plot_feature_stat <- function(stats, value_col, group_col = "sample",
 
   # Headroom for those labels. On a log axis a multiplicative pad is the one
   # that stays constant on screen; mult= does that in both cases.
-  if(log_y && all(d$.y > 0, na.rm = TRUE)){
+  # A log axis cannot show zero, and ggplot drops those points silently, which
+  # looks like missing data rather than a scale choice. Say so, as the scatter
+  # panels do.
+  used_log <- log_y
+  if(log_y && !all(d$.y > 0, na.rm = TRUE)){
+    warning("Not logging ", value_col, ": ", sum(d$.y <= 0, na.rm = TRUE),
+            " value(s) are <= 0 and would be dropped", call. = FALSE)
+    used_log <- FALSE
+  }
+  if(used_log){
     p <- p + ggplot2::scale_y_log10(expand = ggplot2::expansion(mult = c(0.05, 0.12)))
   }else{
     p <- p + ggplot2::scale_y_continuous(expand = ggplot2::expansion(mult = c(0.05, 0.12)))
   }
 
   p <- p +
-    ggplot2::labs(x = group_col, y = value_col,
+    ggplot2::labs(x = group_col,
+                  y = if(used_log){ paste0(value_col, " (log10)") }else{ value_col },
                   title = value_col,
                   subtitle = paste0(nrow(d), " feature(s) across ",
                                     nlevels(d$.x), " group(s)")) +
@@ -146,30 +156,50 @@ plot_feature_stat <- function(stats, value_col, group_col = "sample",
 }
 
 
+#' The statistics a distribution PDF draws, in the order it draws them
+#'
+#' Its own function so the CLI can advise on exactly the columns that will be
+#' plotted. Suggesting a log axis for a column that never gets a panel -- z_min
+#' is skipped here and spans 42x on real data -- is advice the reader cannot act
+#' on.
+#'
+#' @param stats per-feature table
+#' @return character vector of column names
+feature_stat_value_cols <- function(stats){
+  # Size, then extent, then shape, then signal. Ids and coordinates are not
+  # statistics about the object.
+  skip <- c("sample", "feature_id", "feature_type", "z_min", "z_max")
+  cols <- names(stats)[vapply(stats, is.numeric, logical(1))]
+  cols <- setdiff(cols, skip)
+  preferred <- c("area_med", "area_mean", "area_max", "area_sum", "volume",
+                 "n_roi", "n_z", "z_span", "z_gaps",
+                 "circ_med", "circ_min")
+  return(c(intersect(preferred, cols), setdiff(cols, preferred)))
+}
+
+
 #' One panel per statistic, ready for save_plot_list()
 #'
 #' @param stats     per-feature table
 #' @param value_cols columns to plot; default: every numeric statistic present
 #' @param group_col,types,colour_by passed to plot_feature_stat()
+#' @param log_cols columns to draw on a log10 y axis, as names or globs; see
+#'                 log_axis_matcher(). Nothing is logged unless named.
 #' @return named list of ggplot
 plot_feature_stat_list <- function(stats, value_cols = NULL, group_col = "sample",
                                    types = c("box", "quasirandom"),
-                                   colour_by = NULL){
+                                   colour_by = NULL, log_cols = character(0)){
   if(is.null(value_cols)){
-    # Everything measured, in a deliberate order: size, then extent, then shape,
-    # then signal. Ids and counts of rows are not statistics about the object.
-    skip <- c("sample", "feature_id", "feature_type", "z_min", "z_max")
-    value_cols <- names(stats)[vapply(stats, is.numeric, logical(1))]
-    value_cols <- setdiff(value_cols, skip)
-    preferred <- c("area_med", "area_mean", "area_max", "area_sum",
-                   "n_roi", "n_z", "z_span", "z_gaps",
-                   "circ_med", "circ_min")
-    value_cols <- c(intersect(preferred, value_cols), setdiff(value_cols, preferred))
+    value_cols <- feature_stat_value_cols(stats)
   }
-  log_cols <- c("area_med", "area_mean", "area_max", "area_sum")
+  # Declared, not guessed -- the same contract as the scatter CLI. The list was
+  # hardcoded to the area_ family, which silently left volume linear although
+  # volume IS area_sum x z_step, so the same quantity was drawn two ways
+  # depending on which panel you looked at.
+  wants_log <- if(is.function(log_cols)){ log_cols }else{ log_axis_matcher(log_cols) }
   out <- lapply(value_cols, function(v){
     plot_feature_stat(stats, value_col = v, group_col = group_col, types = types,
-                      colour_by = colour_by, log_y = v %in% log_cols)
+                      colour_by = colour_by, log_y = wants_log(v))
   })
   names(out) <- value_cols
   out <- out[!vapply(out, is.null, logical(1))]

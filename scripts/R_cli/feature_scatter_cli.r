@@ -84,10 +84,11 @@ feature_scatter_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = "drop the colour legend past this many levels")
   p <- add_argument(p, "--show_avail_stats", short = "-a", flag = TRUE,
                     help = "list the columns that can be plotted, then exit")
-  p <- add_argument(p, "--log_x", short = "-x", type = "character", default = "auto",
-                    help = "auto, on or off [auto: log only area_* columns]")
-  p <- add_argument(p, "--log_y", short = "-y", type = "character", default = "auto",
-                    help = "auto, on or off")
+  p <- add_argument(p, "--log_scale", short = "-x", type = "character", nargs = Inf, default = NULL,
+                    help = paste("columns to draw on a log10 axis, wherever they appear,",
+                                 "as names or globs: --log_scale volume 'area_*'.",
+                                 "Quote a glob so the shell does not expand it.",
+                                 "Nothing is logged unless named here"))
   p <- add_argument(p, "--smooth", short = "-s", flag = TRUE,
                     help = "add a linear fit (off by default; n per group is small)")
   p <- add_argument(p, "--corr", short = "-r", flag = TRUE,
@@ -144,6 +145,8 @@ feature_scatter_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   }
 
   color_by <- if (is.na(argv$color_by)) NULL else argv$color_by
+
+  log_cols <- .cli_log_cols(argv$log_scale, colnames(stats))
   if (!is.null(color_by) && !color_by %in% colnames(stats)) {
     stop("--color_by names a column that is not present: ", color_by,
          "\n  run with --show_avail_stats to list them", call. = FALSE)
@@ -181,7 +184,7 @@ feature_scatter_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     stats, specs, facet = argv$facet,
     facet_keep = facet_keep, facet_max = argv$facet_max,
     color_by = color_by, thresholds = thresholds,
-    log_x = argv$log_x, log_y = argv$log_y,
+    log_cols = log_cols,
     smooth = argv$smooth, corr = argv$corr,
     legend_max = argv$legend_max)
 
@@ -245,17 +248,28 @@ feature_scatter_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   d <- describe_feature_stats(stats)
   w <- max(nchar(d$column))
   cat("\nColumns available for --plot / --threshold / --color_by:\n\n")
-  cat(sprintf("  %-*s  %-8s %-10s %s\n", w, "column", "type", "non-NA", "range"))
+  cat(sprintf("  %-*s  %-8s %-10s %-22s %s\n", w, "column", "type", "non-NA", "range", "span"))
   for (i in seq_len(nrow(d))) {
-    cat(sprintf("  %-*s  %-8s %-10s %s\n", w, d$column[i], d$type[i],
-                d$non_na[i], d$range[i]))
+    cat(sprintf("  %-*s  %-8s %-10s %-22s %s\n", w, d$column[i], d$type[i],
+                d$non_na[i], d$range[i], d$span[i]))
   }
   empty <- d$column[grepl("^0/", d$non_na)]
   if (length(empty)) {
     cat("\n  Note: ", paste(empty, collapse = ", "),
         " hold no values at all -- plotting them gives an empty panel.\n", sep = "")
   }
-  cat("\n  Only numeric columns can be a --plot axis.\n\n")
+  cat("\n  Only numeric columns can be a --plot axis.\n")
+  # Advisory, never automatic: span says a log axis would spread the points
+  # out, not that logging the quantity means anything. z_min spans 42x on real
+  # data and is a slice index.
+  cand <- log_axis_candidates(stats)
+  if (length(cand)) {
+    cat("\n  Wide enough that a log axis may help (--log_scale):\n    ",
+        paste(sprintf("%s (%s x)", names(cand), format(cand, digits = 3)),
+              collapse = "  "),
+        "\n  Span is what decides this, and it does not change with the units.\n", sep = "")
+  }
+  cat("\n")
   return(invisible(NULL))
 }
 

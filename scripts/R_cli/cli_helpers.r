@@ -744,3 +744,37 @@
   }
   return(invisible(NULL))
 }
+
+
+#' Resolve --log_scale into the column names to draw on a log axis
+#'
+#' Shared by feature_scatter_cli.r and feature_stat_cli.r so the flag means the
+#' same thing in both: names or globs, matched against the columns actually
+#' present, nothing logged unless named.
+#'
+#' A pattern matching no column is a **warning**. Silently producing linear
+#' panels looks exactly like a run where the flag worked, which is the failure
+#' mode this repo keeps meeting.
+#'
+#' @param arg       raw argument value
+#' @param available column names present in the table
+#' @param what      flag name, for messages
+#' @return character vector of patterns (possibly empty)
+.cli_log_cols <- function(arg, available, what = "--log_scale") {
+  pats <- .cli_resolve_arg(arg, what)
+  if (is.null(pats) || !length(pats)) {
+    return(character(0))
+  }
+  unused <- pats[!vapply(pats, function(pat) {
+    any(vapply(available, log_axis_matcher(pat), logical(1)))
+  }, logical(1))]
+  if (length(unused)) {
+    warning(what, " matched no column: ", paste(unused, collapse = ", "),
+            "\n  available: ", paste(available, collapse = ", "), call. = FALSE)
+  }
+  hit <- Filter(log_axis_matcher(pats), available)
+  if (length(hit)) {
+    message("Log10 axis for: ", paste(hit, collapse = " "))
+  }
+  return(pats)
+}

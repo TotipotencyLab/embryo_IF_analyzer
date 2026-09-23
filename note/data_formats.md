@@ -280,7 +280,8 @@ rejects table instead of being folded in.
 | `n_roi_all`, `n_z_all` | every ROI in the feature and every slice it touches, bridges included; equal `n_roi` / `n_z` when nothing bridged |
 | `n_bridge`, `frac_bridge` | bridge ROIs in the feature, and their share of `n_roi_all`; `0` unless `--bridge_roi` was used |
 | `max_roi_per_z` | most **seed** ROIs the feature has on any one slice. **`> 1` means it spans objects sitting side by side**, not one object followed through z. Bridges are excluded: a bridge often lies *over* what it connects, so counting them would read `2` on a good rescue |
-| `area_med`, `area_mean`, `area_max`, `area_sum` | per-slice ROI area, µm² |
+| `area_med`, `area_mean`, `area_max`, `area_sum` | per-slice ROI area, µm². `area_sum` is the shape-free size measure — see below |
+| `volume` | `area_sum × --z_step`, µm³. **Only when `--z_step` is given** — the run says so when it is not, since an absent column is otherwise indistinguishable from a missing feature |
 | `circ_med`, `circ_min` | only when the `_res.txt` was found |
 | `ch<N>_signal` | one column per channel measured; only when the `_res.txt` was found |
 | *metadata* | every non-`prefix` sample sheet column, when supplied. `is_bridge` is **not** carried through: it is an ROI-level fact that varies within a feature, and `n_bridge` / `frac_bridge` are the feature-level answer |
@@ -293,6 +294,19 @@ as the same number handed to the filter. `frac_bridge` is how you see how much
 of a feature is resting on rejected ROIs — a high value is evidence that the
 *filter* needs adjusting, not a result to trust. See §5.
 
+⚠️ **`area_med` is only a size measure while the object is a sphere.** A
+median cross-section stands in for size when every section is a circle of
+predictable radius, which holds for immature and fully grown oocytes but *not*
+for growing ones, which are visibly irregular. `area_sum` — summed
+cross-sectional area — is the shape-free alternative, and `--z_step` turns it
+into a real volume by the Cavalieri estimate (`area_sum × z_step`).
+
+`--z_step` has to be supplied because **Fiji's `_config.txt` records
+`pixel_width` and `pixel_height` but not `pixel_depth`**, so the slice spacing
+is not recoverable from a results directory. `volume` is also an *undercount*
+wherever the object was missed on a slice inside its own range — nothing is
+interpolated, and `z_gaps` is the column that says how much is missing.
+
 `ch<N>_signal` is aggregated by `--channel_stat`, default **`wmean`** — the mean
 weighted by ROI area. A plain mean lets a feature's small tapering end slices
 vote as loudly as its equator. See `note/if_quantification.md`.
@@ -301,6 +315,14 @@ vote as loudly as its equator. See `note/if_quantification.md`.
 the prefix comes from the **`roi` column**, not from `feature_type`. After a
 `--rename` those differ, and the file on disk carries the original. Not finding
 them is a **loud warning**, never a silent run without signal.
+
+`--log_scale` works here exactly as it does in `feature_scatter_cli.r` — names
+or globs, matched against the columns present, nothing logged unless named, and
+a pattern matching nothing warns. When it is absent the run lists the columns
+whose span is wide enough that a log axis may help, restricted to the
+statistics that actually get a panel. A logged panel says `(log10)` on its
+axis, and one that would have to drop a zero falls back to linear **with a
+warning**.
 
 `feature_rejects.tsv`: `sample`, `feature_type`, `bucket`, `n_roi`, where
 `bucket` is `feature`, `invalid`, `failed` or `unassigned`. It exists so that a
@@ -340,15 +362,38 @@ upstream; this is the cheap end you re-run while trying pairs.
   colour mapping stays; only the key goes, and the subtitle says so. The key is
   also dropped when `--color_by` equals the facet column, since the strip above
   each panel already names it.
-- `--show_avail_stats` lists the plottable columns with their non-NA counts and
-  ranges, then exits. It needs `--input` (which channels exist depends on the
+- `--show_avail_stats` lists the plottable columns with their non-NA counts,
+  ranges and spans, then exits. It needs `--input` (which channels exist depends on the
   data) but not `--outdir`.
 
-⚠️ `area_*` columns are drawn on a **log axis by default**, because they span
-orders of magnitude here; everything else is linear. `--log_x` / `--log_y`
-(`auto`/`on`/`off`) override it. A log axis that would drop a zero or negative
-value falls back to linear **with a warning** rather than silently losing the
-point.
+⚠️ **Nothing is drawn on a log axis unless you ask.** `--log_scale` names the
+columns, as names or globs, and applies wherever they appear:
+
+```bash
+--log_scale volume 'area_*'
+```
+
+Quote a glob so the shell does not expand it against filenames. A pattern that
+matches no column is a **warning**, not a silent linear plot.
+
+Keyed to the **column, not the axis** — the same reasoning as `--threshold`:
+whether a quantity wants a log scale is a fact about the quantity, not about
+which axis it happened to land on.
+
+Two automatic rules were tried and removed, both because the reader could not
+see them. Keyed on the *name*, `area_sum` was logged and `volume` was not —
+although `volume` **is** `area_sum × z_step`, so a change of units silently
+flipped the scale and identical data read as two different results. Keyed on
+the *data* (log when the span exceeds ~20×) it is at least unit-invariant, but
+on real data it logs `z_min`, a slice index spanning 42× that means nothing
+logged.
+
+`--show_avail_stats` prints each column's **span** (max/min over positive
+values) and lists the wide ones, so the choice is informed rather than guessed.
+Span is the right statistic for it precisely because it does not change with
+the units. A logged axis says `(log10)` in its label. A log axis that would
+drop a zero or negative value falls back to linear **with a warning** rather
+than silently losing the point.
 
 `--smooth` and `--corr` are off by default on purpose: per-sample n here is
 single digits, where a fit is noise with a ribbon around it and a coefficient
@@ -465,7 +510,8 @@ finished components; a run with no bridges is unaffected.
 objects stacked in *z* are indistinguishable, by topology alone, from one
 pinched object — measured on real data, a small oocyte pair 4 slices apart
 stays merged. Telling those apart needs geometry, not graph structure: whether
-the merged object's z-extent is plausible for its cross-sectional area.
+the merged object's z-extent is plausible for its cross-sectional area, which
+is what `--z_step` and `volume` exist to make answerable.
 
 `is_bridge` is present in the output whether or not anything bridges, so a
 reader never has to test for the column before using it. `feature_stat_cli.r`
