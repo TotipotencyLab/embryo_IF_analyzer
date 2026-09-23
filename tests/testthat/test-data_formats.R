@@ -196,6 +196,31 @@ test_that(".read_outline survives a name column containing spaces", {
   expect_equal(got$z, c(1L, 1L, 1L))
 })
 
+test_that("the documented identity columns are the ones the code reads", {
+  # note/data_formats.md §2 claims the sample comes from `name` and the feature
+  # from the `roi` prefix. Assert that against the fixture and the real reader,
+  # so the claim cannot rot.
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  o <- read.table(fixture_file("nucleus", "outline"), header = TRUE,
+                  sep = "\t", stringsAsFactors = FALSE)
+  expect_identical(unique(o$name), "GRV_Position010")
+  expect_identical(.cli_feature_from_roi(o$roi), "nucleus")
+
+  id <- .cli_identify_outline(fixture_file("nucleus", "outline"))
+  expect_true(id$ok)
+  expect_identical(id$sample, "GRV_Position010")
+  expect_identical(id$feature, "nucleus")
+})
+
+test_that("the documented range syntax is what the parser accepts", {
+  # §4 documents key=lo:hi with either end omittable.
+  expect_equal(.cli_key_ranges("nucleus=80:Inf", "--roi_area")$nucleus, c(80, Inf))
+  expect_equal(.cli_key_ranges("nucleus=80:",    "--roi_area")$nucleus, c(80, Inf))
+  expect_equal(.cli_key_ranges("nucleus=:100",   "--roi_area")$nucleus, c(0, 100))
+  # §4 also says a comma is reserved, so it must not work as a separator here.
+  expect_error(.cli_key_ranges("nucleus=80,100", "--roi_area"), "lo:hi")
+})
+
 test_that("Groovy no longer emits an image id containing whitespace", {
   # sanitize() collapses whitespace, so the case above should not arise from
   # our own writer any more. Belt and braces: the reader is explicit anyway.

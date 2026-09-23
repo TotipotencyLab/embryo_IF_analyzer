@@ -92,20 +92,52 @@
 #' Extract setting per feature
 #' Look a per-feature parameter up: the feature's own value, else "default",
 #' else the built-in default. Returns a length-1 numeric.
+#'
+#' `feature` may name SEVERAL keys, tried in order. That is what makes
+#' --rename safe: after 'nucleus=oocyte' the reporting name is "oocyte" but the
+#' operator may well have written --max_z_dist 'nucleus=2' against the name Fiji
+#' produced. Passing c("oocyte", "nucleus") accepts either. Without it the key
+#' matched nothing and the flag silently fell back to the built-in default --
+#' the run looked fine and used the wrong number.
+#'
 #' @param lookup  key-value setting
-#' @param feature value within the parameter lookup
+#' @param feature key(s) to try, in order, before "default"
 #' @param default the default value when feature is not part of the lookup
 #' @param what    typically a flag name, for reporting when value is in the wrong format only
 .cli_param_for <- function(lookup, feature, default, what = "parameter") {
   if (!length(lookup)) return(default)
-  v <- if (feature %in% names(lookup)) lookup[[feature]]
+  hit <- feature[feature %in% names(lookup)]
+  v <- if (length(hit)) lookup[[hit[1]]]
        else if ("default" %in% names(lookup)) lookup[["default"]]
        else return(default)
   n <- suppressWarnings(as.numeric(v))
   if (is.na(n)) {
-    stop("Value for ", what, " (", feature, ") is not a number: ", v, call. = FALSE)
+    stop("Value for ", what, " (", feature[1], ") is not a number: ", v, call. = FALSE)
   }
   return(n)
+}
+
+#' Warn about per-feature keys that match no feature in this run
+#'
+#' A key nobody claims is almost always a typo or a stale name, and its flag
+#' then does nothing at all. Silence there is the repo's characteristic failure:
+#' the run looks clean and used a value the operator did not ask for.
+#'
+#' @param lookups named list of key-value/range lookups, named by flag
+#' @param known   every feature name a key may legitimately use
+.cli_check_param_keys <- function(lookups, known) {
+  for (what in names(lookups)) {
+    keys <- names(lookups[[what]])
+    if (!length(keys)) next
+    orphan <- setdiff(keys, c(known, "default"))
+    if (length(orphan)) {
+      warning(what, " has key(s) matching no feature in this run: ",
+              paste(orphan, collapse = ", "),
+              "\n  features present: ", paste(sort(unique(known)), collapse = ", "),
+              "\n  that setting is being IGNORED.", call. = FALSE)
+    }
+  }
+  return(invisible(NULL))
 }
 
 # --- input resolution ---------------------------------------------------------
@@ -173,7 +205,15 @@
 #' @param features feature names to recognise
 #' @return data.frame(path, sample, feature)
 .cli_parse_contract <- function(paths, features) {
-  rx <- paste0("^(.*)_(", paste(features, collapse = "|"), ")_outline\\.txt$")
+  # NB: (.*?) and not (.*). A GREEDY prefix lets the longest possible sample
+  #     name win, so with features "oocyte" and "growing_oocyte" the file
+  #     S1_growing_oocyte_outline.txt parsed as sample "S1_growing", feature
+  #     "oocyte" -- silently, and reordering the alternation does not help
+  #     because the quantifier drives the match, not the branch order. Lazy
+  #     takes the shortest prefix that still lets the rest match, which is the
+  #     intended reading. Prefer .cli_scan_inputs(), which reads the identity
+  #     from the file's own content and cannot be fooled at all.
+  rx <- paste0("^(.*?)_(", paste(features, collapse = "|"), ")_outline\\.txt$")
   base <- basename(paths)
   ok <- grepl(rx, base)
   if (any(!ok)) {
@@ -195,6 +235,242 @@
       stringsAsFactors = FALSE
     )
   )
+}
+
+# --- identity from file content -----------------------------------------------
+
+# The ROI id's tail is fixed-shape and anchored: <feature>_SSSS-NNNN-YYYY. A
+# GREEDY prefix is correct here, and is what makes multi-word feature names such
+# as "growing_oocyte" work -- the opposite of the filename case above, where
+# there is no anchor and greedy takes too much.
+.ROI_ID_RX <- "^(.+)_\\d{4}-\\d{4}-\\d{4}$"
+
+#' Feature name(s) carried by a vector of ROI ids
+#'
+#' @param roi character vector of ROI ids
+#' @return the distinct feature prefixes found, ids that do not match dropped
+.cli_feature_from_roi <- function(roi) {
+  roi <- unique(roi[!is.na(roi)])
+  ok <- grepl(.ROI_ID_RX, roi)
+  if (!any(ok)) return(character(0))
+  return(sort(unique(sub(.ROI_ID_RX, "\\1", roi[ok]))))
+}
+
+#' Read a Fiji outline table's identity out of the table itself
+#'
+#' Both identities are already in the file: the `name` column holds the full
+#' sample id (the operator's --output_prefix plus the image id) and the `roi`
+#' column's prefix holds the feature name. Reading them from the content rather
+#' than from the filename means a renamed or oddly-named file cannot corrupt
+#' them, and multi-word feature names need no special handling.
+#'
+#' Only the head of the file is read, because this runs over every candidate
+#' path before any work starts. The full read later re-checks consistency
+#' across all rows -- see .cli_check_identity().
+#'
+#' @param path  outline table
+#' @param nrows rows to read for the probe
+#' @return list(sample, feature, ok, why); ok = FALSE when the content could not
+#'         be read, so the caller can fall back to the filename
+.cli_identify_outline <- function(path, nrows = 2000L) {
+  bad <- function(why) list(sample = NA_character_, feature = NA_character_,
+                            ok = FALSE, why = why)
+  df <- try(utils::read.table(path, header = TRUE, sep = "\t", nrows = nrows,
+                              stringsAsFactors = FALSE), silent = TRUE)
+  if (inherits(df, "try-error") || !nrow(df)) return(bad("unreadable or empty"))
+  if (!"roi" %in% colnames(df)) return(bad("no roi column"))
+
+  feats <- .cli_feature_from_roi(df$roi)
+  if (!length(feats)) return(bad("no ROI id of the form <feature>_SSSS-NNNN-YYYY"))
+  if (length(feats) > 1L) {
+    # Never pick one silently: a file holding two feature types would otherwise
+    # have half its rows filed under the wrong name.
+    stop("Outline table ", basename(path), " mixes feature types: ",
+         paste(feats, collapse = ", "),
+         "\n  (one file is expected to hold exactly one feature)", call. = FALSE)
+  }
+
+  smp <- NA_character_
+  if ("name" %in% colnames(df)) {
+    nm <- unique(trimws(as.character(df$name)))
+    nm <- nm[!is.na(nm) & nzchar(nm)]
+    if (length(nm) == 1L) {
+      smp <- nm
+    } else if (length(nm) > 1L) {
+      stop("Outline table ", basename(path), " mixes sample names: ",
+           paste(utils::head(nm, 4), collapse = ", "),
+           call. = FALSE)
+    }
+  }
+  if (is.na(smp)) return(bad("no usable name column"))
+  return(list(sample = smp, feature = feats, ok = TRUE, why = NA_character_))
+}
+
+#' Re-check a fully-read outline table against the identity the probe found
+#'
+#' The probe reads only the head of the file. This is the cheap assertion that
+#' the tail agrees, run once the rows are in memory anyway.
+.cli_check_identity <- function(roi, path, expect_feature) {
+  feats <- .cli_feature_from_roi(roi)
+  if (length(feats) > 1L || (length(feats) == 1L && !identical(feats, expect_feature))) {
+    stop("Outline table ", basename(path), " holds feature(s) ",
+         paste(feats, collapse = ", "), " beyond the first ", 2000L,
+         " rows, but was identified as '", expect_feature, "'", call. = FALSE)
+  }
+  return(invisible(TRUE))
+}
+
+#' Resolve input paths into jobs, preferring the file's content over its name
+#'
+#' Returns one row per usable file with:
+#'   path        the file
+#'   sample      from the `name` column, else the filename
+#'   roi_prefix  the feature name AS WRITTEN IN THE ROI IDS -- this is what the
+#'               grouping step matches on, and it does not change when the
+#'               feature is renamed for reporting
+#'   feature     the reporting name (same as roi_prefix until --rename)
+#'   from        "content" or "filename", so a run can say which it trusted
+#'
+#' @param paths    candidate files
+#' @param features feature names to keep; empty keeps everything found
+.cli_scan_inputs <- function(paths, features = character(0)) {
+  rows <- lapply(paths, function(p) {
+    id <- .cli_identify_outline(p)
+    if (id$ok) {
+      return(data.frame(path = p, sample = id$sample, roi_prefix = id$feature,
+                        from = "content", stringsAsFactors = FALSE))
+    }
+    # Fall back to the filename, but only when the caller named the features --
+    # without them there is nothing to anchor the split on.
+    if (!length(features)) return(NULL)
+    one <- tryCatch(.cli_parse_contract(p, features), error = function(e) NULL,
+                    warning = function(w) NULL)
+    if (is.null(one) || !nrow(one)) return(NULL)
+    data.frame(path = p, sample = one$sample, roi_prefix = one$feature,
+               from = "filename", stringsAsFactors = FALSE)
+  })
+  rows <- rows[!vapply(rows, is.null, logical(1))]
+  if (!length(rows)) {
+    stop("None of the ", length(paths), " input file(s) could be identified.",
+         "\n  Expected a Fiji outline table with a 'name' column and ROI ids of",
+         "\n  the form <feature>_SSSS-NNNN-YYYY.", call. = FALSE)
+  }
+  jobs <- do.call(rbind, rows)
+
+  if (length(features)) {
+    keep <- jobs$roi_prefix %in% features
+    if (any(!keep)) {
+      message("  ignoring ", sum(!keep), " file(s) holding feature(s) not requested: ",
+              paste(sort(unique(jobs$roi_prefix[!keep])), collapse = ", "))
+    }
+    if (!any(keep)) {
+      stop("No input file holds a requested feature (",
+           paste(features, collapse = ", "), ").",
+           "\n  Found instead: ", paste(sort(unique(jobs$roi_prefix)), collapse = ", "),
+           call. = FALSE)
+    }
+    jobs <- jobs[keep, , drop = FALSE]
+  }
+  jobs$feature <- jobs$roi_prefix          # --rename overwrites this, not roi_prefix
+  rownames(jobs) <- NULL
+  return(jobs)
+}
+
+#' Apply --rename 'old=new' to the reporting name only
+#'
+#' roi_prefix is deliberately untouched: the ROI ids inside the file still carry
+#' the original prefix, and the grouping step matches on those. Renaming the
+#' matcher as well would silently match nothing.
+.cli_apply_rename <- function(jobs, rename) {
+  if (!length(rename)) return(jobs)
+  unknown <- setdiff(names(rename), jobs$roi_prefix)
+  if (length(unknown)) {
+    warning("--rename names feature(s) not present in the input: ",
+            paste(unknown, collapse = ", "), call. = FALSE)
+  }
+  hit <- jobs$roi_prefix %in% names(rename)
+  jobs$feature[hit] <- unname(rename[jobs$roi_prefix[hit]])
+  if (any(hit)) {
+    for (k in intersect(names(rename), jobs$roi_prefix)) {
+      message("  rename: ", k, " -> ", rename[[k]])
+    }
+  }
+  return(jobs)
+}
+
+#' Rows holding a real, detected feature
+#'
+#' The vocabulary (note/data_formats.md §5) is: `<type>_N` is real, while
+#' `invalid_<type>_N`, `failed_<type>_<reason>` and NA are not. Testing that
+#' against the row's OWN feature_type works for any feature name; the earlier
+#' hardcoded list of nucleus/nucleolus/cell/cytoplasm silently dropped anything
+#' else from the QC plots, and would drop every renamed feature.
+#'
+#' @param df a data.frame/sf with feature_id and feature_type columns
+.cli_valid_rows <- function(df) {
+  if (!all(c("feature_id", "feature_type") %in% colnames(df))) {
+    stop("Expected feature_id and feature_type columns", call. = FALSE)
+  }
+  keep <- !is.na(df$feature_id) &
+    startsWith(df$feature_id, paste0(df$feature_type, "_"))
+  return(df[keep, , drop = FALSE])
+}
+
+# --- ranges -------------------------------------------------------------------
+
+#' Parse 'key=lo:hi' tokens into a named list of length-2 numeric ranges
+#'
+#'   c("nucleus=80:Inf", "nucleolus=3:150")
+#'     -> list(nucleus = c(80, Inf), nucleolus = c(3, 150))
+#'
+#' NB: ":" and not "-", because a range like 80-Inf is ambiguous against a
+#'     negative bound, and not ",", which argparser reserves (see
+#'     note/data_formats.md). An open end may be written as "" or "Inf":
+#'     "80:" and "80:Inf" both mean 80 upwards.
+#'
+#' @param tokens raw argument value
+#' @param what   flag name, for error messages only
+.cli_key_ranges <- function(tokens, what = "argument", default_key = "default") {
+  kv <- .cli_key_values(tokens, what, default_key = default_key)
+  if (!length(kv)) return(list())
+
+  parse_one <- function(v, key) {
+    if (!grepl(":", v, fixed = TRUE)) {
+      stop("Value for ", what, " (", key, ") must be 'lo:hi', got: ", v,
+           "\n  e.g. '", key, "=80:Inf'", call. = FALSE)
+    }
+    parts <- strsplit(v, ":", fixed = TRUE)[[1]]
+    if (length(parts) == 1L) parts <- c(parts, "")      # "80:" -> 80 upwards
+    if (length(parts) != 2L) {
+      stop("Value for ", what, " (", key, ") must have exactly one ':', got: ", v,
+           call. = FALSE)
+    }
+    parts <- trimws(parts)
+    lo <- if (!nzchar(parts[1])) 0        else suppressWarnings(as.numeric(parts[1]))
+    hi <- if (!nzchar(parts[2])) Inf      else suppressWarnings(as.numeric(parts[2]))
+    if (is.na(lo) || is.na(hi)) {
+      stop("Value for ", what, " (", key, ") is not numeric: ", v, call. = FALSE)
+    }
+    if (lo > hi) {
+      stop("Value for ", what, " (", key, ") has lo > hi: ", v, call. = FALSE)
+    }
+    return(c(lo, hi))
+  }
+  out <- lapply(seq_along(kv), function(i) parse_one(kv[[i]], names(kv)[i]))
+  names(out) <- names(kv)
+  return(out)
+}
+
+#' Look a per-feature RANGE up, with the same default/fallback rule as
+#' .cli_param_for(), including its several-candidate-keys behaviour. Returns
+#' NULL when nothing applies, so a caller can tell "not given" from
+#' "given as 0:Inf".
+.cli_range_for <- function(lookup, feature, what = "parameter") {
+  if (!length(lookup)) return(NULL)
+  hit <- feature[feature %in% names(lookup)]
+  if (length(hit)) return(lookup[[hit[1]]])
+  if ("default" %in% names(lookup)) return(lookup[["default"]])
+  return(NULL)
 }
 
 # --- sample sheet -------------------------------------------------------------

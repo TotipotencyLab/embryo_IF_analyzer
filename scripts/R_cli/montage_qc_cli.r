@@ -130,7 +130,7 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     panels[["z-projection + Fiji outline"]] <- .read_panel(argv$overlay, "--overlay")
   }
 
-  valid <- feats[grepl("^(nucleus|nucleolus|cell|cytoplasm)", feats$feature_id), ]
+  valid <- .cli_valid_rows(feats)
   if (!nrow(valid)) stop("No valid features to draw in panel (iii)", call. = FALSE)
   unioned <- union_features(valid)
   message("Panel (iii): ", nrow(feats), " ROIs -> ", nrow(unioned), " unioned feature(s)")

@@ -4,7 +4,7 @@ define_feature_group <- function(roi_df,
                                  # ROI overlapping filter
                                  min_intersect_ratio=0.0,
                                  # Feature filtering
-                                 max_z_dist=1, min_z_span=5, min_avg_area=NULL, 
+                                 max_z_dist=1, min_z_span=5, min_avg_area=NULL, feature_area_range=NULL,
                                  # Output control
                                  feature_prefix = "feature_", invalid_feature_prefix = "invalid_feature_", fail_ROI_feature_prefix = "failed_ROI_",
                                  verbose = FALSE){
@@ -215,15 +215,33 @@ define_feature_group <- function(roi_df,
     pull(feature_group)
   
   # Filter by average area
+  #
+  # Two ways in, and they mean the same thing: min_avg_area is the original
+  # lower-bound-only form, feature_area_range is c(lo, hi). Both act on the
+  # feature's MEAN ROI area, i.e. AFTER grouping -- unlike roi_area_range above,
+  # which drops individual ROIs before the graph is built and can therefore
+  # split one object into two by opening a z-gap. Prefer this one.
+  area_range <- NULL
+  if(!is.null(feature_area_range)){
+    if(length(feature_area_range) != 2 || anyNA(feature_area_range)){
+      stop("feature_area_range must be a length-2 numeric c(lo, hi)")
+    }
+    area_range <- c(min(feature_area_range), max(feature_area_range))
+  }
   if(!is.null(min_avg_area)){
-    nuc_stats_df <- roi_node_df %>% 
-      group_by(feature_group) %>% 
+    # Both given: take the tighter lower bound rather than letting one win silently.
+    area_range <- if(is.null(area_range)) c(min_avg_area, Inf)
+                  else c(max(area_range[1], min_avg_area), area_range[2])
+  }
+  if(!is.null(area_range)){
+    nuc_stats_df <- roi_node_df %>%
+      group_by(feature_group) %>%
       reframe(mean_area = mean(area))
-    
-    valid_feature_group_byArea <- nuc_stats_df %>% 
-      dplyr::filter(mean_area >= min_avg_area) %>% 
-      pull(feature_group) 
-    
+
+    valid_feature_group_byArea <- nuc_stats_df %>%
+      dplyr::filter(mean_area >= area_range[1], mean_area <= area_range[2]) %>%
+      pull(feature_group)
+
     # Filtering the list
     valid_feature_group <-  base::intersect(valid_feature_group, valid_feature_group_byArea)
   }

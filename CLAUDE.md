@@ -126,7 +126,25 @@ loop, including how to diff.
   `cli_helpers.r` is shared by all three. Conventions — the testable
   `<name>_cli(args)` function, the run guard, argparser's traps — are in the
   `r-cli-convention` skill. The IF quantification CLI is deliberately deferred:
-  the background-measurement question is unsettled.
+  the background-measurement question is unsettled. `note/if_quantification.md`
+  records what that decision will involve.
+
+  **Identity comes from the file's content, not its name.** The `name` column
+  holds the sample, the `roi` prefix holds the feature; the filename only has to
+  select the right files. The previous filename parse used a greedy prefix and
+  so mis-split any feature name containing `_` — `S1_growing_oocyte_outline.txt`
+  became sample `S1_growing`, feature `oocyte`, silently. A greedy prefix is
+  right when reading the feature out of an *ROI id*, whose tail is anchored and
+  fixed-shape, and wrong for a filename, which has no such anchor.
+
+  **A pre-grouping ROI filter can split one object into two.** `--min_circularity`
+  and `--roi_area` drop ROIs before the overlap graph is built, so removing
+  interior slices opens a z-gap that `max_z_dist` cannot bridge. Observed on real
+  data: a circularity cut removed an oocyte's widest cross-sections and one
+  object was counted as two. `--feature_area` acts after grouping and cannot do
+  this — prefer it. Any statistic computed after such a filter is also a
+  *truncated* one, so thresholds tuned against it are not portable to a run with
+  a different cut.
 
   `relate_features.r` places inner features inside outer ones. **The biology is
   declared, never hardcoded**: `--within 'nucleolus=nucleus'`. Containment is
@@ -208,7 +226,7 @@ The spatial tests need a working `sf`. `helper-setup.R` probes it **in a child
 process**, since a broken `units` aborts R outright rather than raising, which
 would take the whole run down; when it cannot load they skip rather than fail.
 Note which R ran: the count differs. See `CLAUDE.local.md` for this machine.
-Under R 4.6 with the full package set the suite is **247 passed / 0 skipped**.
+Under R 4.6 with the full package set the suite is **333 passed / 0 skipped**.
 `test-data_formats.R` pins the documented column sets against the code, so a
 format change that skips `note/data_formats.md` fails a test.
 
