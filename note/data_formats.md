@@ -284,7 +284,6 @@ rejects table instead of being folded in.
 | `volume` | `area_sum × --z_step`, µm³. **Only when `--z_step` is given** — the run says so when it is not, since an absent column is otherwise indistinguishable from a missing feature |
 | `circ_med`, `circ_min` | only when the `_res.txt` was found |
 | `ch<N>_signal` | one column per channel measured; only when the `_res.txt` was found |
-| `class` | the `--class` a feature matched, `NA` when none; only when `--class` was given |
 | *metadata* | every non-`prefix` sample sheet column, when supplied. `is_bridge` is **not** carried through: it is an ROI-level fact that varies within a feature, and `n_bridge` / `frac_bridge` are the feature-level answer |
 
 ⚠️ Every statistic above **excludes bridge ROIs** (`n_roi` and `n_z`
@@ -324,51 +323,6 @@ whose span is wide enough that a log axis may help, restricted to the
 statistics that actually get a panel. A logged panel says `(log10)` on its
 axis, and one that would have to drop a zero falls back to linear **with a
 warning**.
-
-#### `--class` — naming the kinds of object, from their own statistics
-
-```bash
---class 'growing:area_med=600:Inf' 'growing:circ_med=0:0.7' 'small:area_med=0:600'
-```
-
-Each token is `class:column=lo:hi`, bounds **inclusive**. The name is everything
-before the *first* colon, which is unambiguous because a column name cannot
-contain one while a range always does — a token with no name is refused rather
-than read as a class called `area_med=400`.
-
-Several tokens naming the same class are **ANDed**. Naming the same column
-twice for one class is an error, not a silent replacement.
-
-**Priority is the flag order.** A feature matching several classes takes the
-first, and the run says how many did:
-
-```
-Warning: 6 feature(s) matched more than one class and took the first.
-  The current class priority is: big > round
-  Reorder the --class flags to change it.
-```
-
-Taking the first is defensible; doing so invisibly is not. Swapping two
-`--class` flags is expected to change the answer.
-
-**`NA` never matches.** A feature whose `ch1_signal` is `NA` because no
-measurement table was found has not been shown to lie inside the range, and
-treating unknown as a match would invent class members.
-
-A feature matching no class is an **orphan**: `class` is `NA` and it is kept,
-the same reasoning as a parentless nucleolus in `relate_features.r` — an object
-that fits no class is evidence about the *classes*, and dropping it destroys
-the evidence. `--drop_orphan_feature` removes them once you have looked.
-
-The biology is declared, never hardcoded. Nothing in the code knows what an
-oocyte is; it knows a class is a set of ranges. Because `class` is an ordinary
-column, `--group_by class` groups the distribution panels by it and
-`feature_scatter_cli.r --color_by class` colours by it.
-
-⚠️ A class boundary read off `feature_stats.tsv` is only portable to runs with
-the **same pre-grouping filters**. `--min_circularity` and `--roi_area` truncate
-the statistics they act on, so a cut tuned against one is not the same cut
-against another. See §5.
 
 `feature_rejects.tsv`: `sample`, `feature_type`, `bucket`, `n_roi`, where
 `bucket` is `feature`, `invalid`, `failed` or `unassigned`. It exists so that a

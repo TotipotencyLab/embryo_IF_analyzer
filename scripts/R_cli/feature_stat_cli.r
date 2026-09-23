@@ -96,12 +96,6 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = paste("distance between slices, in the outline unit (microns).",
                                  "Adds a 'volume' column = area_sum x z_step. Fiji does not",
                                  "record pixel_depth in _config.txt, so it must be given here"))
-  p <- add_argument(p, "--class", short = "-k", type = "character", nargs = Inf, default = NULL,
-                    help = paste("assign each feature to a class from its own statistics, as",
-                                 "'class:column=lo:hi'. Repeat for more conditions (ANDed) and",
-                                 "more classes. Flag ORDER is the priority when several match"))
-  p <- add_argument(p, "--drop_orphan_feature", short = "-D", flag = TRUE,
-                    help = "drop features matching no --class [default: keep them, class = NA]")
   p <- add_argument(p, "--log_scale", short = "-x", type = "character", nargs = Inf, default = NULL,
                     help = paste("columns to draw on a log10 axis, as names or globs:",
                                  "--log_scale volume 'area_*'. Quote a glob so the shell",
@@ -226,32 +220,6 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   if (!is.null(sheet)) {
     stats <- .cli_join_sheet(stats, sheet, argv$id_column)
-  }
-
-  # Before the --group_by check on purpose, so `--group_by class` can name the
-  # column this step creates.
-  class_spec <- .cli_class_spec(argv$class)
-  if (length(class_spec)) {
-    stats <- classify_features(stats, class_spec,
-                               drop_orphan = argv$drop_orphan_feature)
-    cc <- class_counts(stats)
-    message("Classes (priority ", paste(names(class_spec), collapse = " > "), "):")
-    for (i in seq_len(nrow(cc))) {
-      message("  ", format(cc$class[i], width = max(nchar(cc$class))), "  ", cc$n[i])
-    }
-    n_orphan <- attr(stats, "n_orphan")
-    if (!is.null(n_orphan) && n_orphan > 0) {
-      if (argv$drop_orphan_feature) {
-        message("  dropped ", n_orphan, " feature(s) matching no class (--drop_orphan_feature)")
-      } else {
-        # Kept, and said out loud: an unclassified feature is evidence about
-        # the class boundaries, not a nuisance row.
-        message("  kept ", n_orphan, " unclassified feature(s); ",
-                "--drop_orphan_feature removes them")
-      }
-    }
-  } else if (isTRUE(argv$drop_orphan_feature)) {
-    warning("--drop_orphan_feature does nothing without --class", call. = FALSE)
   }
 
   missing_group <- setdiff(group_by, colnames(stats))
