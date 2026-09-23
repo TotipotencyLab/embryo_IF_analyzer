@@ -164,6 +164,49 @@ test_that("feature_stats reports n_bridge and frac_bridge", {
   # number handed to min_z_span.
   expect_identical(st$n_roi, 6L)
   expect_identical(st$n_z, 6L)
+
+  # n_roi_all keeps the bridges visible beside the seed-only count.
+  expect_identical(st$n_roi_all, 9L)
+  # One object followed through z: never two ROIs on one slice.
+  expect_identical(st$max_roi_per_z, 1L)
+})
+
+test_that("max_roi_per_z exposes a bridge that welded two side-by-side objects", {
+  # This is the failure seen on the real oocyte data: a rejected ROI that is a
+  # MERGED MASK of two neighbours forms edges to both and fuses them. The
+  # rescue case and this one are both "a bridge joined two components", so the
+  # count alone cannot tell them apart -- but a feature holding two ROIs on one
+  # slice is not one object followed through z.
+  .setup()
+  source_r_scripts("feature_stats.r")
+
+  # Two objects side by side in x, never touching each other.
+  left  <- do.call(rbind, lapply(1:9, function(i){
+    .sq(sprintf("nucleus_%04d-0001-0433", i), i, half = 10, cx = 0)
+  }))
+  right <- do.call(rbind, lapply(1:9, function(i){
+    .sq(sprintf("nucleus_%04d-0002-0433", i), i, half = 10, cx = 40)
+  }))
+  # An over-large ROI covering BOTH, on three slices -- what a segmentation
+  # gives when two neighbours touch. An upper area bound rejects it.
+  merged <- do.call(rbind, lapply(4:6, function(i){
+    .sq(sprintf("nucleus_%04d-0003-0433", i), i, half = 30, cx = 20)
+  }))
+  o <- rbind(left, right, merged)
+
+  # Without bridging: two clean objects, the merged mask dropped.
+  off <- .run_group(o, roi_area_range = c(50, 2000))
+  expect_identical(.n_valid(off), 2L)
+
+  # With bridging: the mask fuses them into one.
+  on <- .run_group(o, roi_area_range = c(50, 2000), bridge_roi = "area")
+  expect_identical(.n_valid(on), 1L)
+
+  on$feature_type <- "nucleus"; on$sample <- "S1"
+  st <- summarise_feature_stats(sf::st_as_sf(on))
+  expect_identical(st$max_roi_per_z, 2L)   # the tell
+  expect_identical(st$n_roi, 18L)          # both objects' seeds
+  expect_identical(st$n_roi_all, 21L)
 })
 
 test_that("a table written before bridging existed still summarises", {

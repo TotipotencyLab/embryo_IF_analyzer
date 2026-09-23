@@ -153,9 +153,21 @@ summarise_feature_stats <- function(st_df, res = NULL, channel_stat = "wmean",
   # the same number passed to the filter.
   bridge_n <- geo_src %>%
     dplyr::group_by(sample, feature_type, feature_id) %>%
-    dplyr::summarise(n_bridge = sum(is_bridge),
-                     .n_total  = dplyr::n(),
-                     .groups  = "drop")
+    dplyr::summarise(n_bridge  = sum(is_bridge),
+                     n_roi_all = dplyr::n(),
+                     # Max SEED ROIs on any one slice. One object contributes
+                     # one ROI per slice -- define_feature_group() assumes no
+                     # two polygons overlap within a slice -- so anything above
+                     # 1 means the feature spans objects sitting SIDE BY SIDE,
+                     # not one object followed through z. That is what a merged
+                     # mask does once it is allowed to form edges.
+                     #
+                     # Seeds only, deliberately. A bridge is often a mask lying
+                     # OVER the ROIs it connects, so counting bridges would read
+                     # 2 on a perfectly good rescue and the signal would stop
+                     # meaning "two objects".
+                     max_roi_per_z = max(table(z[!is_bridge])),
+                     .groups   = "drop")
 
   geo_src <- geo_src[!geo_src$is_bridge, , drop = FALSE]
   geo <- geo_src %>%
@@ -176,13 +188,16 @@ summarise_feature_stats <- function(st_df, res = NULL, channel_stat = "wmean",
   # exactly when the object has holes in z, which is worth seeing.
   geo$z_gaps <- geo$z_span - geo$n_z
 
-  # n_roi counts ordinary ROIs only, so frac_bridge is over the feature's whole
-  # ROI set. A high fraction says the count is resting on ROIs a filter
-  # rejected -- evidence about the filter, not a result to trust.
+  # n_roi counts ordinary (seed) ROIs only; n_roi_all includes the bridges, so
+  # frac_bridge is over the feature's whole ROI set and the two counts are
+  # visible side by side rather than the reader having to infer one from the
+  # other. A high fraction says the count is resting on ROIs a filter rejected
+  # -- evidence about the filter, not a result to trust.
   geo <- dplyr::left_join(geo, bridge_n, by = c("sample", "feature_type", "feature_id"))
-  geo$n_bridge <- ifelse(is.na(geo$n_bridge), 0L, as.integer(geo$n_bridge))
-  geo$frac_bridge <- ifelse(geo$.n_total > 0, geo$n_bridge / geo$.n_total, NA_real_)
-  geo$.n_total <- NULL
+  geo$n_bridge  <- ifelse(is.na(geo$n_bridge), 0L, as.integer(geo$n_bridge))
+  geo$n_roi_all <- ifelse(is.na(geo$n_roi_all), geo$n_roi, as.integer(geo$n_roi_all))
+  geo$frac_bridge <- ifelse(geo$n_roi_all > 0, geo$n_bridge / geo$n_roi_all, NA_real_)
+  geo$max_roi_per_z <- ifelse(is.na(geo$max_roi_per_z), 1L, as.integer(geo$max_roi_per_z))
 
   # --- shape ----------------------------------------------------------------------
   if("circ" %in% colnames(valid)){
