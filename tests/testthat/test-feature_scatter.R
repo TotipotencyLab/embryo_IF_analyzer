@@ -476,3 +476,38 @@ test_that("a single input table gets no source_file column", {
     st <- suppressMessages(feature_scatter_cli(c("--input", f, "--show_avail_stats")))))
   expect_false("source_file" %in% colnames(st))
 })
+
+test_that("volume and area_sum get the same axis, being the same quantity", {
+  # volume is area_sum x z_step. A unit change must not change the axis, or
+  # identical data reads as two different results -- which is exactly what
+  # happened: area_sum matched "^area_" and got a log axis, volume did not.
+  expect_true(scatter_should_log("area_sum"))
+  expect_true(scatter_should_log("volume"))
+  expect_identical(scatter_should_log("area_sum"), scatter_should_log("volume"))
+
+  # Counts and shape measures stay linear.
+  expect_false(scatter_should_log("n_roi"))
+  expect_false(scatter_should_log("circ_med"))
+  expect_false(scatter_should_log("ch1_signal"))
+})
+
+test_that("a logged axis says so in its label", {
+  skip_if_no_pkg("ggplot2")
+  d <- data.frame(sample = rep("S1", 6),
+                  feature_type = "nucleus",
+                  feature_id = paste0("nucleus_", 1:6),
+                  area_sum = c(100, 300, 900, 2700, 8100, 24300),
+                  volume = c(100, 300, 900, 2700, 8100, 24300) * 0.5,
+                  n_roi = 3:8)
+
+  p_area <- plot_feature_scatter(d, "area_sum", "n_roi")
+  p_vol  <- plot_feature_scatter(d, "volume", "n_roi")
+  expect_identical(p_area$labels$x, "area_sum (log10)")
+  expect_identical(p_vol$labels$x,  "volume (log10)")
+  # y is a count: linear, and unlabelled as such.
+  expect_identical(p_area$labels$y, "n_roi")
+
+  # An explicit override is still honoured, and shows in the label.
+  p_off <- plot_feature_scatter(d, "area_sum", "n_roi", log_x = "off")
+  expect_identical(p_off$labels$x, "area_sum")
+})

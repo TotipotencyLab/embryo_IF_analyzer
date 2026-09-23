@@ -358,8 +358,18 @@ upstream; this is the cheap end you re-run while trying pairs.
   ranges, then exits. It needs `--input` (which channels exist depends on the
   data) but not `--outdir`.
 
-⚠️ `area_*` columns are drawn on a **log axis by default**, because they span
-orders of magnitude here; everything else is linear. `--log_x` / `--log_y`
+⚠️ `area_*` **and `volume`** are drawn on a **log axis by default**, because
+they span orders of magnitude here; everything else is linear. `volume` is
+`area_sum × z_step` — the same quantity in different units — so the two must
+share an axis choice, or identical data reads as two different results. A
+logged axis says `(log10)` in its label, since that is the only thing
+distinguishing such a pair on sight.
+
+The rule keys on the column **name**, which is its weakness: a new column with
+the same distribution gets a linear axis because it is spelled differently, and
+nothing warns. A purely data-driven rule would be scale-invariant but would
+also log `z_min`, a slice index that spans 42× on real data and means nothing
+logged. `--log_x` / `--log_y`
 (`auto`/`on`/`off`) override it. A log axis that would drop a zero or negative
 value falls back to linear **with a warning** rather than silently losing the
 point.

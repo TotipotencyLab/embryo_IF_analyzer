@@ -21,7 +21,18 @@
 #'
 #' @param col column name
 scatter_should_log <- function(col){
-  return(grepl("^area_", col))
+  # The size family. volume is area_sum x z_step -- the SAME quantity in
+  # different units -- so it has to travel with area_: leaving it out gave the
+  # two columns a log and a linear axis, and the identical data looked like two
+  # different results.
+  #
+  # This keys on the NAME, which is the weakness. Two columns with the same
+  # distribution get different axes when they are spelled differently, and
+  # nothing warns. Kept because a purely data-driven rule (log when the
+  # positive range spans more than ~20x) would also log z_min, a slice index,
+  # which spans 42x on real data and means nothing on a log scale. The axis now
+  # says which scale it used, so the choice is at least visible.
+  return(grepl("^area_|^volume", col))
 }
 
 
@@ -173,8 +184,13 @@ plot_feature_scatter <- function(stats, x, y, id = NULL, color_by = NULL,
     title <- paste0("[", id, "] ", title)
   }
 
+  # Name the transform on the axis. Two panels of the same quantity in
+  # different units are otherwise indistinguishable from two different results.
+  ax <- function(col, logged){ if(logged){ paste0(col, " (log10)") }else{ col } }
+
   p <- p +
-    ggplot2::labs(x = x, y = y, title = title, subtitle = sub) +
+    ggplot2::labs(x = ax(x, use_log_x), y = ax(y, use_log_y),
+                  title = title, subtitle = sub) +
     ggplot2::theme_bw()
 
   # NB: after theme_bw(), not before. theme_bw() is a COMPLETE theme, so adding
