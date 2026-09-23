@@ -14,6 +14,9 @@
 
 #' Build a matcher for the columns to draw on a log axis
 #'
+#' Shared by the scatter panels and the distribution panels, so `--log_scale`
+#' means the same thing in both CLIs.
+#'
 #' Whether to log is a fact about the VARIABLE, not about which axis it landed
 #' on, so it is declared per column and applied wherever that column appears --
 #' the same reasoning as `--threshold`. It removes the whole question of
@@ -27,7 +30,7 @@
 #'
 #' @param patterns Column names, or globs such as `area_*`.
 #' @return A function of one column name returning TRUE/FALSE.
-scatter_log_matcher <- function(patterns = character(0)){
+log_axis_matcher <- function(patterns = character(0)){
   patterns <- patterns[!is.na(patterns)]
   patterns <- patterns[nzchar(patterns)]
   if(!length(patterns)){
@@ -52,7 +55,7 @@ scatter_log_matcher <- function(patterns = character(0)){
 #' @param cols  columns to consider
 #' @param min_span report a column only when it spans at least this factor
 #' @return Named numeric of spans, largest first; empty when none qualify.
-scatter_log_candidates <- function(stats, cols = colnames(stats), min_span = 20){
+log_axis_candidates <- function(stats, cols = colnames(stats), min_span = 20){
   out <- numeric(0)
   for(col in intersect(cols, colnames(stats))){
     v <- stats[[col]]
@@ -80,7 +83,7 @@ scatter_log_candidates <- function(stats, cols = colnames(stats), min_span = 20)
 #' @param color_by   column mapped to point colour, or NULL
 #' @param facet_by   column to facet on, or NULL for one pooled panel
 #' @param thresholds named list column -> numeric vector of guide-line positions
-#' @param log_cols  columns to draw on a log10 axis; see scatter_log_matcher()
+#' @param log_cols  columns to draw on a log10 axis; see log_axis_matcher()
 #' @param smooth     add a linear fit
 #' @param corr       report Spearman rho in the subtitle
 #' @param legend_max drop the colour legend past this many levels
@@ -109,7 +112,7 @@ plot_feature_scatter <- function(stats, x, y, id = NULL, color_by = NULL,
   d$.x <- d[[x]]
   d$.y <- d[[y]]
 
-  wants_log <- if(is.function(log_cols)){ log_cols }else{ scatter_log_matcher(log_cols) }
+  wants_log <- if(is.function(log_cols)){ log_cols }else{ log_axis_matcher(log_cols) }
   use_log_x <- wants_log(x)
   use_log_y <- wants_log(y)
   # A log axis cannot show zero or negative values, and ggplot drops them

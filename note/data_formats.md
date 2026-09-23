@@ -316,6 +316,14 @@ the prefix comes from the **`roi` column**, not from `feature_type`. After a
 `--rename` those differ, and the file on disk carries the original. Not finding
 them is a **loud warning**, never a silent run without signal.
 
+`--log_scale` works here exactly as it does in `feature_scatter_cli.r` — names
+or globs, matched against the columns present, nothing logged unless named, and
+a pattern matching nothing warns. When it is absent the run lists the columns
+whose span is wide enough that a log axis may help, restricted to the
+statistics that actually get a panel. A logged panel says `(log10)` on its
+axis, and one that would have to drop a zero falls back to linear **with a
+warning**.
+
 `feature_rejects.tsv`: `sample`, `feature_type`, `bucket`, `n_roi`, where
 `bucket` is `feature`, `invalid`, `failed` or `unassigned`. It exists so that a
 thin distribution can be read as either "few objects here" or "most of them

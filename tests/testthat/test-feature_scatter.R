@@ -80,17 +80,17 @@ test_that("asking for no plot at all says what to pass", {
 
 test_that("nothing is logged unless a column is named", {
   source_r_scripts("plot_feature_scatter.r")
-  none <- scatter_log_matcher()
+  none <- log_axis_matcher()
   expect_false(none("area_med"))
   expect_false(none("volume"))
   # An empty or NA pattern is "nothing", not "everything".
-  expect_false(scatter_log_matcher("")("area_med"))
-  expect_false(scatter_log_matcher(NA_character_)("area_med"))
+  expect_false(log_axis_matcher("")("area_med"))
+  expect_false(log_axis_matcher(NA_character_)("area_med"))
 })
 
 test_that("--log_scale takes names and globs, and anchors them", {
   source_r_scripts("plot_feature_scatter.r")
-  m <- scatter_log_matcher(c("volume", "area_*"))
+  m <- log_axis_matcher(c("volume", "area_*"))
   expect_true(m("volume"))
   expect_true(m("area_med"))
   expect_true(m("area_sum"))
@@ -107,11 +107,11 @@ test_that("log candidates are reported by span, which units cannot change", {
                   volume   = c(100, 30000) * 0.5,
                   circ_med = c(0.5, 0.9),     # 1.8x
                   n_roi    = c(3, 9))         # 3x
-  cand <- scatter_log_candidates(d, min_span = 20)
+  cand <- log_axis_candidates(d, min_span = 20)
   expect_setequal(names(cand), c("area_sum", "volume"))
   # The whole point: a change of units must not change the verdict.
   expect_equal(unname(cand[["area_sum"]]), unname(cand[["volume"]]))
-  expect_length(scatter_log_candidates(d, min_span = 1000), 0)
+  expect_length(log_axis_candidates(d, min_span = 1000), 0)
 })
 
 # --- the design claim: a threshold follows its column ---------------------------------
@@ -500,7 +500,7 @@ test_that("one glob covers volume and area_sum, the same quantity in two units",
   # "^area_" and volume did not, so a change of units silently flipped the
   # scale and identical data read as two different results.
   source_r_scripts("plot_feature_scatter.r")
-  m <- scatter_log_matcher(c("area_*", "volume"))
+  m <- log_axis_matcher(c("area_*", "volume"))
   expect_identical(m("area_sum"), m("volume"))
   expect_true(m("area_sum"))
 })

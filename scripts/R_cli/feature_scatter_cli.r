@@ -146,23 +146,7 @@ feature_scatter_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   color_by <- if (is.na(argv$color_by)) NULL else argv$color_by
 
-  log_cols <- .cli_resolve_arg(argv$log_scale, "--log_scale")
-  if (is.null(log_cols)) log_cols <- character(0)
-  # A pattern matching none of the columns is a silent no-op otherwise: the
-  # plots come out linear and look exactly like a run where the flag worked.
-  if (length(log_cols)) {
-    matches <- scatter_log_matcher(log_cols)
-    unused <- log_cols[!vapply(log_cols, function(pat) {
-      any(vapply(colnames(stats), scatter_log_matcher(pat), logical(1)))
-    }, logical(1))]
-    if (length(unused)) {
-      warning("--log_scale matched no column: ", paste(unused, collapse = ", "),
-              "\n  available: ", paste(colnames(stats), collapse = ", "),
-              call. = FALSE)
-    }
-    hit <- Filter(matches, colnames(stats))
-    if (length(hit)) message("Log10 axis for: ", paste(hit, collapse = " "))
-  }
+  log_cols <- .cli_log_cols(argv$log_scale, colnames(stats))
   if (!is.null(color_by) && !color_by %in% colnames(stats)) {
     stop("--color_by names a column that is not present: ", color_by,
          "\n  run with --show_avail_stats to list them", call. = FALSE)
@@ -278,7 +262,7 @@ feature_scatter_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   # Advisory, never automatic: span says a log axis would spread the points
   # out, not that logging the quantity means anything. z_min spans 42x on real
   # data and is a slice index.
-  cand <- scatter_log_candidates(stats)
+  cand <- log_axis_candidates(stats)
   if (length(cand)) {
     cat("\n  Wide enough that a log axis may help (--log_scale):\n    ",
         paste(sprintf("%s (%s x)", names(cand), format(cand, digits = 3)),

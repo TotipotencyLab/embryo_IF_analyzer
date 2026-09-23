@@ -384,3 +384,50 @@ test_that("volume appears only with --z_step, and is area_sum x z_step", {
   expect_true("volume" %in% colnames(with_z))
   expect_equal(with_z$volume, with_z$area_sum * 0.5)
 })
+
+test_that("the distribution panels log only what --log_scale names", {
+  skip_if_no_pkg("ggplot2")
+  source_r_scripts(c("plot_feature_scatter.r", "plot_feature_stats.r"))
+  d <- data.frame(sample = rep(c("A", "B"), each = 4),
+                  feature_type = "nucleus",
+                  feature_id = paste0("nucleus_", 1:8),
+                  area_sum = c(100, 300, 900, 2700, 200, 600, 1800, 5400),
+                  volume = c(100, 300, 900, 2700, 200, 600, 1800, 5400) * 0.5,
+                  circ_med = seq(0.4, 0.9, length.out = 8))
+
+  # Nothing named: every panel linear, and the label says nothing.
+  plain <- plot_feature_stat_list(d)
+  expect_identical(plain$area_sum$labels$y, "area_sum")
+  expect_identical(plain$volume$labels$y, "volume")
+
+  # One glob covers both units of the same quantity.
+  lg <- plot_feature_stat_list(d, log_cols = c("area_*", "volume"))
+  expect_identical(lg$area_sum$labels$y, "area_sum (log10)")
+  expect_identical(lg$volume$labels$y, "volume (log10)")
+  expect_identical(lg$circ_med$labels$y, "circ_med")
+})
+
+test_that("a distribution panel refuses to log away a zero, loudly", {
+  skip_if_no_pkg("ggplot2")
+  source_r_scripts(c("plot_feature_scatter.r", "plot_feature_stats.r"))
+  d <- data.frame(sample = rep(c("A", "B"), each = 3),
+                  feature_type = "nucleus",
+                  feature_id = paste0("nucleus_", 1:6),
+                  z_gaps = c(0, 1, 2, 3, 4, 5))
+
+  expect_warning(plot_feature_stat_list(d, log_cols = "z_gaps"),
+                 "Not logging z_gaps")
+  p <- suppressWarnings(plot_feature_stat_list(d, log_cols = "z_gaps"))
+  expect_identical(p$z_gaps$labels$y, "z_gaps")   # fell back, and says so
+})
+
+test_that("the log hint names only columns that get a panel", {
+  source_r_scripts(c("plot_feature_scatter.r", "plot_feature_stats.r"))
+  d <- data.frame(sample = "A", feature_type = "nucleus", feature_id = "nucleus_1",
+                  area_sum = c(100, 30000), z_min = c(1, 42), n_roi = c(3, 9))
+  # z_min spans 42x but is never plotted, so advising a log axis for it is
+  # advice the reader cannot act on.
+  cand <- log_axis_candidates(d, cols = feature_stat_value_cols(d))
+  expect_true("area_sum" %in% names(cand))
+  expect_false("z_min" %in% names(cand))
+})
