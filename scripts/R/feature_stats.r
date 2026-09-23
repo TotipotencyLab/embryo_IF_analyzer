@@ -137,7 +137,27 @@ summarise_feature_stats <- function(st_df, res = NULL, channel_stat = "wmean",
   # --- geometry, one row per feature ---------------------------------------------
   # Distinct on roi first: a channel join above put one row per roi per channel,
   # and area/z must not be counted once per channel.
-  geo_src <- unique(valid[, c("sample", "feature_type", "feature_id", "roi", "z", "area")])
+  # Tables written before --bridge_roi existed have no is_bridge column; treat
+  # them as having no bridges rather than failing on a missing column.
+  if(!("is_bridge" %in% colnames(valid))){
+    valid$is_bridge <- FALSE
+  }
+  valid$is_bridge <- !is.na(valid$is_bridge) & valid$is_bridge
+
+  geo_src <- unique(valid[, c("sample", "feature_type", "feature_id", "roi", "z", "area", "is_bridge")])
+
+  # Bridge ROIs are counted, then set aside. Every statistic below describes the
+  # ROIs that are evidence for the object, which is what define_feature_group()
+  # tests min_z_span and feature_area against -- if the reported z_span counted
+  # bridges, a threshold read off these plots would not mean the same thing as
+  # the same number passed to the filter.
+  bridge_n <- geo_src %>%
+    dplyr::group_by(sample, feature_type, feature_id) %>%
+    dplyr::summarise(n_bridge = sum(is_bridge),
+                     .n_total  = dplyr::n(),
+                     .groups  = "drop")
+
+  geo_src <- geo_src[!geo_src$is_bridge, , drop = FALSE]
   geo <- geo_src %>%
     dplyr::group_by(sample, feature_type, feature_id) %>%
     dplyr::summarise(
@@ -155,6 +175,14 @@ summarise_feature_stats <- function(st_df, res = NULL, channel_stat = "wmean",
   # z_span counts the extent, n_z the slices actually detected. They differ
   # exactly when the object has holes in z, which is worth seeing.
   geo$z_gaps <- geo$z_span - geo$n_z
+
+  # n_roi counts ordinary ROIs only, so frac_bridge is over the feature's whole
+  # ROI set. A high fraction says the count is resting on ROIs a filter
+  # rejected -- evidence about the filter, not a result to trust.
+  geo <- dplyr::left_join(geo, bridge_n, by = c("sample", "feature_type", "feature_id"))
+  geo$n_bridge <- ifelse(is.na(geo$n_bridge), 0L, as.integer(geo$n_bridge))
+  geo$frac_bridge <- ifelse(geo$.n_total > 0, geo$n_bridge / geo$.n_total, NA_real_)
+  geo$.n_total <- NULL
 
   # --- shape ----------------------------------------------------------------------
   if("circ" %in% colnames(valid)){

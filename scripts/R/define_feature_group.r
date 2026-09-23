@@ -1,6 +1,42 @@
-define_feature_group <- function(roi_df, 
+#' Warning text for "no ordinary ROI survived a pre-grouping filter"
+#'
+#' Keeps the original wording as a prefix so existing callers matching on it
+#' still match, and names the bridges when there are any -- otherwise the
+#' message says everything was filtered out while the output still holds rows.
+#'
+#' @param stage Filter name, as it appeared in the original message.
+#' @param df ROI table carrying `is_bridge`.
+#' @return A single string.
+.no_real_roi_msg <- function(stage, df){
+  nb <- if("is_bridge" %in% colnames(df)){sum(df$is_bridge)}else{0}
+  if(nb > 0){
+    return(paste0("All ROIs were filtered out (", stage, "); ", nb,
+                  " bridge ROI(s) remain, and bridges alone cannot form a feature"))
+  }
+  return(paste0("All ROIs were filtered out (", stage, ")"))
+}
+
+#' Label surviving bridge ROIs as failures
+#'
+#' Used on the early-return paths, where every non-bridge ROI has been filtered
+#' out. A bridge cannot stand on its own, so with nothing left to bridge it is
+#' reported as a failed ROI rather than silently dropped from the output.
+#'
+#' @param df ROI table carrying an `is_bridge` column.
+#' @param fail_prefix `fail_ROI_feature_prefix` from the caller.
+#' @return The bridge rows, with `feature_id` set; zero rows if there are none.
+.bridges_as_failed <- function(df, fail_prefix){
+  if(!nrow(df) || !("is_bridge" %in% colnames(df))){return(df[0, , drop=FALSE])}
+  b <- dplyr::filter(df, is_bridge)
+  if(!nrow(b)){return(b)}
+  return(dplyr::mutate(b, feature_id = paste0(fail_prefix, "bridge")))
+}
+
+define_feature_group <- function(roi_df,
                                  # ROI filtering
                                  pre_roi_filter_colname = "include", roi_area_range = c(0, Inf), roi_regex = NULL,
+                                 # Which pre-grouping rejects bridge instead of dropping
+                                 bridge_roi = NULL,
                                  # ROI overlapping filter
                                  min_intersect_ratio=0.0,
                                  # Feature filtering
@@ -48,13 +84,46 @@ define_feature_group <- function(roi_df,
   }
   
   if(reject_input){stop("Incorrect type of input")}
-  
-  
+
+  # Bridging --------------------------------------------------------------------------------------
+  # A pre-grouping ROI filter drops ROIs before the overlap graph is built, so
+  # removing an object's interior slices opens a z-gap that max_z_dist cannot
+  # span and one object is counted as two. Naming a filter here keeps its
+  # rejects in the graph as EDGE-FORMERS ONLY: a bridge ROI can hold an object
+  # together across the gap, but it cannot seed a feature, does not count
+  # toward min_z_span, and does not contribute to the feature's mean area.
+  # It can connect real ROIs; it can never invent an object out of rejects.
+  #
+  # "name" is deliberately NOT bridgeable. The other two reject on quality, and
+  # a low-quality ROI of the right feature is still that feature. roi_regex
+  # rejects on IDENTITY -- an ROI of a DIFFERENT feature type -- and letting one
+  # form edges would glue two unrelated objects into one.
+  bridgeable <- c("include", "area")
+  if(!is.null(bridge_roi)){
+    bridge_roi <- unique(as.character(bridge_roi))
+    bad <- bridge_roi[!(bridge_roi %in% bridgeable)]
+    if(length(bad)){
+      stop("bridge_roi must be a subset of c(", paste0('"', bridgeable, '"', collapse=", "),
+           "); got: ", paste(bad, collapse=", "),
+           if("name" %in% bad) " -- 'name' cannot bridge: it rejects on feature identity, not quality" else "",
+           call. = FALSE)
+    }
+  }
+  bridges <- function(reason){ !is.null(bridge_roi) && (reason %in% bridge_roi) }
+
   roi_pg_df$area <- st_area(roi_pg_df$geometry) # Assign area
+
+  # Initialised after area so the output column order matches
+  # note/data_formats.md. Always present, whether or not anything bridges: a
+  # column that appears only when a flag is set makes every downstream reader
+  # test for its existence before it can use it.
+  roi_pg_df$is_bridge <- FALSE
   
   # Making a reference vector with ROI ID as a key for later on when preparing the output
   roi_z_map <- dplyr::pull(roi_pg_df, z, name=roi)
   roi_area_map <- dplyr::pull(roi_pg_df, area, name=roi)
+  # NB: no is_bridge map here. The pre-filters below are what SET is_bridge, so
+  #     a map built at this point would be all FALSE. It is built after them.
   
   # Filtering out ROI -----------------------------------------------------------------------------
   
@@ -65,16 +134,21 @@ define_feature_group <- function(roi_df,
     use_roi_flag <- roi_df[[pre_roi_filter_colname]]
     if(sum(!use_roi_flag)>0){
       valid_roi <- roi_df$roi[use_roi_flag]
-      # The unused ROI will be excluded from the analysis but will merge back in the output
-      roi_fail_df <-  dplyr::filter(roi_pg_df, !(roi %in% valid_roi)) %>% 
-        mutate(feature_id = paste0(fail_ROI_feature_prefix, "excluded")) %>% 
-        rbind(roi_fail_df, .)
-      
-      roi_pg_df <- dplyr::filter(roi_pg_df, (roi %in% valid_roi))
-      
-      if(nrow(roi_pg_df) == 0){
-        warning("All ROIs were filtered out (include flag)")
-        return(roi_fail_df)
+      if(bridges("include")){
+        # Kept in the graph, but demoted: edges only.
+        roi_pg_df$is_bridge <- roi_pg_df$is_bridge | !(roi_pg_df$roi %in% valid_roi)
+      }else{
+        # The unused ROI will be excluded from the analysis but will merge back in the output
+        roi_fail_df <-  dplyr::filter(roi_pg_df, !(roi %in% valid_roi)) %>%
+          mutate(feature_id = paste0(fail_ROI_feature_prefix, "excluded")) %>%
+          rbind(roi_fail_df, .)
+
+        roi_pg_df <- dplyr::filter(roi_pg_df, (roi %in% valid_roi))
+      }
+
+      if(sum(!roi_pg_df$is_bridge) == 0){
+        warning(.no_real_roi_msg("include flag", roi_pg_df))
+        return(rbind(roi_fail_df, .bridges_as_failed(roi_pg_df, fail_ROI_feature_prefix)))
       }
     }
   }
@@ -92,10 +166,10 @@ define_feature_group <- function(roi_df,
       rbind(roi_fail_df, .)
     
     roi_pg_df <- dplyr::filter(roi_pg_df, (roi %in% valid_roi))
-    
-    if(nrow(roi_pg_df) == 0){
-      warning("All ROIs were filtered out (ROI name filtering)")
-      return(roi_fail_df)
+
+    if(sum(!roi_pg_df$is_bridge) == 0){
+      warning(.no_real_roi_msg("ROI name filtering", roi_pg_df))
+      return(rbind(roi_fail_df, .bridges_as_failed(roi_pg_df, fail_ROI_feature_prefix)))
     }
   }
   
@@ -108,15 +182,19 @@ define_feature_group <- function(roi_df,
                     !is.na(roi)) %>% 
       dplyr::pull(roi) %>% unique()
     
-    roi_fail_df <- dplyr::filter(roi_pg_df, !(roi %in% valid_roi)) %>% 
-      mutate(feature_id = paste0(fail_ROI_feature_prefix, "area")) %>% 
-      rbind(roi_fail_df, .)
-    
-    roi_pg_df <- dplyr::filter(roi_pg_df, (roi %in% valid_roi))
-    
-    if(nrow(roi_pg_df) == 0){
-      warning("All ROIs were filtered out (ROI Area)")
-      return(roi_fail_df)
+    if(bridges("area")){
+      roi_pg_df$is_bridge <- roi_pg_df$is_bridge | !(roi_pg_df$roi %in% valid_roi)
+    }else{
+      roi_fail_df <- dplyr::filter(roi_pg_df, !(roi %in% valid_roi)) %>%
+        mutate(feature_id = paste0(fail_ROI_feature_prefix, "area")) %>%
+        rbind(roi_fail_df, .)
+
+      roi_pg_df <- dplyr::filter(roi_pg_df, (roi %in% valid_roi))
+    }
+
+    if(sum(!roi_pg_df$is_bridge) == 0){
+      warning(.no_real_roi_msg("ROI Area", roi_pg_df))
+      return(rbind(roi_fail_df, .bridges_as_failed(roi_pg_df, fail_ROI_feature_prefix)))
     }
   }
   
@@ -154,11 +232,16 @@ define_feature_group <- function(roi_df,
   #   dplyr::select(roi_id = roi, z, area) %>% 
   #   mutate(feature_group = NA)
   
+  # Built here, not with the z/area maps above: the pre-filters are what set
+  # is_bridge, so a map made before them would be uniformly FALSE.
+  roi_bridge_map <- dplyr::pull(roi_pg_df, is_bridge, name=roi)
+
   roi_node_df <- data.frame(roi_id = unique(c(ovl_pair_df$roi_1, ovl_pair_df$roi_2))) %>%
-    as_tibble() %>% 
-    mutate(z = roi_z_map[roi_id], 
+    as_tibble() %>%
+    mutate(z = roi_z_map[roi_id],
            feature_group=NA, # place holder
-           area = roi_area_map[roi_id])
+           area = roi_area_map[roi_id],
+           is_bridge = unname(roi_bridge_map[roi_id]))
   
   roi_edge_df <- ovl_pair_df %>%
     dplyr::select(roi_1, roi_2)
@@ -203,9 +286,15 @@ define_feature_group <- function(roi_df,
   #     found". That is reachable whenever no ROI overlaps any other, which
   #     find_ROI_z_intersect() reports by warning rather than by stopping.
   #     Counting after unique() gives distinct z per group either way.
-  z_span_df <- roi_node_df %>% 
-    dplyr::filter(!is.na(feature_group)) %>% 
-    dplyr::select(feature_group, z) %>% 
+  # NB: bridges are excluded here, which is most of what "bridge" means. A
+  #     bridge ROI holds an object together across a gap but is not evidence
+  #     that the object is there, so it must not inflate the z-span that
+  #     min_z_span tests. A group made ONLY of bridges therefore drops out of
+  #     this table entirely and can never be selected as valid below -- rejects
+  #     cannot assemble themselves into a feature.
+  z_span_df <- roi_node_df %>%
+    dplyr::filter(!is.na(feature_group), !is_bridge) %>%
+    dplyr::select(feature_group, z) %>%
     unique() %>% 
     dplyr::count(feature_group, name="n_z_span") %>% 
     mutate(feature_group = as.double(feature_group))
@@ -234,7 +323,11 @@ define_feature_group <- function(roi_df,
                   else c(max(area_range[1], min_avg_area), area_range[2])
   }
   if(!is.null(area_range)){
+    # Bridges excluded for the same reason as in the z-span above: a rejected
+    # ROI is not a measurement of the object, so it must not move the mean the
+    # area filter tests.
     nuc_stats_df <- roi_node_df %>%
+      dplyr::filter(!is_bridge) %>%
       group_by(feature_group) %>%
       reframe(mean_area = mean(area))
 

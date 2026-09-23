@@ -25,7 +25,7 @@ Read by `.cli_read_sample_sheet()`. Accepted extensions: `.tsv` / `.txt`
 | anything else | no | carried through verbatim onto every output row, and usable in `--group_by` |
 
 ⚠️ A metadata column may not be named after one the CLIs write themselves —
-`roi`, `z`, `area`, `geometry`, `sample`, `feature_id`, `feature_type`,
+`roi`, `z`, `area`, `is_bridge`, `geometry`, `sample`, `feature_id`, `feature_type`,
 `parent_*`, `n_detected`, `n_invalid`, `n_failed`, `n_roi`. The sheet is
 rejected with the offending name rather than the column being silently renamed
 to `area...7`. (The `--id_column` itself is exempt: it is the key, not
@@ -226,6 +226,7 @@ cannot read R. Columns, in both:
 | `roi` | chr | ROI id from Fiji |
 | `z` | int | slice |
 | `area` | dbl | µm², from the polygon |
+| `is_bridge` | lgl | `TRUE` if this ROI only forms graph edges, see §5 |
 | `feature_id` | chr | group this ROI belongs to, see §5 |
 | `feature_type` | chr | `nucleus`, `nucleolus`, … |
 | `sample` | chr | the `prefix` |
@@ -276,10 +277,19 @@ rejects table instead of being folded in.
 | `n_roi`, `n_z` | ROIs in the feature, and distinct slices |
 | `z_min`, `z_max`, `z_span` | extent; `z_span` = max − min + 1 |
 | `z_gaps` | `z_span − n_z` — slices inside the object's range where it was not detected |
+| `n_bridge`, `frac_bridge` | bridge ROIs in the feature, and their share of all its ROIs; `0` unless `--bridge_roi` was used |
 | `area_med`, `area_mean`, `area_max`, `area_sum` | per-slice ROI area, µm² |
 | `circ_med`, `circ_min` | only when the `_res.txt` was found |
 | `ch<N>_signal` | one column per channel measured; only when the `_res.txt` was found |
 | *metadata* | every non-`prefix` sample sheet column, when supplied |
+
+⚠️ Every statistic above **excludes bridge ROIs** (`n_roi` and `n_z`
+included). That is deliberate: `define_feature_group()` tests `--min_z_span`
+and `--feature_area` on the ordinary ROIs alone, so if these numbers counted
+bridges, a threshold read off one of these plots would not mean the same thing
+as the same number handed to the filter. `frac_bridge` is how you see how much
+of a feature is resting on rejected ROIs — a high value is evidence that the
+*filter* needs adjusting, not a result to trust. See §5.
 
 `ch<N>_signal` is aggregated by `--channel_stat`, default **`wmean`** — the mean
 weighted by ROI area. A plain mean lets a feature's small tapering end slices
@@ -395,7 +405,7 @@ with the older macros. `read_fiji_result()` finds the id by matching
 |---|---|
 | `<feature>_N` | a real detected feature — **this is what gets counted** |
 | `invalid_<feature>_N` | a group that failed `min_z_span` or `min_avg_area` |
-| `failed_<feature>_<reason>` | an ROI that never reached grouping; `<reason>` is `excluded`, `name`, `area` or `overlap` |
+| `failed_<feature>_<reason>` | an ROI that never reached grouping; `<reason>` is `excluded`, `name`, `area`, `overlap` or `bridge` |
 | `NA` | an ROI that reached no group at all |
 
 `N` is sequential within an image and carries **no meaning across images** —
@@ -411,6 +421,38 @@ mismatch; it is provenance.
 To test whether a row is a real detected feature, compare against the row's own
 `feature_type` (`startsWith(feature_id, paste0(feature_type, "_"))`), never
 against a hardcoded list of names — `.cli_valid_rows()` does this.
+
+### `is_bridge` — an ROI that holds an object together but is not evidence of it
+
+A pre-grouping ROI filter (`--min_circularity`, `--roi_area`) drops ROIs
+*before* the overlap graph is built, so removing an object's interior slices
+opens a z-gap that `--max_z_dist` cannot span and **one object is counted as
+two**. Observed on real oocyte data: a circularity cut removed an oocyte's
+widest cross-sections, because the equator of a large object is the least
+circular part of it.
+
+`--bridge_roi circularity roi_area` (or `all`) keeps those rejects in the graph
+as **edge-formers only**. A bridge ROI:
+
+- **can** link two ROIs across the gap it sits in,
+- **cannot** seed a feature — a group containing no ordinary ROI is never valid,
+- **does not** count toward `--min_z_span`,
+- **does not** contribute to the mean area that `--feature_area` tests.
+
+So bridging can rescue an object that a filter cut in half; it can never
+assemble one out of rejects.
+
+`--input`'s own name filter is **not** bridgeable, and this is not an
+oversight. The other two reject on *quality*, and a low-quality ROI of the
+right feature is still that feature. The name filter rejects on *identity* — an
+ROI of a different feature type — and letting one form edges would glue two
+unrelated objects into a single feature.
+
+`is_bridge` is present in the output whether or not anything bridges, so a
+reader never has to test for the column before using it. `feature_stat_cli.r`
+reports `n_bridge` and `frac_bridge` per feature: a high fraction means the
+count is resting on ROIs that the filter rejected, which is evidence that the
+*filter* needs adjusting rather than a result to trust.
 
 ---
 
