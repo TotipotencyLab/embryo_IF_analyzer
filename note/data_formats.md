@@ -257,6 +257,94 @@ genuinely has few objects.
 `feature_counts_summary.tsv`: the `--group_by` columns, `feature_type`,
 `n_sample`, `mean_detected`, `sd_detected`, `total_detected`.
 
+### `feature_stat_cli.r`
+
+```
+<outdir>/<output_prefix>feature_stats.tsv     one row per detected FEATURE
+<outdir>/<output_prefix>feature_rejects.tsv   what did not become one
+<outdir>/<output_prefix>feature_stats.pdf     one page per statistic, unless --no_plot
+```
+
+The unit is the feature, not the ROI: adjacent z-slices of one object share
+signal through the point-spread function, so ROIs are not replicates. Only rows
+naming a real feature are summarised; `invalid_*` and `failed_*` go to the
+rejects table instead of being folded in.
+
+| Column | Notes |
+|---|---|
+| `sample`, `feature_type`, `feature_id` | the key |
+| `n_roi`, `n_z` | ROIs in the feature, and distinct slices |
+| `z_min`, `z_max`, `z_span` | extent; `z_span` = max − min + 1 |
+| `z_gaps` | `z_span − n_z` — slices inside the object's range where it was not detected |
+| `area_med`, `area_mean`, `area_max`, `area_sum` | per-slice ROI area, µm² |
+| `circ_med`, `circ_min` | only when the `_res.txt` was found |
+| `ch<N>_signal` | one column per channel measured; only when the `_res.txt` was found |
+| *metadata* | every non-`prefix` sample sheet column, when supplied |
+
+`ch<N>_signal` is aggregated by `--channel_stat`, default **`wmean`** — the mean
+weighted by ROI area. A plain mean lets a feature's small tapering end slices
+vote as loudly as its equator. See `note/if_quantification.md`.
+
+⚠️ The measurement tables are found as `<sample>_<roi prefix>_res.txt`, where
+the prefix comes from the **`roi` column**, not from `feature_type`. After a
+`--rename` those differ, and the file on disk carries the original. Not finding
+them is a **loud warning**, never a silent run without signal.
+
+`feature_rejects.tsv`: `sample`, `feature_type`, `bucket`, `n_roi`, where
+`bucket` is `feature`, `invalid`, `failed` or `unassigned`. It exists so that a
+thin distribution can be read as either "few objects here" or "most of them
+failed a filter".
+
+### `feature_scatter_cli.r`
+
+```
+<outdir>/<output_prefix>feature_scatter.pdf
+```
+
+Reads `feature_stats.tsv` — **not** the `.rds`. The expensive work is done once
+upstream; this is the cheap end you re-run while trying pairs.
+
+- `--plot 'x:y'`, optionally named `'id=x:y'`. The id only labels the page;
+  unnamed pairs get `p1..pN` by position, and an explicit id colliding with an
+  auto-assigned one is an error rather than a silent shadow.
+- `--threshold 'column=value'` draws a guide line. **Keyed to the column, not
+  to the plot**: a cut-off is a fact about a variable, so it appears on every
+  panel where that variable does — vertical when it is x, horizontal when it is
+  y. Nothing is matched by position, so nothing can drift out of step, and the
+  same number cannot be stated two different ways on two panels. Repeat a key
+  for a band: `'area_med=100' 'area_med=400'`.
+- `--facet none | both | <column>`; `both` (default) writes a pooled page and a
+  faceted one per pair.
+- `--facet_keep` / `--facet_keep_file` choose which levels get broken out. **The
+  pooled page always uses every row** — the point of the pair is to see the whole
+  population once and a readable subset of it beside that, not to answer both
+  questions from the same reduced set. The file form takes one value per line and
+  allows `#` comments.
+- `--facet_max` (default 16) skips the faceted page when it would exceed that
+  many panels, with a warning naming `--facet_keep`. A page of fifty panels is
+  not a figure.
+- `--legend_max` (default 12) drops the colour key past that many levels — it
+  becomes unreadable and ggplot shrinks the plot panel to make room for it. The
+  colour mapping stays; only the key goes, and the subtitle says so. The key is
+  also dropped when `--color_by` equals the facet column, since the strip above
+  each panel already names it.
+- `--show_avail_stats` lists the plottable columns with their non-NA counts and
+  ranges, then exits. It needs `--input` (which channels exist depends on the
+  data) but not `--outdir`.
+
+⚠️ `area_*` columns are drawn on a **log axis by default**, because they span
+orders of magnitude here; everything else is linear. `--log_x` / `--log_y`
+(`auto`/`on`/`off`) override it. A log axis that would drop a zero or negative
+value falls back to linear **with a warning** rather than silently losing the
+point.
+
+`--smooth` and `--corr` are off by default on purpose: per-sample n here is
+single digits, where a fit is noise with a ribbon around it and a coefficient
+invites more confidence than the data supports.
+
+Several `--input` tables gain a `source_file` column automatically, so runs with
+different settings can be compared with `--facet source_file`.
+
 ### `montage_qc_cli.r`
 
 One PNG, panels left to right: raw z-projection, Fiji overlay, R union. The
@@ -272,6 +360,10 @@ unsuffixed PNG and `--overlay` the `_overlay` one, both for the same channel.
   `--min_z_span 'default=5' 'nucleolus=2'`.
 - Containment is `child=parent`: `--within 'nucleolus=nucleus'`.
 - Renaming is `old=new`: `--rename 'nucleus=oocyte'`.
+- Axis pairs are `x:y`, optionally named: `--plot 'p1=area_med:ch1_signal'`.
+- ⚠️ Most `key=value` flags **reject a repeated key** as a mistake. `--threshold`
+  is the exception and collects them, because two guide lines on one variable
+  (a band) is its normal case.
 - **Ranges are `key=lo:hi`**, with either end omittable: `--roi_area
   'nucleus=80:Inf'`, `'nucleus=80:'` and `'nucleus=:100'` are all valid. A colon
   rather than a dash, because `80--5` is ambiguous; and never a comma, see below.

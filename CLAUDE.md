@@ -121,8 +121,30 @@ loop, including how to diff.
   holes and MULTIPOLYGONs come out wrong, silently).
 - **`scripts/R_cli/` is the R command-line path**: `annotate_features_cli.r`
   (outlines → features, containment, + QC plot), `count_features_cli.r`
-  (features → tidy counts, the oocyte deliverable) and `montage_qc_cli.r` (the
-  3-panel check).
+  (features → tidy counts, the oocyte deliverable), `feature_stat_cli.r`
+  (per-feature statistics and their distributions), `feature_scatter_cli.r`
+  (two statistics against each other) and `montage_qc_cli.r` (the 3-panel
+  check).
+
+  **`feature_stat_cli.r` is the threshold-finding step**, and the unit is the
+  feature, not the ROI — adjacent z-slices of one object share signal through
+  the point-spread function, so ROIs are not replicates. It joins the Fiji
+  `_res.txt` onto features and aggregates per channel, **area-weighted by
+  default**: a plain mean lets an object's small tapering end slices vote as
+  loudly as its equator. The measurement tables are located by the **`roi`
+  column's prefix**, not by `feature_type`, so the lookup survives `--rename`.
+  Not finding them warns loudly rather than quietly producing a table with no
+  signal in it. `note/if_quantification.md` covers what these numbers do and do
+  not yet support — there is no background correction, so intensities are not
+  comparable between images.
+
+  `feature_scatter_cli.r` reads that CLI's **`feature_stats.tsv`**, not the
+  `.rds`: the expensive work happens once and the exploration end stays cheap to
+  re-run. Its `--threshold` is keyed to a **column, not a panel** — a cut-off is
+  a fact about a variable, so it is drawn wherever that variable appears, as a
+  vline when it is x and an hline when it is y. That deliberately removes the
+  whole question of matching lines to plots by position, and with it the recycle
+  / skip / off-by-one failures that come with it.
   `cli_helpers.r` is shared by all three. Conventions — the testable
   `<name>_cli(args)` function, the run guard, argparser's traps — are in the
   `r-cli-convention` skill. The IF quantification CLI is deliberately deferred:
@@ -226,7 +248,7 @@ The spatial tests need a working `sf`. `helper-setup.R` probes it **in a child
 process**, since a broken `units` aborts R outright rather than raising, which
 would take the whole run down; when it cannot load they skip rather than fail.
 Note which R ran: the count differs. See `CLAUDE.local.md` for this machine.
-Under R 4.6 with the full package set the suite is **333 passed / 0 skipped**.
+Under R 4.6 with the full package set the suite is **417 passed / 0 skipped**.
 `test-data_formats.R` pins the documented column sets against the code, so a
 format change that skips `note/data_formats.md` fails a test.
 

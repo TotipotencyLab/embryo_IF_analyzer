@@ -169,6 +169,53 @@ test_that("count writes the documented columns", {
                      "sd_detected", "total_detected"))
 })
 
+test_that("feature_stat writes the documented columns", {
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2"))
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  source_cli("annotate_features_cli.r")
+  source_cli("feature_stat_cli.r")
+
+  feat <- withr::local_tempdir()
+  suppressMessages(annotate_features_cli(c(
+    "--input", fixture_dir(), "--feature", "nucleus", "nucleolus",
+    "--outdir", feat, "--min_z_span", "default=5", "nucleolus=2",
+    "--max_z_dist", "default=3", "nucleolus=1")))
+
+  out <- withr::local_tempdir()
+  st <- suppressMessages(feature_stat_cli(c(
+    "--input", feat, "--outdir", out, "--res_dir", fixture_dir(), "--no_plot")))
+
+  documented <- c("sample", "feature_type", "feature_id", "n_roi", "n_z",
+                  "z_min", "z_max", "z_span", "area_med", "area_mean",
+                  "area_max", "area_sum", "z_gaps", "circ_med", "circ_min")
+  expect_true(all(documented %in% colnames(st)),
+              info = paste(setdiff(documented, colnames(st)), collapse = ", "))
+
+  # One signal column per channel Fiji measured, named ch<N>_signal.
+  sig <- grep("^ch\\d+_signal$", colnames(st), value = TRUE)
+  expect_gt(length(sig), 0)
+
+  # z_gaps is defined as z_span - n_z; assert the arithmetic, not just the name.
+  expect_equal(st$z_gaps, st$z_span - st$n_z)
+  # And z_span as max - min + 1.
+  expect_equal(st$z_span, st$z_max - st$z_min + 1L)
+
+  rej <- read.delim(file.path(out, "feature_rejects.tsv"), stringsAsFactors = FALSE)
+  expect_identical(colnames(rej), c("sample", "feature_type", "bucket", "n_roi"))
+  expect_true(all(rej$bucket %in% c("feature", "invalid", "failed", "unassigned")))
+})
+
+test_that("the documented default aggregation really is area-weighted", {
+  source_r_scripts("feature_stats.r")
+  # §3 claims --channel_stat defaults to wmean. A tapering object is where that
+  # differs from a plain mean, so the claim is testable rather than decorative.
+  v <- c(0, 100, 0); w <- c(1, 98, 1)
+  expect_equal(aggregate_roi_stat(v, w, "wmean"), 98)
+  expect_false(isTRUE(all.equal(aggregate_roi_stat(v, w, "wmean"),
+                                aggregate_roi_stat(v, w, "mean"))))
+})
+
 # --- whitespace in the image id ------------------------------------------------
 
 test_that(".read_outline survives a name column containing spaces", {
