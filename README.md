@@ -42,6 +42,12 @@ R reads those, merges per-slice ROIs into 3D objects, and does the analysis.
        --min_z_span 'default=5' 'nucleolus=2' \
        --within 'nucleolus=nucleus' --qc_plot
 
+   # size filters, and a feature relabelled for a different assay
+   scripts/R_cli/annotate_features_cli.r \
+       --input segmentation/ --feature nucleus --outdir results/ \
+       --roi_area 'nucleus=80:Inf' --feature_area 'nucleus=400:Inf' \
+       --rename 'nucleus=oocyte'
+
    # features -> counts, grouped by your metadata
    scripts/R_cli/count_features_cli.r \
        --input results/ --outdir results/ \
@@ -159,6 +165,21 @@ analysis script:
 [`scripts/R_cli/`](scripts/R_cli/) wraps these as command-line entry points —
 `annotate_features_cli.r`, `count_features_cli.r` and `montage_qc_cli.r`. Each
 takes `--help`.
+
+**Which file holds what is read from the file itself**, not from its name: the
+`name` column gives the sample and the ROI id prefix gives the feature. So a
+feature name may contain an underscore (`growing_oocyte`), and `--input`'s glob
+only has to *select* the right files. `--rename 'nucleus=oocyte'` relabels a
+feature for reporting when the Fiji step wrote a name that does not suit the
+assay; the ROI ids keep their original prefix, which is deliberate — that is the
+provenance.
+
+Two size filters, and they are **not** interchangeable:
+
+| Flag | Acts | Note |
+|---|---|---|
+| `--roi_area 'nucleus=80:Inf'` | on each ROI, **before** grouping | removing interior slices can split one object into two |
+| `--feature_area 'nucleus=400:Inf'` | on the finished feature | safe; prefer this one |
 
 [`PLA_analysis/`](PLA_analysis/) contains the proximity ligation assay analysis
 (published separately) and serves as a worked example of the R side end to end.

@@ -56,10 +56,37 @@ Per feature, per image. `<prefix>` is the operator's `--output_prefix`,
 <prefix><image id>_overview_ch<c>_overlay.png   the same, outlines drawn   (optional)
 ```
 
-`<feature>` is `nucleus` or `nucleolus` today. The R side derives both the
-sample and the feature from this filename, so the pattern is load-bearing —
-`--input_pattern` overrides it, but whatever replaces it must still let
-`<sample>` and `<feature>` be recovered from the basename.
+`<feature>` is `nucleus` or `nucleolus` today.
+
+### Where the R side gets the sample and the feature
+
+**From the file's content, not its name.** Both identities are already in the
+table:
+
+| Identity | Comes from | Example |
+|---|---|---|
+| sample | the `name` column | `GRV_Position010` |
+| feature | the `roi` column's prefix | `nucleus_0001-0001-0433` → `nucleus` |
+
+The filename only has to get the right files onto the list; `--input`'s glob and
+`--input_pattern` **select**, they no longer **parse**. This is what lets a
+feature name contain an underscore (`growing_oocyte`), and it means renaming a
+file cannot silently change what the R side thinks is in it.
+
+⚠️ The ROI id's tail is fixed-shape and anchored (`_SSSS-NNNN-YYYY`), which is
+why a greedy prefix is correct when reading the feature *out of an ROI id* and
+was wrong when reading it out of a *filename* — a filename has no such anchor,
+so `S1_growing_oocyte_outline.txt` parsed as sample `S1_growing`, feature
+`oocyte`. Fixed, and pinned in `test-feature_identity.R`.
+
+Two rules that are errors, not warnings, because a silent pick would file half a
+table under the wrong name:
+
+- one file may hold **exactly one** feature type
+- one file may hold **exactly one** sample name
+
+`.cli_parse_contract()` remains as a fallback for tables written without a
+`name` column, and a run says how many files it had to fall back for.
 
 ### `<image id>` — how it is resolved
 
@@ -244,6 +271,10 @@ unsuffixed PNG and `--overlay` the `_overlay` one, both for the same channel.
 - Per-feature settings are `key=value` tokens, with `default=` as the fallback:
   `--min_z_span 'default=5' 'nucleolus=2'`.
 - Containment is `child=parent`: `--within 'nucleolus=nucleus'`.
+- Renaming is `old=new`: `--rename 'nucleus=oocyte'`.
+- **Ranges are `key=lo:hi`**, with either end omittable: `--roi_area
+  'nucleus=80:Inf'`, `'nucleus=80:'` and `'nucleus=:100'` are all valid. A colon
+  rather than a dash, because `80--5` is ambiguous; and never a comma, see below.
 - ⚠️ **A comma is reserved.** argparser splits a multi-value argument on commas
   even when the shell delivered it as one word, so a comma can never be a
   separator here — and a file path containing one is silently split in half.
@@ -279,6 +310,16 @@ with the older macros. `read_fiji_result()` finds the id by matching
 `nucleus_1` in two samples are unrelated objects. Always group by
 `sample` + `feature_id`.
 
+`<feature>` here is the **reporting** name, which `--rename 'nucleus=oocyte'`
+changes. The `roi` column keeps Fiji's original prefix either way, because that
+is what the grouping step matches on — so after a rename a row reads
+`feature_id = oocyte_1`, `roi = nucleus_0001-0001-0433`. That is not a
+mismatch; it is provenance.
+
+To test whether a row is a real detected feature, compare against the row's own
+`feature_type` (`startsWith(feature_id, paste0(feature_type, "_"))`), never
+against a hardcoded list of names — `.cli_valid_rows()` does this.
+
 ---
 
 ## 6. What is safe to change
@@ -289,9 +330,10 @@ with the older macros. `read_fiji_result()` finds the id by matching
 | adding a column to a CLI output | cheap |
 | adding a sample sheet column | free — non-`prefix` columns are passed through |
 | renaming an output column | **breaks the next stage silently**; grep the CLIs first |
-| changing the `_outline.txt` filename pattern | breaks sample/feature recovery; needs `--input_pattern` and a doc update here |
+| changing the `_outline.txt` filename pattern | cheap now — identity comes from the file's content, so the pattern only has to still *select* the files (`--input_pattern`) |
+| renaming a feature (`--rename`) | free downstream; the `roi` column keeps the original prefix on purpose |
 | changing `Set Measurements` | breaks the `Label` join; the measurements stay correct while the join returns nothing |
-| changing the ROI name format | breaks the roi-id regex in `read_fiji_result()` |
+| changing the ROI name format | **more expensive than it was**: it breaks the roi-id regex in `read_fiji_result()` *and* the feature name the R side now reads from the prefix |
 | changing the overview `_overlay` suffix | cheap, but `--projection`/`--overlay` are passed by hand, so an old results folder keeps the old names |
 
 The rows in bold-adjacent territory share one property: **the numbers stay

@@ -95,6 +95,14 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = "drop ROIs below this circularity; needs the _res.txt file")
   p <- add_argument(p, "--min_intersect_ratio", short = "-r", type = "character", nargs = Inf, default = NULL,
                     help = "min overlap/min-area ratio to link two ROIs [default: 0]")
+  # Two area filters, at two different stages. They are NOT interchangeable --
+  # see the note on --roi_area below.
+  p <- add_argument(p, "--roi_area", short = "-a", type = "character", nargs = Inf, default = NULL,
+                    help = "keep only ROIs in this area range, BEFORE grouping, e.g. 'nucleus=80:Inf'")
+  p <- add_argument(p, "--feature_area", short = "-A", type = "character", nargs = Inf, default = NULL,
+                    help = "keep only features whose mean ROI area is in this range, e.g. 'nucleus=400:Inf'")
+  p <- add_argument(p, "--rename", short = "-n", type = "character", nargs = Inf, default = NULL,
+                    help = "relabel a feature for reporting, as 'old=new', e.g. 'nucleus=oocyte'")
   p <- add_argument(p, "--within", short = "-w", type = "character", nargs = Inf, default = NULL,
                     help = "containment, as 'child=parent', e.g. 'nucleolus=nucleus'")
   p <- add_argument(p, "--min_containment", short = "-m", type = "character", nargs = Inf, default = NULL,
@@ -128,6 +136,16 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   min_circ      <- .cli_key_values(argv$min_circularity,     "--min_circularity")
   min_int_ratio <- .cli_key_values(argv$min_intersect_ratio, "--min_intersect_ratio")
   min_contain   <- .cli_key_values(argv$min_containment,     "--min_containment")
+  roi_area      <- .cli_key_ranges(argv$roi_area,            "--roi_area")
+  feature_area  <- .cli_key_ranges(argv$feature_area,        "--feature_area")
+
+  # 'old=new'. Applied to the REPORTING name only, at load, so everything
+  # downstream -- --within, the feature_id prefix, the output columns -- sees
+  # the new name and nothing has to remember the old one.
+  rename <- .cli_key_values(argv$rename, "--rename", default_key = NA_character_)
+  if (length(rename) && any(is.na(names(rename)))) {
+    stop("--rename needs 'old=new' tokens, e.g. 'nucleus=oocyte'", call. = FALSE)
+  }
 
   # 'child=parent'. The biology is the caller's to declare -- nothing here knows
   # that a nucleolus belongs in a nucleus.
@@ -146,17 +164,25 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   )
   
   # --- resolve inputs ---------------------------------------------------------
-  # The Fiji output contract is the default, not the only option: --input_pattern
-  # takes over for data that arrives named differently. The contract still has to
-  # let .cli_parse_contract() recover <sample> and <feature> from the basename.
-  pattern <- if(is.na(argv$input_pattern)){
-    paste0("_(", paste(features, collapse = "|"), ")_outline\\.txt$")
-  }else{
-    argv$input_pattern
-  }
+  # Two separate jobs, deliberately kept apart:
+  #   the pattern SELECTS which files to look at;
+  #   the file's own CONTENT says what is in them.
+  #
+  # The identity used to be parsed out of the basename, which could not
+  # represent a feature name containing "_" and mis-split it silently. The
+  # `name` column already holds the sample and the ROI ids already carry the
+  # feature prefix, so the filename is no longer load-bearing -- it only has to
+  # get the right files onto the list.
+  pattern <- if(is.na(argv$input_pattern)) "_outline\\.txt$" else argv$input_pattern
   files <- .cli_resolve_input_path(argv$input, pattern)
-  jobs <- .cli_parse_contract(files, features)
-  
+  jobs <- .cli_scan_inputs(files, features)
+  jobs <- .cli_apply_rename(jobs, rename)
+
+  from_name <- sum(jobs$from == "filename")
+  if (from_name) {
+    message("  ", from_name, " file(s) identified from the FILENAME, not their content")
+  }
+
   if (!is.na(argv$sample_sheet)) {
     sheet <- .cli_read_sample_sheet(path = argv$sample_sheet, id_column = argv$id_column)
     jobs <- .cli_apply_sample_sheet(contract_df = jobs, sheet = sheet, id_column = argv$id_column)
@@ -187,15 +213,19 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     
     per_feature <- list()
     for (k in seq_len(nrow(smp_jobs))) {
-      feat <- smp_jobs$feature[k]
+      feat <- smp_jobs$feature[k]          # reporting name, post --rename
+      roi_prefix <- smp_jobs$roi_prefix[k] # what the ROI ids actually say
       path <- smp_jobs$path[k]
-      
+
       roi_df <- .read_outline(path)
       if (!nrow(roi_df)) {
         warning("Outline table is empty, skipping: ", path, call. = FALSE)
         next
       }
-      
+      # The probe read only the head of the file; now that every row is in
+      # memory, confirm the tail agrees rather than assuming it.
+      .cli_check_identity(roi_df$roi, path, roi_prefix)
+
       # Optional circularity pre-filter, which needs the measurement table.
       circ_cut <- if (feat %in% names(min_circ) || "default" %in% names(min_circ)) {
         .cli_param_for(lookup=min_circ, feature=feat, default=dflt_args$min_circularity, what="--min_circularity")
@@ -211,14 +241,25 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       eff_z_dist <- .cli_param_for(max_z_dist,    feat, dflt_args$max_z_dist,          "--max_z_dist")
       eff_z_span <- .cli_param_for(min_z_span,    feat, dflt_args$min_z_span,          "--min_z_span")
       eff_ratio  <- .cli_param_for(min_int_ratio, feat, dflt_args$min_intersect_ratio, "--min_intersect_ratio")
-      
+      # Ranges are looked up under BOTH names, so --roi_area can be written
+      # against whichever the operator is thinking in after a --rename.
+      eff_roi_area  <- .cli_range_for(roi_area,     feat, "--roi_area")
+      if (is.null(eff_roi_area))  eff_roi_area  <- .cli_range_for(roi_area,     roi_prefix, "--roi_area")
+      eff_feat_area <- .cli_range_for(feature_area, feat, "--feature_area")
+      if (is.null(eff_feat_area)) eff_feat_area <- .cli_range_for(feature_area, roi_prefix, "--feature_area")
+
       feature_group <- define_feature_group(
         roi_df,
         pre_roi_filter_colname = "include",
-        roi_regex           = paste0("^", feat),
+        # NB: matched on roi_prefix, never on feat. The ROI ids inside the file
+        #     still carry the ORIGINAL prefix after a --rename, so matching on
+        #     the new name would quietly select nothing.
+        roi_regex           = paste0("^", roi_prefix),
+        roi_area_range      = if (is.null(eff_roi_area)) c(0, Inf) else eff_roi_area,
         max_z_dist          = eff_z_dist,
         min_z_span          = eff_z_span,
         min_intersect_ratio = eff_ratio,
+        feature_area_range  = eff_feat_area,
         feature_prefix         = paste0(feat, "_"),
         invalid_feature_prefix = paste0("invalid_", feat, "_"),
         fail_ROI_feature_prefix = paste0("failed_", feat, "_")
@@ -228,9 +269,15 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       per_feature[[feat]] <- feature_group
       
       n_valid <- length(unique(feature_group$feature_id[grepl(paste0("^", feat, "_"), feature_group$feature_id)]))
-      message("    ", feat, ": ", nrow(feature_group), " ROIs -> ", n_valid, " feature(s)",
+      rng <- function(r) if (is.null(r)) "" else paste0(r[1], ":", r[2])
+      message("    ", feat,
+              if (feat != roi_prefix) paste0(" (from ", roi_prefix, ")") else "",
+              ": ", nrow(feature_group), " ROIs -> ", n_valid, " feature(s)",
               "  [max_z_dist=", eff_z_dist, " min_z_span=", eff_z_span,
-              " min_intersect_ratio=", eff_ratio, "]")
+              " min_intersect_ratio=", eff_ratio,
+              if (!is.null(eff_roi_area))  paste0(" roi_area=", rng(eff_roi_area)) else "",
+              if (!is.null(eff_feat_area)) paste0(" feature_area=", rng(eff_feat_area)) else "",
+              "]")
     } # end for k
     
     if (!length(per_feature)) {
@@ -381,7 +428,7 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   # Per-slice ROIs faintly underneath, the z-aware union on top in colour.
   # plot_features_topView() is the library function; it uses geom_sf (a union
   # can be a MULTIPOLYGON or carry holes) and puts y in image orientation.
-  valid <- sample_sf[grepl("^(nucleus|nucleolus|cell|cytoplasm)", sample_sf$feature_id), ]
+  valid <- .cli_valid_rows(sample_sf)
   if (!nrow(valid)) {
     warning("No valid features to plot for ", sample_name, call. = FALSE)
     return(invisible(NULL))
