@@ -92,6 +92,14 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = "statistics to plot [default: every numeric one present]")
   p <- add_argument(p, "--channel_stat", short = "-c", type = "character", default = "wmean",
                     help = "per-channel aggregation: wmean, mean, median, sd, min, max, sum")
+  p <- add_argument(p, "--z_step", short = "-z", type = "numeric", default = NA,
+                    help = paste("distance between slices, in the outline unit (microns).",
+                                 "Adds a 'volume' column = area_sum x z_step. Fiji does not",
+                                 "record pixel_depth in _config.txt, so it must be given here"))
+  p <- add_argument(p, "--log_scale", short = "-x", type = "character", nargs = Inf, default = NULL,
+                    help = paste("columns to draw on a log10 axis, as names or globs:",
+                                 "--log_scale volume 'area_*'. Quote a glob so the shell",
+                                 "does not expand it. Nothing is logged unless named"))
   p <- add_argument(p, "--plot_type", short = "-t", type = "character", nargs = Inf, default = NULL,
                     help = "any of box, violin, quasirandom [default: box quasirandom]")
   p <- add_argument(p, "--colour_by", short = "-C", type = "character",
@@ -149,6 +157,15 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   # --- summarise ---------------------------------------------------------------
   per_file <- list()
   rejects <- list()
+  # Say why a column is absent, rather than leaving the reader to hunt for it in
+  # --show_avail_stats and find nothing. area_med only stands in for size while
+  # the object is a sphere, so the volume route matters for irregular ones.
+  if (is.na(argv$z_step)) {
+    message("No --z_step given, so no 'volume' column. ",
+            "area_sum is the shape-free size measure; --z_step turns it into ",
+            "volume (Fiji does not record pixel_depth, so it cannot be inferred).")
+  }
+
   n_with_signal <- 0L
   for (path in files) {
     feats <- readRDS(path)
@@ -178,7 +195,8 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                            "parent_containment", "parent_match"))
     st <- summarise_feature_stats(feats, res = res,
                                   channel_stat = argv$channel_stat,
-                                  meta_cols = meta_cols)
+                                  meta_cols = meta_cols,
+                                  z_step = if (is.na(argv$z_step)) NULL else argv$z_step)
     if (!nrow(st)) next
     per_file[[path]] <- st
     rejects[[path]] <- feature_reject_counts(feats)
@@ -226,12 +244,29 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   if (!argv$no_plot) {
     pdf_path <- file.path(outdir, paste0(argv$output_prefix, "feature_stats.pdf"))
+    # Resolved here, against the columns the stats table actually has, so a
+    # pattern naming a channel that this data does not carry is caught.
+    log_cols <- .cli_log_cols(argv$log_scale, colnames(stats))
+
+    # Advisory, exactly as --show_avail_stats is in the scatter CLI: span says a
+    # log axis would spread the points, not that logging the quantity means
+    # anything. Only when nothing was asked for, so it is a hint and not noise.
+    if (!length(log_cols)) {
+      cand <- log_axis_candidates(stats, cols = feature_stat_value_cols(stats))
+      if (length(cand)) {
+        message("  Wide enough that --log_scale may help: ",
+                paste(sprintf("%s (%sx)", names(cand), format(cand, digits = 3)),
+                      collapse = "  "))
+      }
+    }
+
     plots <- list()
     for (g in group_by) {
       pl <- plot_feature_stat_list(
         stats, value_cols = if (length(want_stats)) want_stats else NULL,
         group_col = g, types = plot_types,
-        colour_by = if (is.na(argv$colour_by)) NULL else argv$colour_by)
+        colour_by = if (is.na(argv$colour_by)) NULL else argv$colour_by,
+        log_cols = log_cols)
       if (length(group_by) > 1) names(pl) <- paste0(names(pl), " by ", g)
       plots <- c(plots, pl)
     }

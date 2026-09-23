@@ -169,7 +169,6 @@ test_that("feature_stats reports n_bridge and frac_bridge", {
   expect_identical(st$n_roi_all, 9L)
   expect_identical(st$n_z_all, 9L)
   expect_identical(st$n_z, 6L)
-  expect_equal(st$area_sum, 6 * 400)   # seeds only; the 4x4 bridges excluded
   # One object followed through z: never two ROIs on one slice.
   expect_identical(st$max_roi_per_z, 1L)
 })
@@ -249,4 +248,24 @@ test_that("a table written before bridging existed still summarises", {
   st <- summarise_feature_stats(sf::st_as_sf(on))
   expect_identical(st$n_bridge, 0L)
   expect_equal(st$frac_bridge, 0)
+})
+
+test_that("volume is Cavalieri on the seeds, and only when z_step is given", {
+  .setup()
+  source_r_scripts("feature_stats.r")
+
+  on <- .run_group(.pinched_object(), bridge_roi = "area")
+  on$feature_type <- "nucleus"; on$sample <- "S1"
+  sf_on <- sf::st_as_sf(on)
+
+  # Absent by default: a volume nobody asked for would be in unknown units.
+  expect_false("volume" %in% colnames(summarise_feature_stats(sf_on)))
+
+  st <- summarise_feature_stats(sf_on, z_step = 0.5)
+  # Six seed slices of 20x20 = 400 each; the three 4x4 bridges are excluded.
+  expect_equal(st$area_sum, 6 * 400)
+  expect_equal(st$volume, 6 * 400 * 0.5)
+
+  expect_error(summarise_feature_stats(sf_on, z_step = -1), "positive")
+  expect_error(summarise_feature_stats(sf_on, z_step = c(1, 2)), "single")
 })

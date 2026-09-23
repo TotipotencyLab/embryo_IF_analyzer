@@ -12,34 +12,66 @@
 # See note/data_formats.md for the flag contract.
 
 
-#' Should this column be drawn on a log axis by default?
+#' Build a matcher for the columns to draw on a log axis
 #'
-#' Areas span orders of magnitude here (nucleoli ~5 um^2, growing oocytes
-#' ~1000), so a linear axis buries the small end. Counts, z extents and
-#' circularity do not, and 0 is a legitimate value for several of them -- log
-#' would silently drop those points.
+#' Shared by the scatter panels and the distribution panels, so `--log_scale`
+#' means the same thing in both CLIs.
 #'
-#' @param col column name
-scatter_should_log <- function(col){
-  return(grepl("^area_", col))
+#' Whether to log is a fact about the VARIABLE, not about which axis it landed
+#' on, so it is declared per column and applied wherever that column appears --
+#' the same reasoning as `--threshold`. It removes the whole question of
+#' matching a scale to a panel by position.
+#'
+#' Nothing is logged unless asked for. An automatic rule was tried and removed:
+#' keyed on the name it gave `volume` a linear axis and `area_sum` a log one
+#' although volume IS area_sum x z_step, so a change of units silently flipped
+#' the scale. Keyed on the data it would have logged `z_min`, a slice index.
+#' Neither is something the reader can see, and both were wrong.
+#'
+#' @param patterns Column names, or globs such as `area_*`.
+#' @return A function of one column name returning TRUE/FALSE.
+log_axis_matcher <- function(patterns = character(0)){
+  patterns <- patterns[!is.na(patterns)]
+  patterns <- patterns[nzchar(patterns)]
+  if(!length(patterns)){
+    return(function(col) FALSE)
+  }
+  # glob2rx anchors, so "area_*" matches area_med but not my_area_med.
+  rx <- vapply(patterns, utils::glob2rx, character(1), USE.NAMES = FALSE)
+  return(function(col){
+    return(any(vapply(rx, function(r) grepl(r, col), logical(1))))
+  })
 }
 
 
-#' Resolve a three-state log setting
-#' @param setting "auto", "on"/"yes"/"true", or "off"/"no"/"false"
-#' @param col     column the axis shows
-resolve_log <- function(setting, col){
-  s <- tolower(trimws(as.character(setting)))
-  if(s %in% c("on", "yes", "true", "t")){
-    return(TRUE)
+#' Columns worth suggesting for a log axis
+#'
+#' Reports the multiplicative span of each numeric column so the caller can
+#' choose. Advisory only -- nothing acts on it -- because the columns that span
+#' orders of magnitude and the columns worth logging are not the same set:
+#' z_min spans 42x on real data and means nothing logged.
+#'
+#' @param stats per-feature table
+#' @param cols  columns to consider
+#' @param min_span report a column only when it spans at least this factor
+#' @return Named numeric of spans, largest first; empty when none qualify.
+log_axis_candidates <- function(stats, cols = colnames(stats), min_span = 20){
+  out <- numeric(0)
+  for(col in intersect(cols, colnames(stats))){
+    v <- stats[[col]]
+    if(!is.numeric(v)){
+      next
+    }
+    v <- v[is.finite(v) & v > 0]
+    if(length(v) < 2){
+      next
+    }
+    span <- max(v) / min(v)
+    if(is.finite(span) && span >= min_span){
+      out[[col]] <- span
+    }
   }
-  if(s %in% c("off", "no", "false", "f")){
-    return(FALSE)
-  }
-  if(s != "auto"){
-    stop("Log setting must be auto, on or off; got '", setting, "'", call. = FALSE)
-  }
-  return(scatter_should_log(col))
+  return(sort(out, decreasing = TRUE))
 }
 
 
@@ -51,14 +83,14 @@ resolve_log <- function(setting, col){
 #' @param color_by   column mapped to point colour, or NULL
 #' @param facet_by   column to facet on, or NULL for one pooled panel
 #' @param thresholds named list column -> numeric vector of guide-line positions
-#' @param log_x,log_y "auto", "on" or "off"
+#' @param log_cols  columns to draw on a log10 axis; see log_axis_matcher()
 #' @param smooth     add a linear fit
 #' @param corr       report Spearman rho in the subtitle
 #' @param legend_max drop the colour legend past this many levels
 #' @return ggplot, or NULL when there is nothing to draw
 plot_feature_scatter <- function(stats, x, y, id = NULL, color_by = NULL,
                                  facet_by = NULL, thresholds = list(),
-                                 log_x = "auto", log_y = "auto",
+                                 log_cols = character(0),
                                  smooth = FALSE, corr = FALSE,
                                  legend_max = 12){
 
@@ -80,8 +112,9 @@ plot_feature_scatter <- function(stats, x, y, id = NULL, color_by = NULL,
   d$.x <- d[[x]]
   d$.y <- d[[y]]
 
-  use_log_x <- resolve_log(log_x, x)
-  use_log_y <- resolve_log(log_y, y)
+  wants_log <- if(is.function(log_cols)){ log_cols }else{ log_axis_matcher(log_cols) }
+  use_log_x <- wants_log(x)
+  use_log_y <- wants_log(y)
   # A log axis cannot show zero or negative values, and ggplot drops them
   # silently -- which looks like missing data rather than a scale choice.
   if(use_log_x && any(d$.x <= 0)){
@@ -173,8 +206,13 @@ plot_feature_scatter <- function(stats, x, y, id = NULL, color_by = NULL,
     title <- paste0("[", id, "] ", title)
   }
 
+  # Name the transform on the axis. Two panels of the same quantity in
+  # different units are otherwise indistinguishable from two different results.
+  ax <- function(col, logged){ if(logged){ paste0(col, " (log10)") }else{ col } }
+
   p <- p +
-    ggplot2::labs(x = x, y = y, title = title, subtitle = sub) +
+    ggplot2::labs(x = ax(x, use_log_x), y = ax(y, use_log_y),
+                  title = title, subtitle = sub) +
     ggplot2::theme_bw()
 
   # NB: after theme_bw(), not before. theme_bw() is a COMPLETE theme, so adding
@@ -325,13 +363,22 @@ describe_feature_stats <- function(stats){
         "(all NA)"
       }
       type <- "numeric"
+      # Multiplicative span, which is what decides whether a log axis helps --
+      # and unlike the range it does not change when the units do.
+      pos <- v[is.finite(v) & v > 0]
+      span <- if(length(pos) > 1){
+        paste0(format(max(pos) / min(pos), digits = 3), "x")
+      }else{
+        "-"
+      }
     }else{
       rng <- paste0(length(unique(v[!is.na(v)])), " distinct")
       type <- "chr"
+      span <- "-"
     }
     data.frame(column = col, type = type,
                non_na = paste0(n_ok, "/", length(v)),
-               range = rng, stringsAsFactors = FALSE)
+               range = rng, span = span, stringsAsFactors = FALSE)
   })
   return(do.call(rbind, rows))
 }

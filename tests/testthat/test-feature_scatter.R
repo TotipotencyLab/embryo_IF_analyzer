@@ -78,23 +78,40 @@ test_that("asking for no plot at all says what to pass", {
 
 # --- log axes ----------------------------------------------------------------------
 
-test_that("only wide-range columns are logged automatically", {
+test_that("nothing is logged unless a column is named", {
   source_r_scripts("plot_feature_scatter.r")
-  expect_true(scatter_should_log("area_med"))
-  expect_true(scatter_should_log("area_sum"))
-  # Circularity is 0-1 and z_gaps can legitimately be 0; log would drop those.
-  expect_false(scatter_should_log("circ_med"))
-  expect_false(scatter_should_log("z_gaps"))
-  expect_false(scatter_should_log("ch1_signal"))
+  none <- log_axis_matcher()
+  expect_false(none("area_med"))
+  expect_false(none("volume"))
+  # An empty or NA pattern is "nothing", not "everything".
+  expect_false(log_axis_matcher("")("area_med"))
+  expect_false(log_axis_matcher(NA_character_)("area_med"))
 })
 
-test_that("the log setting overrides the automatic choice both ways", {
+test_that("--log_scale takes names and globs, and anchors them", {
   source_r_scripts("plot_feature_scatter.r")
-  expect_true(resolve_log("auto", "area_med"))
-  expect_false(resolve_log("off", "area_med"))
-  expect_true(resolve_log("on", "circ_med"))
-  expect_false(resolve_log("auto", "circ_med"))
-  expect_error(resolve_log("maybe", "area_med"), "auto, on or off")
+  m <- log_axis_matcher(c("volume", "area_*"))
+  expect_true(m("volume"))
+  expect_true(m("area_med"))
+  expect_true(m("area_sum"))
+  expect_false(m("circ_med"))
+  expect_false(m("ch1_signal"))
+  # Anchored: a glob must match the whole name, not appear inside it.
+  expect_false(m("my_area_med"))
+  expect_false(m("volume_frac"))
+})
+
+test_that("log candidates are reported by span, which units cannot change", {
+  source_r_scripts("plot_feature_scatter.r")
+  d <- data.frame(area_sum = c(100, 30000),   # 300x
+                  volume   = c(100, 30000) * 0.5,
+                  circ_med = c(0.5, 0.9),     # 1.8x
+                  n_roi    = c(3, 9))         # 3x
+  cand <- log_axis_candidates(d, min_span = 20)
+  expect_setequal(names(cand), c("area_sum", "volume"))
+  # The whole point: a change of units must not change the verdict.
+  expect_equal(unname(cand[["area_sum"]]), unname(cand[["volume"]]))
+  expect_length(log_axis_candidates(d, min_span = 1000), 0)
 })
 
 # --- the design claim: a threshold follows its column ---------------------------------
@@ -186,14 +203,15 @@ test_that("a pair with nothing to draw yields NULL, not an empty panel", {
   expect_null(plot_feature_scatter(st, "area_med", "ch9_signal"))
 })
 
-test_that("auto-logging steps aside when a value would be dropped", {
+test_that("a requested log axis steps aside when a value would be dropped", {
   skip_if_no_pkg("ggplot2")
   source_r_scripts("plot_feature_scatter.r")
   suppressPackageStartupMessages(library(ggplot2))
   st <- fake_stats()
   st$area_med[1] <- 0                      # log10(0) is -Inf
-  p <- expect_warning(plot_feature_scatter(st, "area_med", "ch1_signal"),
-                      "Not logging x")
+  p <- expect_warning(
+    plot_feature_scatter(st, "area_med", "ch1_signal", log_cols = "area_*"),
+    "Not logging x")
   # The point must still be there; silently losing it is the failure this avoids.
   b <- ggplot2::ggplot_build(p)
   geoms <- vapply(p$layers, function(l) class(l$geom)[1], character(1))
@@ -475,4 +493,36 @@ test_that("a single input table gets no source_file column", {
   invisible(capture.output(
     st <- suppressMessages(feature_scatter_cli(c("--input", f, "--show_avail_stats")))))
   expect_false("source_file" %in% colnames(st))
+})
+
+test_that("one glob covers volume and area_sum, the same quantity in two units", {
+  # volume IS area_sum x z_step. Under the old automatic rule area_sum matched
+  # "^area_" and volume did not, so a change of units silently flipped the
+  # scale and identical data read as two different results.
+  source_r_scripts("plot_feature_scatter.r")
+  m <- log_axis_matcher(c("area_*", "volume"))
+  expect_identical(m("area_sum"), m("volume"))
+  expect_true(m("area_sum"))
+})
+
+test_that("a logged axis says so in its label", {
+  skip_if_no_pkg("ggplot2")
+  d <- data.frame(sample = rep("S1", 6),
+                  feature_type = "nucleus",
+                  feature_id = paste0("nucleus_", 1:6),
+                  area_sum = c(100, 300, 900, 2700, 8100, 24300),
+                  volume = c(100, 300, 900, 2700, 8100, 24300) * 0.5,
+                  n_roi = 3:8)
+
+  lg <- c("area_*", "volume")
+  p_area <- plot_feature_scatter(d, "area_sum", "n_roi", log_cols = lg)
+  p_vol  <- plot_feature_scatter(d, "volume", "n_roi", log_cols = lg)
+  expect_identical(p_area$labels$x, "area_sum (log10)")
+  expect_identical(p_vol$labels$x,  "volume (log10)")
+  # y is a count: linear, and unlabelled as such.
+  expect_identical(p_area$labels$y, "n_roi")
+
+  # Not named, not logged -- and the label says so by saying nothing.
+  p_off <- plot_feature_scatter(d, "area_sum", "n_roi")
+  expect_identical(p_off$labels$x, "area_sum")
 })
