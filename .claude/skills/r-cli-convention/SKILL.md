@@ -93,6 +93,29 @@ Measured shapes with `default = NULL`:
 --words 'a*.txt'     -> "a*.txt"          <- globs arrive intact; see below
 ```
 
+### ⚠️ Repeating the flag is an error, not last-wins
+
+A multi-value flag takes all its values in **one** occurrence. Repeating it
+fails, and the message blames the *values*:
+
+```bash
+--class 'a:x=1:2' --class 'b:y=3:4'
+#   -> Error: Extra arguments supplied: expecting 0 values but got 2 values:
+#             (--class, b:y=3:4).
+```
+
+Note what it says: the repeated flag is reported as if it were a stray value,
+so the error reads like a quoting problem and sends you looking at the shell.
+Measured on 0.7.3.
+
+This is better than the silent last-wins you might assume — nothing is
+discarded quietly — but it means the **help text has to show the shape**, since
+repeating the flag is the natural guess:
+
+```r
+help = "... as 'class:column=lo:hi'. Repeat the TOKEN for more conditions"
+```
+
 ### ⚠️ A comma is RESERVED inside a value
 
 argparser splits an `nargs = Inf` value on commas **even when the shell delivered
