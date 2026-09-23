@@ -52,6 +52,39 @@ Then:
   update-server ping. Unverified; startup is dominated by JVM/class loading, so
   it may not help much.
 
+## Passing `#@` parameters on the command line
+
+A `#@`-parameterised script is fully drivable headless — the dialog is simply
+never shown. Append one quoted string after the script path, `name=value` pairs
+separated by **commas**:
+
+```bash
+<launcher> --headless --console --mem=6000m \
+  --run script.groovy "strParam='hello world',intParam=7,dblParam=8.5,boolParam=true,fileParam='/abs/path.tif'"
+```
+
+Measured on ImageJ 2.16.0 / 1.54p, one launch, all six declared parameters:
+
+```
+#@ String  strParam   ->  strParam='hello world'   arrives as "hello world"
+#@ Integer intParam   ->  intParam=7               arrives as Integer 7, not "7"
+#@ Double  dblParam   ->  dblParam=8.5             arrives as Double
+#@ Boolean boolParam  ->  boolParam=true           arrives as Boolean
+#@ File    fileParam  ->  fileParam='/abs/path'    arrives as File, .exists() true
+```
+
+- Names are the **variable** names from the `#@` lines, not the `label=` text.
+- Values are typed on arrival; do not re-parse them.
+- Omitted parameters are `null`, so a script that assumes the dialog always fills
+  them will NPE headless rather than fall back to the declared `value=`.
+
+⚠️ **The comma separates parameters; a comma INSIDE a quoted value is kept.**
+Measured: `csvParam='1,2,3'` arrives as the single string `1,2,3`. This is the
+opposite of argparser on the R side, which splits an `nargs=Inf` value on commas
+even when the shell delivered one element (see the `r-cli-convention` skill). Do
+not carry that habit across — but do not rely on the difference either: quoting
+is what preserves it.
+
 ## Launches are slow — batch everything
 
 A single launch costs roughly 30 s to several minutes, dominated by startup.
@@ -68,6 +101,11 @@ until grep -qE "DONE|Exception" "$SP/out.txt"; do sleep 8; done
 Always end the script with a sentinel line (`println "DONE"`) so the poll has
 something to wait for, including on the failure path.
 
+Whether the JVM exits after the script finishes is not consistent: a small probe
+that opens no images may exit cleanly while a full pipeline run sits there
+forever. Do not infer one from the other — always judge completion by the output
+and kill afterwards.
+
 ## What works headless
 
 | | headless |
@@ -81,6 +119,9 @@ something to wait for, including on the failure path.
 | `RoiManager` — **any** constructor | `HeadlessException` |
 | `ParticleAnalyzer` with `SHOW_OVERLAY_OUTLINES` | `OutOfMemoryError` |
 | `Analyze Particles ... show=Overlay` from a macro | silently yields 0 |
+| `imp.show()` | **returns without throwing** — harmless, still worth guarding |
+| Bio-Formats `ImageReader` + `MetadataTools` (no pixels) | works |
+| `loci.plugins.in.ImporterOptions` + `BF.openImagePlus` | works, series selection included |
 
 `RoiManager extends PlugInFrame extends java.awt.Frame`, so it cannot be
 constructed without a display; imagej-legacy does not patch it
@@ -114,6 +155,50 @@ new GroovyShell(this.class.classLoader, b).evaluate(src)
 
 Inject `javax.script.filename` or any script that resolves its own path will
 fail. For a compile-only check, `parseClass(src)` the stripped source.
+
+## Reading image files headless (Bio-Formats)
+
+Both halves work headless: parsing metadata without touching pixels, and opening
+a chosen series.
+
+```groovy
+def r = new loci.formats.ImageReader()
+def m = loci.formats.MetadataTools.createOMEXMLMetadata()
+r.setMetadataStore(m)        // BEFORE setId(), or the store is never populated
+r.setId(path)
+r.getSeriesCount(); r.setSeries(s); r.getSizeX() ...
+m.getImageName(s); m.getPixelsPhysicalSizeZ(s)
+r.close()                    // holds an open file handle
+```
+
+Metadata parsing is cheap enough to do on every file in a batch: **887 ms** for
+an 8.9 GB Leica `.lif` with 15 series. Opening a 2-slice crop of one
+2048x2048x56x3 series from that same file took **2.9 s**.
+
+```groovy
+def opt = new loci.plugins.in.ImporterOptions()
+opt.setId(path); opt.setWindowless(true)
+opt.clearSeries(); opt.setSeriesOn(idx, true)
+opt.setZBegin(idx, 0); opt.setZEnd(idx, nZ - 1)
+def imp = loci.plugins.BF.openImagePlus(opt)[0]
+```
+
+⚠️ `setZEnd` takes a **0-based index, not a count**. Passing `1` for a
+single-plane series throws `IllegalArgumentException: Invalid Z index: 1/1`.
+Clamp against the series' own `getSizeZ()`.
+
+Things worth knowing about what comes back:
+
+- `physicalSizeZ` is **null on single-plane series**. Anything recording a z step
+  must treat it as nullable.
+- **Pixel size can vary between series of one file** — 0.4456 / 0.2227 / 0.1098
+  um were all present in one `.lif`. A parameter in pixels (a blur sigma) is
+  therefore not comparable across those series, while one in calibrated units is.
+- `imp.getTitle()` is `"<file>.lif - <series name>"` and the slice label is
+  `"c:1/3 z:1/56 - <series name>"`. The file half is the only thing making a
+  series name unique across files: Leica defaults like `Series001` recur in every
+  file.
+- `imp.getCalibration().pixelDepth` **is** populated by the Bio-Formats import.
 
 ## Test hygiene
 

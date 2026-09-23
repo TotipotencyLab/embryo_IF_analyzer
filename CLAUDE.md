@@ -98,11 +98,21 @@ loop, including how to diff.
 
 ## Which scripts are current
 
-- **`scripts/groovy/` is the supported Fiji path.** `Run_NucleusSelector.groovy`
-  is the main entry point. `NucleolusDetect`, `RoiExport` and `RoiDetect` are the
-  shared library, split by role (detect / export / orchestrate) rather than by
-  experiment. `Inspect_*.groovy` are read-only diagnostics, written to be read as
-  well as run — they carry the Groovy/ImageJ API notes.
+- **`scripts/groovy/` is the supported Fiji path.** `NucleolusDetect`,
+  `RoiExport` and `RoiDetect` are the shared library, split by role (detect /
+  export / orchestrate) rather than by experiment.
+  **`NucleusPipeline.groovy` is everything that happens to one open image** —
+  detect, export, measure, overview, run config — and `Run_NucleusSelector.groovy`
+  is a `#@` block plus one call into it. Same division as the R side
+  (`scripts/R/` holds the work, `<name>_cli.r` holds the parsing), pushed
+  further: a `#@` script can only be tested by stripping its parameter lines and
+  injecting a `Binding`, so anything worth testing belongs in the class. A second
+  caller — the batch runner — is the reason it was split out; see
+  `note/groovy_batch_plan.md`.
+- Script name prefixes are a contract: **`Run_*`** does the analysis, **`Inspect_*`**
+  are read-only diagnostics (written to be read as well as run — they carry the
+  Groovy/ImageJ API notes), **`Make_*`** writes a table the pipeline then
+  consumes. Do not invent a fourth verb without adding it here.
 - `Overview.groovy` builds the quick-look PNGs (project → prepare → addOutlines →
   savePng, each usable alone). Its `merged` outline mode unions ROIs **in the 2D
   projection**, so objects overlapping in x-y share one outline: it is a picture,

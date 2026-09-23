@@ -74,10 +74,13 @@ check("frame in microns, x",                   xmax, 18.5d)
 check("frame in microns, y",                   ymax, 5.75d)
 
 println ""
-println "=== Run_NucleusSelector.groovy records them ==="
+println "=== NucleusPipeline.groovy records them ==="
 
-def runner = new File(LIBDIR, "Run_NucleusSelector.groovy")
-check("the runner is present",                 runner.isFile(), true)
+// These used to be asserted against Run_NucleusSelector.groovy. The work moved
+// into NucleusPipeline.groovy so the batch runner shares it rather than copying
+// it; the assertions follow the code.
+def runner = new File(LIBDIR, "NucleusPipeline.groovy")
+check("the pipeline library is present",       runner.isFile(), true)
 
 def src = runner.getText("UTF-8")
 check("records image_width",                   src.contains("image_width"), true)
@@ -96,6 +99,19 @@ check("saves raw BEFORE adding outlines",
 check("saves the overlaid copy too",
       src.contains("overviewPath(outDirPath, basename, c, OV.OVERLAY_SUFFIX)"), true)
 check("overviews cover the measured channels", src.contains("([dnaCh] + channels).unique()"), true)
+
+// The front end must stay a front end: if the detection calls creep back into
+// it, the batch runner and the interactive one have started to diverge again.
+// Comment lines are stripped first: these assertions are about what the front
+// end DOES, and a comment that merely mentions saveRunConfig() is not a call to
+// it. Without this the check fails on its own documentation.
+def frontEnd = new File(LIBDIR, "Run_NucleusSelector.groovy").getText("UTF-8")
+                   .readLines().findAll { !it.trim().startsWith("//") }.join("\n")
+check("front end delegates to the pipeline",   frontEnd.contains("NucleusPipeline.groovy"), true)
+check("front end does not detect",             frontEnd.contains("buildMask"), false)
+check("front end does not write outlines",     frontEnd.contains("saveOutlineCoords"), false)
+check("front end does not write the config",   frontEnd.contains("saveRunConfig"), false)
+check("front end still shows the image",       frontEnd.contains("imp.show()"), true)
 check("logs the display range",                src.contains("view.lo") && src.contains("view.hi"), true)
 
 // Parse every runner with the SciJava `#@` lines stripped -- they are directives
