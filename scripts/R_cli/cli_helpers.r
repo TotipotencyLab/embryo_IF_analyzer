@@ -778,3 +778,52 @@
   }
   return(pats)
 }
+
+
+#' Parse --class tokens into an ordered spec
+#'
+#' Each token is `class:column=lo:hi`. Several tokens naming the same class are
+#' ANDed, and the order the class names first appear is the priority order.
+#'
+#' The name is everything before the FIRST colon, which is unambiguous because a
+#' column name cannot contain one while a range always does. A token with no
+#' name -- `area_med=400:Inf` -- would otherwise parse as a class called
+#' "area_med=400", so it is refused with the form spelled out.
+#'
+#' @param tokens raw argument value
+#' @param what   flag name, for messages
+#' @return ordered named list; each element a named list of `c(lo, hi)`
+.cli_class_spec <- function(tokens, what = "--class") {
+  v <- .cli_resolve_arg(tokens, what)
+  if (is.null(v) || !length(v)) return(list())
+
+  spec <- list()
+  for (tok in v) {
+    tok <- trimws(tok)
+    i <- regexpr(":", tok, fixed = TRUE)
+    if (i < 1L) {
+      stop(what, " must be 'class:column=lo:hi', got: ", tok,
+           "\n  e.g. 'growing:area_med=400:Inf'", call. = FALSE)
+    }
+    name <- trimws(substr(tok, 1L, i - 1L))
+    rest <- trimws(substr(tok, i + 1L, nchar(tok)))
+    if (!nzchar(name) || grepl("=", name, fixed = TRUE)) {
+      stop(what, " is missing the class name before the first ':', got: ", tok,
+           "\n  e.g. 'growing:area_med=400:Inf'", call. = FALSE)
+    }
+    if (!grepl("=", rest, fixed = TRUE)) {
+      stop(what, " needs 'column=lo:hi' after the class name, got: ", tok,
+           call. = FALSE)
+    }
+    rng <- .cli_key_ranges(rest, paste0(what, " (", name, ")"))
+    for (col in names(rng)) {
+      if (!is.null(spec[[name]]) && !is.null(spec[[name]][[col]])) {
+        stop(what, " names ", col, " twice for class '", name,
+             "': the second would silently replace the first", call. = FALSE)
+      }
+      if (is.null(spec[[name]])) spec[[name]] <- list()
+      spec[[name]][[col]] <- rng[[col]]
+    }
+  }
+  return(spec)
+}
