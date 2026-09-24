@@ -123,6 +123,14 @@ loop, including how to diff.
   are read-only diagnostics (written to be read as well as run — they carry the
   Groovy/ImageJ API notes), **`Make_*`** writes a table the pipeline then
   consumes. Do not invent a fourth verb without adding it here.
+- `Inspect_ImageFile.groovy` lists what is inside a file without opening it —
+  series, dimensions, calibration — and with `checkPixels` reports the
+  percentage of non-zero pixels per series. That last one matters: a series that
+  was allocated but never written reads as a perfectly well-formed stack of
+  zeros, and segments to nothing without complaining. It also groups repeated
+  series names and says whether they are separate fields of a tile scan or
+  genuinely the same image, which the name alone cannot tell you.
+  `Open_LifFile.groovy` opens one chosen series into a window, by index or name.
 - `Overview.groovy` builds the quick-look PNGs (project → prepare → addOutlines →
   savePng, each usable alone). Its `merged` outline mode unions ROIs **in the 2D
   projection**, so objects overlapping in x-y share one outline: it is a picture,
@@ -213,6 +221,22 @@ fourth fork.** A new assay should be a new configuration of the shared library.
 
 ## Standing decisions
 
+- **Bio-Formats `ImporterOptions` writes ImageJ preferences.** The importer
+  saves them after a successful open, so `setWindowless(true)` in a script
+  leaves `.bioformats.windowless=true` behind and the operator's Fiji stops
+  offering the series chooser on drag-and-drop. Prefer `ImageReader.openBytes()`
+  when only reading — it touches no preferences — and where a real `ImagePlus`
+  is needed, save and restore the keys in a `finally`. `Test_BatchRunner`
+  asserts the batch leaves `windowless` as it found it, in both directions.
+- **Headless `#@` scripts declare `persist=false`.** SciJava remembers what a
+  script parameter was last set to and reuses it when a run does not supply one,
+  so values typed into a GUI dialog leak into later headless runs. Observed: a
+  batch given neither `outPrefix` nor `saveOverview` ran with `outPrefix=test_`
+  and wrote overview PNGs, both left over from an interactive session. Same
+  reasoning as forcing Set Measurements and `blackBackground` — a persistent
+  user preference must never decide what a run does. `Run_NucleusSelector.groovy`
+  keeps persistence deliberately: it is the tuning entry point and a human is
+  looking at the dialog.
 - **Watershed forces `Prefs.blackBackground = true`.** It reads that preference
   to decide which phase is object; left to the operator's setting it erodes the
   background instead of splitting objects, and produces a plausible-looking mask

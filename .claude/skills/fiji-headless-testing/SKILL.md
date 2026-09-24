@@ -75,8 +75,69 @@ Measured on ImageJ 2.16.0 / 1.54p, one launch, all six declared parameters:
 
 - Names are the **variable** names from the `#@` lines, not the `label=` text.
 - Values are typed on arrival; do not re-parse them.
-- Omitted parameters are `null`, so a script that assumes the dialog always fills
-  them will NPE headless rather than fall back to the declared `value=`.
+- An omitted parameter **takes its declared `value=`**, correctly typed —
+  measured: `#@ Boolean (value=false) b` omitted arrives as Boolean `false`, and
+  `#@ Integer (value=7) n` as `7`. An omitted `required=false` parameter is
+  `null`.
+
+⚠️ **A required parameter with no default HANGS the run.** Omit a `#@` parameter
+that declares neither `value=` nor `required=false` and the headless process
+blocks forever waiting for input that cannot arrive — no error, no timeout, just
+a JVM sitting there looking like slow work. Measured on
+`#@ Boolean (label="...") boolBare`. Give every parameter a default or mark it
+optional, and treat an unexpectedly silent run as this until proven otherwise.
+
+⚠️⚠️ **`#@` parameter values PERSIST between runs — including from the GUI into
+headless.** SciJava remembers what a parameter was last set to and reuses it when
+the value is not supplied, so a headless batch can silently run with a string
+somebody typed into a dialog weeks earlier. Observed here: a batch script that
+was never given `outPrefix` or `saveOverview` ran with `outPrefix=test_` and
+`saveOverview=true`, both left over from an interactive session — and wrote
+overview PNGs nobody asked for. It is the same trap as `Set Measurements` and
+`Prefs.blackBackground`, which are also persistent user preferences.
+
+```groovy
+#@ String (persist=false, label="Output prefix", value="") outPrefix
+```
+
+Put `persist=false` on **every** parameter of any script whose output must
+depend only on its inputs.
+
+⚠️⚠️ **`ImporterOptions` is the same trap, and it reaches the GUI.**
+`loci.plugins.in.ImporterOptions` is backed by ImageJ preferences, and the
+importer calls `saveOptions()` after a successful open — so options set
+programmatically become the operator's defaults. Measured, in one process:
+
+```
+A. unguarded   before: windowless=false   after: windowless=true    <- leaked
+B. guarded     before: windowless=false   after: windowless=false
+```
+
+`setWindowless(true)` in a script leaves `.bioformats.windowless=true` in
+`IJ_Prefs.txt`, and from then on **dragging a file onto Fiji silently opens the
+first series instead of offering the series chooser** — the dialog does not come
+back on its own. Reported by a user after a single run of an inspection script.
+
+Two defences, in order of preference:
+
+1. **Do not use `ImporterOptions` at all** when you only need to look. Going
+   through `ImageReader` directly — `reader.openBytes(reader.getIndex(z,c,t))` —
+   reads pixels with no preference involvement whatsoever.
+2. When you genuinely need a window or a full `ImagePlus`, save and restore
+   every preference you touch:
+
+```groovy
+boolean prev = ij.Prefs.get("bioformats.windowless", false)
+try   { /* build options, BF.openImagePlus(opt) */ }
+finally { ij.Prefs.set("bioformats.windowless", prev) }
+```
+
+To put a machine right afterwards:
+`ij.Prefs.set("bioformats.windowless", false); ij.Prefs.savePreferences()`
+ Persistence is a convenience for a dialog a human is
+looking at; it is a correctness bug anywhere else. The tell is a run whose
+recorded parameters do not match what you passed — which is a good reason for a
+batch to write the parameters it actually used.
 
 ⚠️ **The comma separates parameters; a comma INSIDE a quoted value is kept.**
 Measured: `csvParam='1,2,3'` arrives as the single string `1,2,3`. This is the

@@ -120,13 +120,20 @@ check("logs the display range",                src.contains("view.lo") && src.co
 // Run_*.groovy scripts have.
 println ""
 println "=== every `#@` front end still compiles ==="
-// Run_* AND Make_*: both carry a `#@` block, and a new verb prefix that is not
-// listed here would be compiled by nothing at all.
-def frontEnds = new File(LIBDIR).listFiles().findAll {
-    it.getName().startsWith("Run_") || it.getName().startsWith("Make_")
+// Found by CONTENT, not by name prefix. Listing prefixes meant a new verb was
+// compiled by nothing at all -- Inspect_ and Open_ scripts were escaping this
+// check the moment they were added. Anything carrying a `#@` line is a front
+// end and belongs here.
+def frontEnds = new File(LIBDIR).listFiles().findAll { f ->
+    f.getName().endsWith(".groovy") &&
+    f.getText("UTF-8").readLines().any { it.trim().startsWith("#@") }
 }.sort()
-check("there is more than one verb prefix covered",
-      frontEnds.collect { it.getName().split("_")[0] }.unique().sort(), ["Make", "Run"])
+check("more than one verb prefix is covered",
+      frontEnds.collect { it.getName().split("_")[0] }.unique().size() > 1, true)
+check("the inspector is covered",
+      frontEnds.any { it.getName() == "Inspect_ImageFile.groovy" }, true)
+check("the opener is covered",
+      frontEnds.any { it.getName() == "Open_LifFile.groovy" }, true)
 frontEnds.each { f ->
     def body = f.getText("UTF-8").readLines().findAll { !(it.trim().startsWith("#@")) }.join("\n")
     String err = null

@@ -303,6 +303,40 @@ that, feeding a run its own config fails on the one field nobody set.
 
 ---
 
+### Batch output — `Run_NucleusSelector_Batch.groovy` adds two files
+
+Per image it writes exactly what the interactive runner writes; the outline,
+`_res.txt`, ROI zip and `_config.txt` are the same contract. Two extra files
+describe the batch as a whole.
+
+`batch_summary.tsv` — one row per **sheet row**, excluded ones included, so it
+is a complete record of what the run did rather than of what succeeded:
+
+| Column | Meaning |
+|---|---|
+| `prefix` | the sample, as the sheet named it |
+| `path`, `series_index` | which image it came from |
+| `status` | `ok`, `failed`, or `excluded` |
+| `n_nucleus`, `n_nucleolus` | counts, blank when the row did not run |
+| `seconds` | wall time for that image |
+| `message` | for `failed`, the exception, flattened to one line |
+
+A row failing does not stop the batch. On a long run this file, not the log, is
+what says which images need attention.
+
+`batch_params.txt` — the parameters actually used, in the same
+`parameter`/`value` shape as `_config.txt`, holding only the re-feedable subset
+(no `script_name`, no results). It can be passed straight back as the config of
+another run.
+
+⚠️ The `Label` column of `_res.txt` differs between the two runners, and
+harmlessly. `IJ.openImage()` and Bio-Formats build the slice label differently,
+so the text after the roi id is not the same — but the **roi id itself is**, and
+that is what `read_fiji_result.r` joins on. Verified: the same images through
+both runners give identical per-feature statistics and identical channel signals.
+
+---
+
 ## 3. R CLI output
 
 ### `annotate_features_cli.r`

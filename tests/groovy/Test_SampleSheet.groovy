@@ -219,6 +219,42 @@ check("prune removes them on request",         pruned.rows.size(), 3)
 check("...still reporting what went",          pruned.missing.size(), 2)
 
 println ""
+println "=== SeriesSpec: which series did they mean? ==="
+// Shared by Inspect_ImageFile and Open_LifFile. Tested here beside Tsv, the
+// other small utility both sides rely on.
+def SPEC = new GroovyClassLoader().parseClass(new File(LIBDIR, "SeriesSpec.groovy"))
+def specNames = ["a", "b", "tile", "tile", "tile", "z"]
+def sp = { String q -> SPEC.parse(q, specNames, 6) }
+
+check("blank means every series",              sp(""), [0, 1, 2, 3, 4, 5])
+check("a single index",                        sp("3"), [3])
+check("space separated",                       sp("1 3"), [1, 3])
+// SciJava keeps a comma inside a quoted value, unlike argparser on the R side,
+// so a comma list has to work rather than silently becoming one token.
+check("comma separated",                       sp("1,3"), [1, 3])
+check("an inclusive range",                    sp("1-3"), [1, 2, 3])
+check("mixed, with stray whitespace",          sp("1,4, 2-3"), [1, 2, 3, 4])
+check("duplicates collapse",                   sp("2 2 1-2"), [1, 2])
+check("order does not matter",                 sp("5 0"), [0, 5])
+check("a name selects every series with it",   sp("name:tile"), [2, 3, 4])
+
+def errOf2 = { Closure c -> try { c(); return null } catch (Throwable t) { return t.getMessage() } }
+// Asking for 0-2000 of a 1563-series file and quietly getting 1563 is how you
+// conclude you inspected everything when you did not.
+check("out of range is refused",               errOf2 { sp("4-9") }?.contains("out of range"), true)
+check("...naming the valid bounds",            errOf2 { sp("4-9") }?.contains("0..5"), true)
+check("a backwards range is refused",          errOf2 { sp("4-2") }?.contains("backwards"), true)
+check("nonsense is refused",                   errOf2 { sp("banana") }?.contains("Cannot read"), true)
+check("an unknown name is refused",            errOf2 { sp("name:nope") }?.contains("No series is named"), true)
+// A trailing space in a Leica name is invisible in every listing.
+def padded = ["x", "tile "]
+check("a whitespace-only mismatch says so",
+      errOf2 { SPEC.parse("name:tile", padded, 2) }?.contains("trimming whitespace"), true)
+
+check("describe() folds runs back up",         SPEC.describe([1, 2, 3, 7, 9, 10]), "1-3, 7, 9-10")
+check("describe() on one index",               SPEC.describe([4]), "4")
+
+println ""
 println "=== Tsv refuses what would corrupt a column ==="
 check("a tab in a cell is refused",            errOf { TSV.cell("a\tb") }?.contains("tab"), true)
 check("a newline in a cell is refused",        errOf { TSV.cell("a\nb") }?.contains("newline"), true)
