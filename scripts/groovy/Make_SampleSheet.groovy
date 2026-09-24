@@ -1,13 +1,13 @@
-#@ File    (label="Files table (files.tsv)", style="file", required=false) filesSheet
-#@ File    (label="Sample sheet to write (samples.tsv)", style="save") outSheet
-#@ String  (label="Image root (blank = paths as given)", value="") imageRoot
-#@ String  (label="File columns to seed onto each series (blank = all)", value="") inherit
-#@ String  (label="SCAN MODE: directory to list instead (blank = off)", value="") scanDir
-#@ String  (label="Scan: extensions", value="lif czi nd2 tif tiff") scanExt
-#@ Boolean (label="Skip files already in the sheet whose size is unchanged", value=false) skipExplored
-#@ String  (label="Reseed these columns from files.tsv (space separated)", value="") reseed
-#@ Boolean (label="Reseed EVERY seeded column (includes alias, rewrites prefixes)", value=false) reseedAll
-#@ Boolean (label="Drop sheet rows whose file has left files.tsv", value=false) prune
+#@ File    (persist=false, label="Files table (files.tsv)", style="file", required=false) filesSheet
+#@ File    (persist=false, label="Sample sheet to write (samples.tsv)", style="save") outSheet
+#@ String  (persist=false, label="Image root (blank = paths as given)", value="") imageRoot
+#@ String  (persist=false, label="File columns to seed onto each series (blank = all)", value="") inherit
+#@ String  (persist=false, label="SCAN MODE: directory to list instead (blank = off)", value="") scanDir
+#@ String  (persist=false, label="Scan: extensions", value="lif czi nd2 tif tiff") scanExt
+#@ Boolean (persist=false, label="Skip files already in the sheet whose size is unchanged", value=false) skipExplored
+#@ String  (persist=false, label="Reseed these columns from files.tsv (space separated)", value="") reseed
+#@ Boolean (persist=false, label="Reseed EVERY seeded column (includes alias, rewrites prefixes)", value=false) reseedAll
+#@ Boolean (persist=false, label="Drop sheet rows whose file has left files.tsv", value=false) prune
 
 // Make_SampleSheet.groovy
 //

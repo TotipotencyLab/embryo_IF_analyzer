@@ -213,6 +213,15 @@ fourth fork.** A new assay should be a new configuration of the shared library.
 
 ## Standing decisions
 
+- **Headless `#@` scripts declare `persist=false`.** SciJava remembers what a
+  script parameter was last set to and reuses it when a run does not supply one,
+  so values typed into a GUI dialog leak into later headless runs. Observed: a
+  batch given neither `outPrefix` nor `saveOverview` ran with `outPrefix=test_`
+  and wrote overview PNGs, both left over from an interactive session. Same
+  reasoning as forcing Set Measurements and `blackBackground` — a persistent
+  user preference must never decide what a run does. `Run_NucleusSelector.groovy`
+  keeps persistence deliberately: it is the tuning entry point and a human is
+  looking at the dialog.
 - **Watershed forces `Prefs.blackBackground = true`.** It reads that preference
   to decide which phase is object; left to the operator's setting it erodes the
   background instead of splitting objects, and produces a plausible-looking mask
