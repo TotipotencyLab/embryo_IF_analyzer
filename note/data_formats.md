@@ -54,8 +54,8 @@ writes a skeleton for you.
 
 ### `samples.tsv` — generated, then yours to edit
 
-`prefix` is `sanitise(<alias>_<series_name>)`, and the invariant everything rests
-on is:
+`prefix` is `sanitise(<alias>_s<NNNN>_<series_name>)` — the series index,
+zero-padded to four digits — and the invariant everything rests on is:
 
 > **the `prefix` column == the output filename prefix == the `name` column of
 > the outline table.**
@@ -63,6 +63,26 @@ on is:
 That is why the *sanitised* value is written into the sheet, not the raw one: a
 sheet saying `my run` while the disk says `my_run` fails the R join with nothing
 visibly wrong.
+
+**The index is always present, not added only where names collide.** Series
+names repeat freely — a tile scan is many series under one name, and `Series001`
+is a Leica default — so with `alias` unique across files and the index unique
+within one, the prefix is unique *by construction*. Padding is a fixed four
+digits and widens past 9999 rather than being derived from the file's series
+count, which would re-pad every prefix in a file that grew from 999 series to
+1001.
+
+A duplicate `prefix` can therefore now only be introduced **by editing the
+column**. `Make_SampleSheet` writes the sheet anyway and then fails, so the table
+can be opened and corrected — the error message must not be the only artifact of
+the run. `allowDuplicatePrefix` downgrades that to a warning. The batch refuses
+outright, for included rows, because there two rows sharing a prefix overwrite
+each other's output files; `.cli_read_sample_sheet()` on the R side refuses too.
+
+Column **order** is presentation only — every reader on both sides works by
+column name, and the merge matches on `path` + `series_index` — so the sheet is
+written in the order a person reads it: `prefix`, `include`, then your own
+metadata columns, then the file's facts. Rearranging it breaks nothing.
 
 Machine columns are `alias`, `path`, `series_index`, `series_name`, `size_x`,
 `size_y`, `size_z`, `size_c`, `size_t`, `pixel_type`, `pixel_width`,
@@ -277,6 +297,7 @@ Provenance, read long after the run. Fields that other code depends on:
 | `pixel_width`, `pixel_height`, `pixel_unit` | the same, to convert that frame to µm |
 | `pixel_depth` | the z step, in `pixel_unit`. **Blank when the image is a single plane** — ImageJ defaults the calibration to 1.0 with no z axis and Bio-Formats reports no physical size, so a written 1.0 would be a plausible number for a distance that does not exist. Written since 0.2.x; `feature_stat_cli.r --z_step` does not read it yet |
 | `script` | records the repo `VERSION` that produced the directory |
+| `source_file`, `series_index`, `series_name` | which series of which file produced this directory. Written by the batch, **blank in the interactive runner** where the image was already open and nothing told it. Identity comes from content, not from the filename, so the prefix should not have to be parsed apart to answer this |
 | `open_method` | which reader opened the image: `importer` (Bio-Formats' own) or `reader` (one held open across the file). **Blank when the image was already open**, i.e. the interactive runner, where the operator opened it however they liked. The two are asserted to produce byte-identical output, but two runs that used different ones must not be indistinguishable afterwards |
 | `overview_channels`, `overview_overlay_suffix` | which overview PNGs exist, so a results folder can be read later without guessing. Blank when none were written |
 

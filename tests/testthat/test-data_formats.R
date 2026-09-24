@@ -173,6 +173,59 @@ test_that("open_method is written, readable back, and documented", {
   expect_true(any(grepl("reader", rows, fixed = TRUE)))
 })
 
+test_that("the sample prefix carries the series index, and the doc says so", {
+  # Series names repeat -- a tile scan is many series under one name -- so the
+  # index is what makes the prefix unique WITHIN a file, as the alias does
+  # across files. Forced always, never only where names happen to collide: a
+  # prefix that depends on which other series share its name is a prefix that
+  # changes when a file is re-acquired.
+  ss <- file.path(repo_root(), "scripts", "groovy", "SampleSheet.groovy")
+  skip_if_not(file.exists(ss), "SampleSheet.groovy not found")
+  src <- paste(readLines(ss, warn = FALSE), collapse = "\n")
+  # Fixed width, not derived from the series count.
+  expect_match(src, 'INDEX_FORMAT = "s%04d"', fixed = TRUE)
+
+  schema <- read.delim(file.path(repo_root(), "schema", "sheet_columns.tsv"),
+                       stringsAsFactors = FALSE)
+  prefix_row <- schema[schema$sheet == "samples" & schema$column == "prefix", ]
+  expect_equal(nrow(prefix_row), 1L)
+  expect_match(prefix_row$description, "s<NNNN>", fixed = TRUE)
+
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  expect_true(any(grepl("sanitise(<alias>_s<NNNN>_<series_name>)", doc, fixed = TRUE)))
+  # The old two-part form must be gone, not merely joined by the new one.
+  expect_false(any(grepl("`sanitise(<alias>_<series_name>)`", doc, fixed = TRUE)))
+})
+
+test_that("a duplicate prefix is refused downstream, allowed at sheet time", {
+  # The asymmetry is deliberate: the sheet step is a draft for a person to read,
+  # so it writes the file and THEN fails -- a duplicate you cannot open the
+  # table to see is one you cannot fix. The analysis step has no such excuse.
+  ms <- file.path(repo_root(), "scripts", "groovy", "Make_SampleSheet.groovy")
+  br <- file.path(repo_root(), "scripts", "groovy", "BatchRunner.groovy")
+  skip_if_not(all(file.exists(ms, br)), "Groovy front ends not found")
+
+  ms_src <- readLines(ms, warn = FALSE)
+  # Anchored on the BUILD-mode write: scan mode writes with the same call prefix.
+  write_at <- grep("TSV.write(rows, outSheet, sheet.columnOrder(rows))", ms_src, fixed = TRUE)
+  throw_at <- grep("duplicated prefix", ms_src, fixed = TRUE)
+  expect_length(write_at, 1L)
+  expect_length(throw_at, 1L)
+  # The ordering IS the feature.
+  expect_lt(write_at, throw_at)
+  expect_match(paste(ms_src, collapse = "\n"), "allowDuplicatePrefix", fixed = TRUE)
+
+  expect_match(paste(readLines(br, warn = FALSE), collapse = "\n"),
+               "share a prefix", fixed = TRUE)
+
+  # R has refused one all along; this pins that it still does, since the
+  # documented contract now leans on it.
+  expect_match(paste(readLines(file.path(repo_root(), "scripts", "R_cli",
+                                         "cli_helpers.r"), warn = FALSE),
+                     collapse = "\n"),
+               "Duplicate '", fixed = TRUE)
+})
+
 # --- the R CLI outputs --------------------------------------------------------
 
 test_that("annotate writes the documented columns", {

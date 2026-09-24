@@ -2,11 +2,12 @@ sheet	column	owner	type	required	description
 files	path	user	string	yes	image file; absolute, or relative to the image root given at run time
 files	alias	seeded	string	no	short name for this file, used to build every prefix; defaults to the basename without its extension
 files	include	user	boolean	no	seeds the include of every series read from this file; default true
-samples	prefix	seeded	string	yes	sanitised <alias>_<series_name>; IS the output filename prefix and the name column of the outline table
+samples	prefix	seeded	string	yes	sanitised <alias>_s<NNNN>_<series_name>, the index zero-padded to four digits; IS the output filename prefix and the name column of the outline table
+samples	include	seeded	boolean	no	whether to analyse this series; seeded from the file row, then yours to edit
 samples	alias	machine	string	yes	the alias this prefix was built from
-samples	path	machine	string	yes	the file this series lives in, as written in files.tsv
 samples	series_index	machine	integer	yes	0-based index Bio-Formats addresses the series by
 samples	series_name	machine	string	yes	the series name as the file records it, before sanitising
+samples	path	machine	string	yes	the file this series lives in, as written in files.tsv
 samples	size_x	machine	integer	yes	width in pixels
 samples	size_y	machine	integer	yes	height in pixels
 samples	size_z	machine	integer	yes	slices
@@ -18,4 +19,3 @@ samples	pixel_height	machine	double	no	physical pixel size in y
 samples	pixel_depth	machine	double	no	z step; BLANK for a single plane, where there is no z axis to measure
 samples	pixel_unit	machine	string	no	unit of the three sizes above
 samples	file_size	machine	integer	yes	bytes; with the basename this is the fingerprint that spots a copied or replaced file
-samples	include	seeded	boolean	no	whether to analyse this series; seeded from the file row, then yours to edit

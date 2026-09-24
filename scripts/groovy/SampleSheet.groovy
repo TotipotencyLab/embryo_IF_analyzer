@@ -207,9 +207,34 @@ class SampleSheet {
         return out
     }
 
-    /** sanitise(<alias>_<series name>), via the same function the pipeline uses. */
-    String composePrefix(String alias, String seriesName) {
-        return RX.sanitize(alias + "_" + seriesName)
+    /**
+     * Zero-padded to a FIXED width, not to the file's series count.
+     *
+     * Deriving the width from the count would re-pad every prefix in a file
+     * that grew from 999 series to 1001 -- the same instability as
+     * disambiguating only what happens to collide today. Four digits, widening
+     * on its own past 9999.
+     */
+    static final String INDEX_FORMAT = "s%04d"
+
+    /**
+     * sanitise(<alias>_s<NNNN>_<series name>), via the same sanitiser the
+     * pipeline uses.
+     *
+     * The index is ALWAYS present, not added only where names collide. Series
+     * names repeat freely -- a tile scan is many series under one name, and
+     * `Series001` is a Leica default -- and a prefix that depends on which
+     * OTHER series happen to share its name is a prefix that changes when a
+     * file is re-acquired. With alias unique across files (checkFiles enforces
+     * it) and the index unique within one, the composite is unique by
+     * construction rather than by checking.
+     *
+     * `s` rather than a bare number because `slide05_0331_O1_1_10x` gives a
+     * human no way to tell the index from the name.
+     */
+    String composePrefix(String alias, Object seriesIndex, String seriesName) {
+        def idx = String.format(INDEX_FORMAT, (seriesIndex ?: 0) as Integer)
+        return RX.sanitize(alias + "_" + idx + "_" + seriesName)
     }
 
     /**
@@ -236,7 +261,7 @@ class SampleSheet {
                       (System.currentTimeMillis() - t0) + " ms")
             series.each { sr ->
                 def row = new LinkedHashMap()
-                row.prefix = composePrefix(fr.alias, sr.series_name)
+                row.prefix = composePrefix(fr.alias, sr.series_index, sr.series_name)
                 row.alias = fr.alias
                 row.path = fr.path
                 row.putAll(sr)
@@ -259,8 +284,12 @@ class SampleSheet {
      * SANITISED string, because two series names differing only in whitespace
      * or punctuation become one filename.
      */
+    static Map duplicatePrefixes(List<Map> rows) {
+        return rows.groupBy { it.prefix }.findAll { k, v -> v.size() > 1 }
+    }
+
     void checkPrefixes(List<Map> rows) {
-        def dup = rows.groupBy { it.prefix }.findAll { k, v -> v.size() > 1 }
+        def dup = duplicatePrefixes(rows)
         if (dup) {
             def detail = dup.collect { k, v ->
                 k + " <- " + v.collect { it.path + "[" + it.series_index + "] " + it.series_name }.join(" AND ")
@@ -341,12 +370,36 @@ class SampleSheet {
                 missing: missing, reseeded: reseeded]
     }
 
-    /** Column order for the written sheet: schema order first, yours after. */
+    /**
+     * Where your own columns are placed among the schema's.
+     *
+     * Not the end. A sheet is read left to right by a person deciding what to
+     * run, and the columns that decision turns on are `prefix`, `include` and
+     * whatever condition/genotype they typed -- while size_x and pixel_type are
+     * reference material they scroll to. Putting the metadata immediately after
+     * `include` keeps all three together at the left edge.
+     */
+    static final String EXTRA_COLUMNS_AFTER = "include"
+
+    /**
+     * Column order for the written sheet.
+     *
+     * Order is presentation only -- every reader here and on the R side works
+     * by column NAME, and the merge matches on path + series_index -- so this
+     * is free to change, and reordering an existing sheet costs nothing.
+     */
     List<String> columnOrder(List<Map> rows) {
         def known = schema.columns("samples")
         def extra = []
         rows.each { r -> r.keySet().each { if (!known.contains(it) && !extra.contains(it)) extra << it } }
         def present = known.findAll { c -> rows.any { it.containsKey(c) } }
-        return present + extra
+        int at = present.indexOf(EXTRA_COLUMNS_AFTER)
+        if (at < 0 || !extra) {
+            return present + extra
+        }
+        // take/drop rather than subList: subList returns a VIEW, and the
+        // concatenation below would then be built on top of a live window into
+        // the list it is reading.
+        return present.take(at + 1) + extra + present.drop(at + 1)
     }
 }

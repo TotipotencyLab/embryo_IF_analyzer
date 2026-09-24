@@ -378,6 +378,40 @@ check("the image is calibrated, not in pixels", cfgRdr.pixel_unit, "micron")
 check("open_method is recorded",               cfgRdr.open_method, "reader")
 check("...and blank when nothing opened it",   RC.PROVENANCE_KEYS.contains("open_method"), true)
 
+println ""
+println "=== the analysis step refuses what the sheet step allowed ==="
+// Make_SampleSheet writes a sheet with duplicate prefixes on purpose, so they
+// can be opened and fixed. Here they must be fatal BEFORE anything runs: the
+// prefix names the output files, so two rows sharing one overwrite each other
+// on disk and merge into a single sample in R.
+def clash = [[prefix: "same", path: "one.ome.tif", series_index: 0, include: "true"],
+             [prefix: "same", path: "two.ome.tif", series_index: 0, include: "true"]]
+def clashErr = errOf { runner.run(clash, raw, params, new File(tmp, "out_clash")) }
+check("a duplicate prefix stops the batch",    clashErr?.contains("share a prefix"), true)
+check("...naming both rows",                   clashErr?.contains("one.ome.tif[0]") && clashErr?.contains("two.ome.tif[0]"), true)
+check("...before anything was written",        new File(new File(tmp, "out_clash"), "same_nucleus_outline.txt").exists(), false)
+// An excluded duplicate writes nothing, so it is not a duplicate that matters.
+def clashOff = [[prefix: "same", path: "one.ome.tif", series_index: 0, include: "true"],
+                [prefix: "same", path: "two.ome.tif", series_index: 0, include: "false"]]
+check("an EXCLUDED duplicate is not a clash",  errOf { runner.run(clashOff, raw, params, new File(tmp, "out_clashoff")) }, null)
+
+println ""
+println "=== a results folder says which series it came from ==="
+// Identity comes from content, not from the filename: the prefix should not
+// have to be parsed back apart to answer "which series of which file was this?"
+def provRows = [[prefix: "PV", path: "multi.ome.tif", series_index: 1, include: "true",
+                 series_name: "S1"]]
+def outProv = new File(tmp, "out_prov")
+runner.run(provRows, raw, params, outProv)
+def prov = RC.parse(new File(outProv, "PV_config.txt").getText("UTF-8"))
+check("source_file recorded",                  prov.source_file, "multi.ome.tif")
+check("series_index recorded",                 prov.series_index, "1")
+check("series_name recorded",                  prov.series_name, "S1")
+// ...and a config carrying them still feeds back in as a run's parameters.
+check("they are provenance, not parameters",
+      errOf { RC.readParams(new File(outProv, "PV_config.txt"), NP.PARAM_TYPES) }, null)
+
+
 tmp.deleteDir()
 println ""
 println "passed: ${passed}   FAILED: ${failed}"
