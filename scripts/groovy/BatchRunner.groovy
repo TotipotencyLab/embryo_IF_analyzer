@@ -22,6 +22,14 @@
 //     0.4456, 0.2227 and 0.1098 um pixels, so the same sigma is four times the
 //     physical blur at one end of it than the other, and nothing would say so.
 
+import ij.ImagePlus
+import ij.ImageStack
+import ij.Prefs
+import loci.formats.ChannelSeparator
+import loci.formats.ImageReader
+import loci.formats.MetadataTools
+import loci.plugins.util.ImageProcessorReader
+
 class BatchRunner {
 
     String libDir
@@ -57,15 +65,112 @@ class BatchRunner {
         return new File(imageRoot, path)
     }
 
+    // --- opening one series ---------------------------------------------------
+    //
+    // TWO WAYS TO DO IT, and on a big file they differ by three orders of
+    // magnitude.
+    //
+    //   importer  BF.openImagePlus -- the code behind the Bio-Formats dialog. It
+    //             prepares a description of EVERY series in the file before
+    //             returning the one asked for, because that is what a series
+    //             chooser needs. setWindowless(true) skips SHOWING the dialog,
+    //             not building it. Measured on a 1563-series .lif: 182 s per
+    //             call, against 1.5 s for the same call on a 15-series file.
+    //             Paid once per ROW, so ~10 h of overhead for 200 rows.
+    //
+    //   reader    One reader held open for the whole file; setSeries() moves a
+    //             cursor and the planes are assembled into an ImagePlus here.
+    //             The same 16 MiB series that took 182 s takes 0.11 s, and a
+    //             second series through the same reader 0.09 s.
+    //
+    // The importer is KEPT, not replaced. It handles format corners this code
+    // does not (RGB, palette, packed bit depths, multi-file datasets), and
+    // keeping both is what lets Test_BatchRunner assert the two produce the same
+    // output. That assertion is the only thing standing between us and a silent
+    // drift when Bio-Formats is next upgraded: the hand-built path reimplements
+    // what the library does for us, which is exactly the kind of code that rots
+    // without anyone noticing.
+    //
+    // WHICH ONE RAN IS RECORDED, in _config.txt and in batch_summary.tsv. Two
+    // runs that used different readers must not be indistinguishable afterwards
+    // -- same reasoning as recording VERSION.
+
+    static final List<String> OPEN_MODES = ["auto", "importer", "reader"]
+
     /**
-     * Open one series, pixels and all.
+     * Above this many series in the FILE, `auto` stops using the importer.
+     *
+     * The cost is (rows x series-in-file), not series alone, so no single number
+     * is right everywhere. 16 keeps the importer for ordinary acquisitions,
+     * where it is well-tested and costs about a second, and switches away before
+     * the per-call overhead can accumulate into anything.
+     */
+    static final int AUTO_SERIES_MAX = 16
+
+    // One reader, held open, reused by every row of the same file.
+    //
+    // Deliberately a single entry and not a map: rows arrive grouped by file,
+    // and a one-entry cache degrades to REOPENING (2.3 s) rather than to the
+    // importer's 182 s if someone reorders the sheet. That keeps
+    // batch_summary.tsv in sheet order, which is the order a human reads it in.
+    private String openPath = null
+    private Object openReader = null
+    private Object openMeta = null
+
+    /** The held-open reader for this file, opening it if it is a different one. */
+    Object readerFor(File image) {
+        def path = image.getAbsolutePath()
+        if (openPath == path && openReader != null) {
+            return openReader
+        }
+        closeReader()
+        def meta = MetadataTools.createOMEXMLMetadata()
+        // ChannelSeparator: one channel per plane, so getIndex(z, c, t) is valid
+        // whatever the file's own interleaving is.
+        def rd = new ImageProcessorReader(new ChannelSeparator(new ImageReader()))
+        rd.setMetadataStore(meta)
+        rd.setId(path)
+        openPath = path; openReader = rd; openMeta = meta
+        return rd
+    }
+
+    /** Release the held file handle. run() calls this on every exit path. */
+    void closeReader() {
+        if (openReader != null) {
+            try { openReader.close() } catch (ignored) { }
+        }
+        openPath = null; openReader = null; openMeta = null
+    }
+
+    /** "auto" -> the method actually used; anything else is taken literally. */
+    String resolveMethod(String mode, File image) {
+        def m = (mode ?: "auto").toString().trim().toLowerCase()
+        if (!OPEN_MODES.contains(m)) {
+            throw new IllegalArgumentException(
+                "open_mode must be one of " + OPEN_MODES.join(", ") + "; got >>>" + mode + "<<<")
+        }
+        if (m != "auto") {
+            return m
+        }
+        // Costs one header parse per file -- which the reader path needs anyway,
+        // and which is 2.3 s even on the 200 GiB file.
+        return (readerFor(image).getSeriesCount() <= AUTO_SERIES_MAX) ? "importer" : "reader"
+    }
+
+    Object openSeries(File image, int seriesIndex, String method) {
+        return (method == "reader") ? openSeriesReader(image, seriesIndex)
+                                    : openSeriesImporter(image, seriesIndex)
+    }
+
+    /**
+     * Open one series through the Bio-Formats importer.
      *
      * setZEnd takes a 0-BASED INDEX, not a count: passing the slice count on a
      * single-plane series throws "Invalid Z index: 1/1". Not used here -- the
      * whole stack is wanted -- but the reason this opens by series and not by
      * range is that the trap is one line away.
      */
-    Object openSeries(File image, int seriesIndex) {
+    Object openSeriesImporter(File image, int seriesIndex) {
         // ImporterOptions is BACKED BY IMAGEJ PREFERENCES, and the importer
         // calls saveOptions() after a successful open -- so setWindowless(true)
         // here does not stay here. It lands in IJ_Prefs.txt as
@@ -76,8 +181,7 @@ class BatchRunner {
         // Same family as Set Measurements, Prefs.blackBackground and SciJava's
         // `#@` persistence: a global preference that a run must not be allowed
         // to redecorate. The value is put back whatever happens.
-        def prefs = Class.forName("ij.Prefs")
-        boolean prevWindowless = prefs.get("bioformats.windowless", false)
+        boolean prevWindowless = Prefs.get("bioformats.windowless", false)
         try {
             def opt = Class.forName("loci.plugins.in.ImporterOptions").newInstance()
             opt.setId(image.getAbsolutePath())
@@ -91,8 +195,121 @@ class BatchRunner {
             }
             return imps[0]
         } finally {
-            prefs.set("bioformats.windowless", prevWindowless)
+            Prefs.set("bioformats.windowless", prevWindowless)
         }
+    }
+
+    /**
+     * Assemble one series into an ImagePlus off the held-open reader.
+     *
+     * Everything the importer was doing for us now has to be done here, and the
+     * two that matter are silent when wrong:
+     *
+     *   CALIBRATION. A bare ImagePlus measures in PIXELS. On a 0.22 um pixel
+     *   every area would come out ~20x wrong with nothing on screen to say so --
+     *   the exact failure mode this repo keeps being bitten by.
+     *   TITLE. It reaches _config.txt as image_title, so the two paths have to
+     *   spell it identically or two output folders differ for no real reason.
+     */
+    Object openSeriesReader(File image, int seriesIndex) {
+        def rd = readerFor(image)
+        if (seriesIndex < 0 || seriesIndex >= rd.getSeriesCount()) {
+            throw new IllegalArgumentException(
+                "Series " + seriesIndex + " out of range: " + image.getName() +
+                " has 0.." + (rd.getSeriesCount() - 1))
+        }
+        rd.setSeries(seriesIndex)
+        int nz = rd.getSizeZ(), nc = rd.getSizeC(), nt = rd.getSizeT()
+        def stack = new ImageStack(rd.getSizeX(), rd.getSizeY())
+        // XYCZT: channels fastest, matching setDimensions(c, z, t) below. Get
+        // this order wrong and channels and slices transpose -- the measurements
+        // stay valid numbers and are attributed to the wrong channel.
+        def name = openMeta?.getImageName(seriesIndex)
+        for (int t = 0; t < nt; t++) {
+            for (int z = 0; z < nz; z++) {
+                for (int c = 0; c < nc; c++) {
+                    stack.addSlice(sliceLabel(name, z, nz, c, nc, t, nt),
+                                   rd.openProcessors(rd.getIndex(z, c, t))[0])
+                }
+            }
+        }
+        def imp = new ImagePlus(seriesTitle(image, seriesIndex), stack)
+        imp.setDimensions(nc, nz, nt)
+        applyCalibration(imp, seriesIndex, nz)
+        return imp
+    }
+
+    /**
+     * The slice label Bio-Formats puts on each plane: "c:1/3 z:1/56 - Series001".
+     *
+     * Not decoration. It reaches _res.txt through the Label column -- the same
+     * column read_fiji_result.r digs the roi id out of -- so a stack without it
+     * writes a measurement table that differs from the importer's in every row.
+     * Found exactly that way: every NUMBER agreed and the labels did not.
+     *
+     * A component is omitted when its dimension has only one entry, which is
+     * why the format has to be reproduced rather than guessed at.
+     */
+    static String sliceLabel(String seriesName, int z, int nz, int c, int nc, int t, int nt) {
+        def sb = new StringBuilder()
+        if (nc > 1) sb.append("c:").append(c + 1).append("/").append(nc).append(" ")
+        if (nz > 1) sb.append("z:").append(z + 1).append("/").append(nz).append(" ")
+        if (nt > 1) sb.append("t:").append(t + 1).append("/").append(nt).append(" ")
+        sb.append("- ").append(seriesName ?: "")
+        return sb.toString()
+    }
+
+    /**
+     * The title the importer gives a series.
+     *
+     * "<file> - <series name>" when the file holds MORE THAN ONE series, and the
+     * bare filename when it holds one: Bio-Formats only disambiguates when there
+     * is something to disambiguate. The title reaches _config.txt as
+     * image_title, so the rule has to be copied rather than tidied up -- a
+     * single-series file titled "x.tif - P" is a difference in every output
+     * folder written that way.
+     */
+    String seriesTitle(File image, int seriesIndex) {
+        def rd = readerFor(image)
+        def name = openMeta?.getImageName(seriesIndex)
+        return (name && rd.getSeriesCount() > 1) ? (image.getName() + " - " + name)
+                                                 : image.getName()
+    }
+
+    /** Pixel size and unit, copied off the metadata store by hand. */
+    void applyCalibration(Object imp, int seriesIndex, int nz) {
+        def cal = imp.getCalibration()
+        def px = openMeta.getPixelsPhysicalSizeX(seriesIndex)
+        def py = openMeta.getPixelsPhysicalSizeY(seriesIndex)
+        def pz = openMeta.getPixelsPhysicalSizeZ(seriesIndex)
+        if (px != null) {
+            cal.pixelWidth = px.value().doubleValue()
+            cal.setUnit(ijUnit(px.unit().getSymbol()))
+        }
+        if (py != null) {
+            cal.pixelHeight = py.value().doubleValue()
+        }
+        // Only where there IS a z axis. ImageJ defaults pixelDepth to 1.0, and a
+        // z step that does not exist must not arrive as a usable-looking number;
+        // _config.txt follows the same rule.
+        if (pz != null && nz > 1) {
+            cal.pixelDepth = pz.value().doubleValue()
+        }
+    }
+
+    /**
+     * OME unit symbol -> the spelling ImageJ uses.
+     *
+     * The importer writes "micron"; the metadata store says "um" (mu). That
+     * string reaches _config.txt as pixel_unit, so without this the two paths
+     * produce output folders differing in one word -- invisible until someone
+     * diffs them, which is how it was found.
+     */
+    static String ijUnit(String symbol) {
+        if (symbol == "µm" || symbol == "um") {
+            return "micron"
+        }
+        return symbol
     }
 
     /** Sheet says one thing, the file says another: the sheet is stale. */
@@ -151,18 +368,26 @@ class BatchRunner {
             say("WARNING: " + w)
         }
 
+        // The REQUEST ("auto"), not the method used: resolveMethod() turns it
+        // into one of importer/reader per file, and that is what gets recorded.
+        def openMode = (params.open_mode ?: "auto").toString()
+
         def summary = []
         int ok = 0, failed = 0
+        try {
         rows.each { row ->
             def prefix = (row.prefix ?: "").toString()
             if (!isIncluded(row.include)) {
                 summary << [prefix: prefix, path: row.path, series_index: row.series_index,
-                            status: "excluded", n_nucleus: "", n_nucleolus: "",
-                            seconds: "", message: ""]
+                            status: "excluded", open_method: "", n_nucleus: "",
+                            n_nucleolus: "", seconds: "", message: ""]
                 return
             }
             long t0 = System.currentTimeMillis()
             def imp = null
+            // Outside the try: a failure before the image opens still has to say
+            // what was attempted.
+            def method = ""
             try {
                 if (!prefix) {
                     throw new IllegalArgumentException("row has no prefix; nothing to name its output")
@@ -172,8 +397,10 @@ class BatchRunner {
                     throw new IllegalArgumentException("no such image file: " + image.getAbsolutePath())
                 }
                 int si = (row.series_index ?: "0").toString() as Integer
-                say("--- " + prefix + "  (" + image.getName() + " series " + si + ")")
-                imp = openSeries(image, si)
+                method = resolveMethod(openMode, image)
+                say("--- " + prefix + "  (" + image.getName() + " series " + si +
+                    ", " + method + ")")
+                imp = openSeries(image, si, method)
 
                 def mism = checkDimensions(row, imp)
                 if (mism) {
@@ -185,9 +412,10 @@ class BatchRunner {
 
                 // The sheet's prefix is authoritative: resolveImageId() would dig
                 // "Series001" out of the slice label, which recurs in every file.
-                def res = pipeline.run(imp, outdir, params + [basename: prefix])
+                def res = pipeline.run(imp, outdir,
+                                      params + [basename: prefix, open_method: method])
                 summary << [prefix: prefix, path: row.path, series_index: row.series_index,
-                            status: "ok",
+                            status: "ok", open_method: method,
                             n_nucleus: res.nucRois.size(), n_nucleolus: res.nuclRois.size(),
                             seconds: fmtSeconds(System.currentTimeMillis() - t0), message: ""]
                 ok++
@@ -196,7 +424,7 @@ class BatchRunner {
                 def msg = t.getClass().getSimpleName() + ": " + (t.getMessage() ?: "(no message)")
                 say("FAILED " + prefix + ": " + msg)
                 summary << [prefix: prefix, path: row.path, series_index: row.series_index,
-                            status: "failed", n_nucleus: "", n_nucleolus: "",
+                            status: "failed", open_method: method, n_nucleus: "", n_nucleolus: "",
                             seconds: fmtSeconds(System.currentTimeMillis() - t0),
                             message: oneLine(msg)]
                 failed++
@@ -207,9 +435,13 @@ class BatchRunner {
                 }
             }
         }
+        } finally {
+            // The reader path holds a file handle open across the whole batch.
+            closeReader()
+        }
 
-        def cols = ["prefix", "path", "series_index", "status", "n_nucleus", "n_nucleolus",
-                    "seconds", "message"]
+        def cols = ["prefix", "path", "series_index", "status", "open_method",
+                    "n_nucleus", "n_nucleolus", "seconds", "message"]
         TSV.write(summary, new File(outdir, "batch_summary.tsv"), cols)
 
         // The parameters actually used, as a file that can be fed straight back

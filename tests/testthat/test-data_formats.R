@@ -141,6 +141,38 @@ test_that("pixel_depth is written by the Groovy side and documented here", {
   expect_match(row, "single plane", fixed = TRUE)
 })
 
+test_that("open_method is written, readable back, and documented", {
+  # Two ways of opening an image now exist and are asserted to produce identical
+  # output; which one ran must still be recorded, or two runs that differed are
+  # indistinguishable afterwards. Same reasoning as recording VERSION.
+  br <- file.path(repo_root(), "scripts", "groovy", "BatchRunner.groovy")
+  np <- file.path(repo_root(), "scripts", "groovy", "NucleusPipeline.groovy")
+  rc <- file.path(repo_root(), "scripts", "groovy", "RunConfig.groovy")
+  skip_if_not(all(file.exists(br, np, rc)), "Groovy library not found")
+
+  br_src <- paste(readLines(br, warn = FALSE), collapse = "\n")
+  expect_match(br_src, "OPEN_MODES", fixed = TRUE)
+  # The summary column, so a long run says per row which reader opened it.
+  expect_match(br_src, '"open_method"', fixed = TRUE)
+
+  # Written into _config.txt ...
+  expect_match(paste(readLines(np, warn = FALSE), collapse = "\n"),
+               "open_method", fixed = TRUE)
+  # ... and therefore readable back: an unknown key in a config is a hard error,
+  # so a provenance field that is not registered makes a run's own _config.txt
+  # unusable as the config of the next run.
+  expect_match(paste(readLines(rc, warn = FALSE), collapse = "\n"),
+               '"open_method"', fixed = TRUE)
+
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  # The ROWS in the two field tables, not a passing mention: _config.txt and
+  # batch_summary.tsv each document it.
+  rows <- grep("^\\|\\s*`open_method`\\s*\\|", doc, value = TRUE)
+  expect_length(rows, 2L)
+  expect_true(any(grepl("importer", rows, fixed = TRUE)))
+  expect_true(any(grepl("reader", rows, fixed = TRUE)))
+})
+
 # --- the R CLI outputs --------------------------------------------------------
 
 test_that("annotate writes the documented columns", {

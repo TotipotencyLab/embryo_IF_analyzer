@@ -248,6 +248,57 @@ def imp = loci.plugins.BF.openImagePlus(opt)[0]
 single-plane series throws `IllegalArgumentException: Invalid Z index: 1/1`.
 Clamp against the series' own `getSizeZ()`.
 
+### ⚠️ The importer's cost is O(series in the FILE), per call
+
+`BF.openImagePlus` prepares a description of **every** series in the file before
+returning the one you asked for — that is what the series chooser needs, and
+`setWindowless(true)` skips *showing* the dialog, not building it. Measured on
+two real Leica files:
+
+| | 15 series (8.3 GiB) | 1563 series (200 GiB) |
+|---|---|---|
+| `ImageReader.setId` (header only) | 1.2 s | 2.3 s |
+| `BF.openImagePlus`, one series | 1.5 s | **181.9 s** |
+| same pixels off a held-open reader | 0.22 s | **0.11 s** |
+
+Requesting two series in one call cost 191 s against 182 s for one, confirming
+the cost is per *call*, not per series requested. So **a loop that opens one
+series per iteration multiplies it**: ~180 s per row on such a file.
+
+Where many series are opened from one file, hold a single reader open and build
+the `ImagePlus` yourself:
+
+```groovy
+def rd = new loci.plugins.util.ImageProcessorReader(
+             new loci.formats.ChannelSeparator(new loci.formats.ImageReader()))
+rd.setMetadataStore(meta); rd.setId(path)     // ONCE for the whole file
+rd.setSeries(idx)                             // per image: moves a cursor
+def st = new ij.ImageStack(rd.getSizeX(), rd.getSizeY())
+for (t..) for (z..) for (c..)                 // c fastest: matches setDimensions
+    st.addSlice(label, rd.openProcessors(rd.getIndex(z, c, t))[0])
+def imp = new ij.ImagePlus(title, st); imp.setDimensions(nc, nz, nt)
+```
+
+**Everything the importer was doing for you is now yours to reproduce, and the
+failures are silent** — each of these was wrong first time while every measured
+number stayed correct:
+
+- **Calibration.** A bare `ImagePlus` measures in *pixels*. Copy
+  `getPixelsPhysicalSizeX/Y/Z` onto the `Calibration` by hand; skip Z where
+  there is no z axis.
+- **The unit string.** The importer writes `micron`; the metadata store's symbol
+  is `µm`. Map it, or every `pixel_unit` you record differs by one word.
+- **Slice labels.** Without them ImageJ falls back to the slice number, and
+  anything parsing the `Label` column of a measurement table sees a different
+  string in every row.
+- **Plane order.** Add slices in the same order `setDimensions(c, z, t)` implies,
+  or channels and slices transpose — with valid numbers attributed to the wrong
+  channel.
+
+Assert the two paths against each other rather than trusting either: build a
+fixture whose series hold *different* content, so a reader that silently ignores
+`setSeries` fails instead of passing every calibration check twice.
+
 Things worth knowing about what comes back:
 
 - `physicalSizeZ` is **null on single-plane series**. Anything recording a z step
@@ -255,10 +306,15 @@ Things worth knowing about what comes back:
 - **Pixel size can vary between series of one file** — 0.4456 / 0.2227 / 0.1098
   um were all present in one `.lif`. A parameter in pixels (a blur sigma) is
   therefore not comparable across those series, while one in calibrated units is.
-- `imp.getTitle()` is `"<file>.lif - <series name>"` and the slice label is
-  `"c:1/3 z:1/56 - <series name>"`. The file half is the only thing making a
-  series name unique across files: Leica defaults like `Series001` recur in every
-  file.
+- `imp.getTitle()` is `"<file>.lif - <series name>"` **only when the file holds
+  more than one series**; a single-series file is titled with the bare filename.
+  Bio-Formats disambiguates only when there is something to disambiguate. The
+  file half is the only thing making a series name unique across files: Leica
+  defaults like `Series001` recur in every file.
+- The slice label is `"c:1/3 z:1/56 - <series name>"`, and **a component is
+  omitted when its dimension has one entry** — `"z:1/3 - S0"` for a
+  single-channel stack, `"- P"` for a single plane. Measured on all three
+  shapes; do not assume the full form.
 - `imp.getCalibration().pixelDepth` **is** populated by the Bio-Formats import.
 
 ## Test hygiene
