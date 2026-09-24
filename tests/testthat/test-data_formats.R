@@ -85,6 +85,30 @@ test_that("the config file is a two-column parameter/value table", {
   for (k in c("pixel_width", "pixel_height", "pixel_unit", "script")) {
     expect_true(k %in% d$parameter, info = k)
   }
+  # The fixture predates pixel_depth and is deliberately NOT regenerated: an
+  # older config must stay readable, and this is the case that proves it.
+  expect_false("pixel_depth" %in% d$parameter)
+})
+
+test_that("pixel_depth is written by the Groovy side and documented here", {
+  # Cross-language, so it is a source check rather than a call: the writer is
+  # Groovy and the documentation is Markdown, and the failure being guarded
+  # against is one of them changing without the other.
+  np <- file.path(repo_root(), "scripts", "groovy", "NucleusPipeline.groovy")
+  skip_if_not(file.exists(np), "NucleusPipeline.groovy not found")
+  src <- paste(readLines(np, warn = FALSE), collapse = "\n")
+  expect_match(src, "pixel_depth", fixed = TRUE)
+  # Blank for a single plane, not ImageJ's default 1.0 -- a z step that does
+  # not exist must not arrive looking usable.
+  expect_match(src, "getNSlices() > 1", fixed = TRUE)
+
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  # The ROW in the _config.txt field table, not merely a mention of the name:
+  # the first version of this assertion passed while the row was deleted,
+  # because another paragraph elsewhere happened to say "pixel_depth".
+  row <- grep("^\\|\\s*`pixel_depth`\\s*\\|", doc, value = TRUE)
+  expect_length(row, 1L)
+  expect_match(row, "single plane", fixed = TRUE)
 })
 
 # --- the R CLI outputs --------------------------------------------------------

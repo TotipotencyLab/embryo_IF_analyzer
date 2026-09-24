@@ -84,9 +84,10 @@ aggregate_roi_stat <- function(value, weight, stat = "wmean"){
 #' @param meta_cols    extra columns to carry through, constant within a feature
 #' @param z_step       distance between slices, in the same unit as the
 #'                     outlines (microns). When given, adds a `volume` column.
-#'                     Not read from `_config.txt`: the Groovy side records
-#'                     pixel_width and pixel_height but not pixel_depth, so for
-#'                     existing results it has to be supplied.
+#'                     Not read from `_config.txt` yet. The Groovy side has
+#'                     recorded `pixel_depth` since 0.2.x, but nothing here
+#'                     reads it, so it still has to be supplied -- and for
+#'                     results produced before that it is not there at all.
 #' @return tibble, one row per sample + feature_id
 summarise_feature_stats <- function(st_df, res = NULL, channel_stat = "wmean",
                                     meta_cols = character(0), z_step = NULL){

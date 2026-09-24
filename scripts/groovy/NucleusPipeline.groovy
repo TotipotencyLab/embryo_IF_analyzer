@@ -44,6 +44,85 @@ class NucleusPipeline {
     static final int OVERVIEW_WIDTH = 500
     static final String OVERVIEW_METHOD = "max"
 
+    // The parameters run() reads, and their types. This is the vocabulary a
+    // config file may use -- RunConfig.params() rejects anything else rather
+    // than letting a typo fall through to a default.
+    //
+    // `basename` is deliberately NOT here. It names one image's output, so a
+    // config file setting it would give every image in a batch the same name
+    // and each would overwrite the last. It is passed per image, by the caller.
+    // `script_name` likewise identifies the caller, not the request.
+    static final Map<String, String> PARAM_TYPES = [
+        output_prefix          : "string",
+        position_pattern       : "string",
+        z_spec                 : "string",
+        dna_channel            : "int",
+        channels_measured      : "string",
+        nucleus_blur_sigma     : "double",
+        nucleus_threshold      : "string",
+        nucleus_particle_size  : "string",
+        nucleus_watershed      : "boolean",
+        nucleoli_enabled       : "boolean",
+        nucleolus_blur_sigma   : "double",
+        nucleolus_threshold    : "string",
+        nucleolus_rel_fraction : "double",
+        nucleolus_erode_px     : "int",
+        nucleolus_particle_size: "string",
+        nucleolus_circularity  : "string",
+        save_roi_zips          : "boolean",
+        save_outlines          : "boolean",
+        save_measurements      : "boolean",
+        save_config            : "boolean",
+        save_overview          : "boolean",
+    ]
+
+    // Defaults, so a config need only state what it changes. These MUST match
+    // the `value=` literals in Run_NucleusSelector.groovy's `#@` block, or the
+    // GUI and the batch would do different things under the same settings --
+    // Test_RunConfig asserts exactly that, because SciJava requires the dialog
+    // defaults to be literals and they cannot simply be read from here.
+    static final Map<String, Object> DEFAULTS = [
+        output_prefix          : "",
+        position_pattern       : "Position",
+        z_spec                 : "",
+        dna_channel            : 1,
+        channels_measured      : "1,2,3",
+        nucleus_blur_sigma     : 8.0d,
+        nucleus_threshold      : "Huang2",
+        nucleus_particle_size  : "80-Infinity",
+        nucleus_watershed      : false,
+        nucleoli_enabled       : true,
+        nucleolus_blur_sigma   : 3.0d,
+        nucleolus_threshold    : "Relative",
+        nucleolus_rel_fraction : 0.6d,
+        nucleolus_erode_px     : 0,
+        nucleolus_particle_size: "3-150",
+        nucleolus_circularity  : "0.50-1.00",
+        save_roi_zips          : true,
+        save_outlines          : true,
+        save_measurements      : true,
+        save_config            : true,
+        save_overview          : false,
+    ]
+
+    /**
+     * Turn a parsed config into parameters, over the defaults.
+     *
+     * One value needs undoing: saveRunConfig() writes a blank z_spec as the
+     * human-readable "(all)", which parseSlices() would reject as a slice
+     * range. Round-tripping a config through the file therefore has to map it
+     * back, or feeding a run's own config to a rerun fails on the one field
+     * nobody set.
+     */
+    static Map fromConfig(Map<String, Object> cfgParams) {
+        def out = new LinkedHashMap(DEFAULTS)
+        out.putAll(cfgParams)
+        if (out.z_spec == "(all)") {
+            out.z_spec = ""
+        }
+        return out
+    }
+
     String libDir
     // The sibling libraries, held as Class objects rather than imported types:
     // scripts/groovy/ is parsed at run time the way scripts/R/ is source()d, and
@@ -200,6 +279,16 @@ class NucleusPipeline {
                 image_channels         : imp.getNChannels(),
                 pixel_width            : imp.getCalibration().pixelWidth,
                 pixel_height           : imp.getCalibration().pixelHeight,
+                // The z step, which nothing recorded before: feature_stat_cli.r
+                // needs it for `volume` and had to be told by hand. Bio-Formats
+                // populates it on import.
+                //
+                // BLANK for a single plane, not 1.0. ImageJ defaults pixelDepth
+                // to 1.0 when there is no z axis, and Bio-Formats reports the
+                // physical size as null there -- writing 1.0 would hand a later
+                // reader a plausible number for a distance that does not exist,
+                // and `area_sum x 1.0` is an area wearing a volume's name.
+                pixel_depth            : (imp.getNSlices() > 1 ? imp.getCalibration().pixelDepth : null),
                 pixel_unit             : imp.getCalibration().getUnit(),
                 output_basename        : basename,
                 position_pattern       : p.position_pattern,

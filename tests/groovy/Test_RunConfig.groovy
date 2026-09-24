@@ -131,6 +131,140 @@ new File(LIBDIR).listFiles().findAll { it.getName().startsWith("Run_") }.sort().
     check(f.getName(), err, null)
 }
 
+println ""
+println "=== RunConfig: the read half of the same format ==="
+
+def RC = new GroovyClassLoader().parseClass(new File(LIBDIR, "RunConfig.groovy"))
+def NP = new GroovyClassLoader().parseClass(new File(LIBDIR, "NucleusPipeline.groovy"))
+
+// The point of reading the format we write: a run's own config goes back in.
+def roundTrip = RC.parse(RC.format([a: "x", b: 2, c: true, d: null]))
+check("format/parse round trips keys",         roundTrip.keySet().toList(), ["a", "b", "c", "d"])
+check("...and values",                         roundTrip.values().toList(), ["x", "2", "true", ""])
+
+// RoiExport.saveRunConfig() is the OTHER writer. If the two shapes drift, the
+// loop this whole class exists for is broken -- so parse its actual output.
+def w = new File(tmp, "written_config.txt")
+RX.saveRunConfig([timestamp: "now", dna_channel: 3, nucleus_watershed: false], w.getPath())
+def readBack = RC.read(w)
+check("parses what saveRunConfig wrote",       readBack["dna_channel"], "3")
+check("...header is not a parameter",          readBack.containsKey("parameter"), false)
+
+def parsed = RC.parse("# a comment\n\nparameter\tvalue\ndna_channel\t2\n\n#another\n")
+check("comments and blank lines are skipped",  parsed.keySet().toList(), ["dna_channel"])
+
+def errOf = { Closure c -> try { c(); return null } catch (Throwable t) { return t.getMessage() } }
+check("a `key = value` line is refused",
+      errOf { RC.parse("dna_channel = 2") }?.contains("TAB"), true)
+check("a repeated key is refused",
+      errOf { RC.parse("a\t1\na\t2") }?.contains("twice"), true)
+
+println ""
+println "=== RunConfig: unknown keys are an error, provenance is not ==="
+def types = NP.PARAM_TYPES
+check("provenance keys are dropped, not rejected",
+      RC.params([timestamp: "now", nucleus_count: "70", dna_channel: "2"], types).keySet().toList(),
+      ["dna_channel"])
+def unknownMsg = errOf { RC.params([nucleus_sigma: "8"], types) }
+check("a near-miss key is refused",            unknownMsg?.contains("nucleus_sigma"), true)
+check("...and the message lists what is valid", unknownMsg?.contains("nucleus_blur_sigma"), true)
+
+println ""
+println "=== RunConfig: coercion, especially booleans ==="
+// In Groovy a non-empty String is truthy, so "false" read from a file would
+// ENABLE whatever it guards. This is the check that matters most here.
+check("'false' becomes the boolean false",     RC.coerce("k", "false", "boolean"), false)
+check("...and is actually falsy",              RC.coerce("k", "false", "boolean") ? "yes" : "no", "no")
+check("'0' becomes false",                     RC.coerce("k", "0", "boolean"), false)
+check("'true' becomes true",                   RC.coerce("k", "true", "boolean"), true)
+check("a bad boolean is refused",              errOf { RC.coerce("k", "maybe", "boolean") }?.contains("boolean"), true)
+check("an int coerces",                        RC.coerce("k", "3", "int"), 3)
+check("a bad int is refused",                  errOf { RC.coerce("k", "3.5", "int") }?.contains("whole number"), true)
+check("a double coerces",                      RC.coerce("k", "8.0", "double"), 8.0d)
+check("a bad double is refused",               errOf { RC.coerce("k", "eight", "double") }?.contains("number"), true)
+
+println ""
+println "=== NucleusPipeline: the parameter vocabulary ==="
+check("every type has a default",              (NP.PARAM_TYPES.keySet() - NP.DEFAULTS.keySet()).toList(), [])
+check("every default has a type",              (NP.DEFAULTS.keySet() - NP.PARAM_TYPES.keySet()).toList(), [])
+// basename must not be settable from a config: one name for every image in a
+// batch would have each overwrite the last.
+check("basename is NOT a config parameter",    NP.PARAM_TYPES.containsKey("basename"), false)
+check("script_name is NOT a config parameter", NP.PARAM_TYPES.containsKey("script_name"), false)
+
+def defaultTypeErrors = NP.DEFAULTS.findAll { k, v ->
+    try { RC.coerce(k, v.toString(), NP.PARAM_TYPES[k]); return false } catch (Throwable t) { return true }
+}.keySet().toList()
+check("every default matches its own type",    defaultTypeErrors, [])
+
+println ""
+println "=== fromConfig: defaults, and the z_spec round trip ==="
+def fc = NP.fromConfig([dna_channel: 4])
+check("an unset parameter takes its default",  fc.nucleus_blur_sigma, 8.0d)
+check("a set parameter wins",                  fc.dna_channel, 4)
+// saveRunConfig writes a blank z_spec as the readable "(all)". Fed back in
+// unmapped, parseSlices() would reject it -- so a run's own config would fail
+// on the one field nobody set.
+check("'(all)' maps back to blank",            NP.fromConfig([z_spec: "(all)"]).z_spec, "")
+check("a real z_spec is untouched",            NP.fromConfig([z_spec: "1-20"]).z_spec, "1-20")
+
+println ""
+println "=== the GUI defaults and the class defaults agree ==="
+// SciJava needs the dialog's `value=` to be a literal, so it cannot read
+// DEFAULTS. If the two drift, the GUI and the batch do different things under
+// the same settings -- silently.
+def VAR_TO_PARAM = [
+    outPrefix: "output_prefix", positionPattern: "position_pattern", zSpec: "z_spec",
+    dnaCh: "dna_channel", channelsCsv: "channels_measured",
+    nucSigma: "nucleus_blur_sigma", nucMethod: "nucleus_threshold",
+    nucSize: "nucleus_particle_size", nucWatershed: "nucleus_watershed",
+    doNucleoli: "nucleoli_enabled", nucleolusSigma: "nucleolus_blur_sigma",
+    nucleolusMethod: "nucleolus_threshold", relFraction: "nucleolus_rel_fraction",
+    erodePx: "nucleolus_erode_px", nucleolusSize: "nucleolus_particle_size",
+    nucleolusCirc: "nucleolus_circularity", saveRoiZips: "save_roi_zips",
+    saveOutlines: "save_outlines", saveMeasurements: "save_measurements",
+    saveConfig: "save_config", saveOverview: "save_overview",
+]
+check("the mapping covers every parameter",
+      (NP.PARAM_TYPES.keySet() - VAR_TO_PARAM.values().toSet()).toList(), [])
+
+def guiDefaults = [:]
+new File(LIBDIR, "Run_NucleusSelector.groovy").eachLine { String line ->
+    def m = (line =~ /^#@\s+\w+\s*\((.*)\)\s+(\w+)\s*$/)
+    if (!m.find()) return
+    String attrs = m.group(1), var = m.group(2)
+    if (!VAR_TO_PARAM.containsKey(var)) return
+    def vm = (attrs =~ /value\s*=\s*(?:"([^"]*)"|([^,)]+))/)
+    def cm = (attrs =~ /choices\s*=\s*\{\s*"([^"]*)"/)
+    String got = vm.find() ? (vm.group(1) != null ? vm.group(1) : vm.group(2).trim())
+                           : (cm.find() ? cm.group(1) : null)
+    if (got != null) guiDefaults[VAR_TO_PARAM[var]] = got
+}
+check("every parameter's dialog default was found",
+      (NP.PARAM_TYPES.keySet() - guiDefaults.keySet()).toList(), [])
+def drift = guiDefaults.findAll { k, v -> NP.DEFAULTS[k].toString() != v }
+             .collect { k, v -> k + ": dialog=" + v + " class=" + NP.DEFAULTS[k] }
+check("dialog and class defaults agree",       drift, [])
+
+println ""
+println "=== the fixture's own _config.txt goes back in ==="
+// The realistic case, and the one that would embarrass us: an actual file
+// written by an actual run, read as parameters.
+def fixtureCfg = new File("fixture/if_data/data/GRV_Position010_config.txt")
+check("the fixture config is present",         fixtureCfg.isFile(), true)
+if (fixtureCfg.isFile()) {
+    String fixErr = errOf { RC.readParams(fixtureCfg, types) }
+    check("it reads without error",            fixErr, null)
+    def fixParams = RC.readParams(fixtureCfg, types)
+    check("its nucleus sigma survives",        fixParams.nucleus_blur_sigma, 8.0d)
+    check("its threshold survives",            fixParams.nucleus_threshold, "Otsu")
+    check("nucleus_count is NOT a parameter",  fixParams.containsKey("nucleus_count"), false)
+    // It predates pixel_depth; an absent field must not break the read.
+    check("an older config still reads",       fixParams.containsKey("pixel_depth"), false)
+    def full = NP.fromConfig(fixParams)
+    check("z_spec '(all)' came back blank",    full.z_spec, "")
+}
+
 tmp.deleteDir()
 
 println ""

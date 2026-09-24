@@ -73,11 +73,15 @@ description lives in `note/data_formats.md`; what follows is why it is
 dangerous. Two things depend on it and break silently if changed:
 
 `_config.txt` records `image_width` and `image_height` in **pixels** alongside
-`pixel_width`/`pixel_height`. The outline tables are in calibrated units, so
+`pixel_width`/`pixel_height`/`pixel_depth`. The outline tables are in calibrated units, so
 these are what lets the R side reconstruct the image frame — the bounding box of
 the detected objects is not the frame, and a QC panel drawn without them is
 cropped differently from the Fiji overview PNG it is meant to sit beside.
 `montage_qc_cli.r` warns loudly rather than producing a misaligned montage.
+`pixel_depth` is blank for a single plane rather than ImageJ's default 1.0 — a
+z step that does not exist must not arrive as a usable-looking number. The file
+is also **readable back in** as a run's parameters (`RunConfig.groovy`), which
+is why an unknown key there is an error rather than a shrug.
 
 - `scripts/R/read_fiji_result.r` identifies the roi column by matching
   `\d{4}-\d{4}-\d{4}$` and joins measurements to outlines through the roi id
