@@ -113,6 +113,12 @@ loop, including how to diff.
   injecting a `Binding`, so anything worth testing belongs in the class. A second
   caller — the batch runner — is the reason it was split out; see
   `note/groovy_batch_plan.md`.
+- **`schema/` is internal, `config/` is yours.** `schema/sheet_columns.tsv` is
+  read at run time by both languages and says what the columns of `files.tsv`
+  and `samples.tsv` are and who owns each (`machine` overwritten on
+  regeneration, `seeded` written once then yours, `user` never touched). It is
+  not in `config/` because that folder's contract is "copy one out and edit it;
+  nothing here is read automatically".
 - Script name prefixes are a contract: **`Run_*`** does the analysis, **`Inspect_*`**
   are read-only diagnostics (written to be read as well as run — they carry the
   Groovy/ImageJ API notes), **`Make_*`** writes a table the pipeline then
