@@ -9,7 +9,7 @@ it, and point the CLIs at your copy — nothing here is read automatically.
   generate one instead of you writing it by hand.
 - `files_template.tsv` — the *file* table that `Make_SampleSheet.groovy` reads:
   one row per image file, with the `alias` that makes every sample prefix
-  unique across files. Metadata you put here is seeded onto every series of
+  unique across files (the series index makes it unique *within* one). Metadata you put here is seeded onto every series of
   that file, so it is typed once rather than per series.
 
 The column list both tables are checked against lives in

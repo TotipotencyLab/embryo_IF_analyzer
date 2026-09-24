@@ -357,6 +357,22 @@ class BatchRunner {
         def included = rows.findAll { isIncluded(it.include) }
         say("=== batch: " + included.size() + " of " + rows.size() + " row(s) included ===")
 
+        // Make_SampleSheet writes a sheet with duplicates on purpose, so they can
+        // be seen and fixed. Here they are fatal: the prefix names the output
+        // files, so two rows sharing one would overwrite each other and the R
+        // side would merge them into a single sample. Only INCLUDED rows matter
+        // -- an excluded duplicate writes nothing.
+        def dupPrefix = included.groupBy { (it.prefix ?: "").toString() }
+                                .findAll { k, v -> v.size() > 1 }
+        if (dupPrefix) {
+            throw new IllegalArgumentException(
+                "These included rows share a prefix, and would overwrite each other:\n    " +
+                dupPrefix.collect { k, v ->
+                    k + " <- " + v.collect { it.path + "[" + it.series_index + "]" }.join(" AND ")
+                }.join("\n    ") +
+                "\n  Fix the prefix column, or set include=false on all but one.")
+        }
+
         def sizes = pixelSizes(included)
         if (sizes.size() > 1) {
             def w = "This batch spans " + sizes.size() + " different pixel sizes (" +
@@ -412,8 +428,15 @@ class BatchRunner {
 
                 // The sheet's prefix is authoritative: resolveImageId() would dig
                 // "Series001" out of the slice label, which recurs in every file.
+                // Where this image came from, recorded in its own _config.txt: a
+                // results folder should say which series of which file produced
+                // it without anyone having to parse the prefix back apart.
                 def res = pipeline.run(imp, outdir,
-                                      params + [basename: prefix, open_method: method])
+                                      params + [basename    : prefix,
+                                                open_method : method,
+                                                source_file : row.path,
+                                                series_index: si,
+                                                series_name : (row.series_name ?: "")])
                 summary << [prefix: prefix, path: row.path, series_index: row.series_index,
                             status: "ok", open_method: method,
                             n_nucleus: res.nucRois.size(), n_nucleolus: res.nuclRois.size(),

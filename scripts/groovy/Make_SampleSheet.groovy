@@ -8,6 +8,7 @@
 #@ String  (persist=false, label="Reseed these columns from files.tsv (space separated)", value="") reseed
 #@ Boolean (persist=false, label="Reseed EVERY seeded column (includes alias, rewrites prefixes)", value=false) reseedAll
 #@ Boolean (persist=false, label="Drop sheet rows whose file has left files.tsv", value=false) prune
+#@ Boolean (persist=false, label="Finish quietly even if some prefixes are duplicated", value=false) allowDuplicatePrefix
 
 // Make_SampleSheet.groovy
 //
@@ -137,9 +138,15 @@ def merged = sheet.merge(fresh, existing, reseedCols, prune)
 def rows = merged.rows
 
 // The composed prefix is checked AFTER the merge, because an edited prefix is
-// as capable of colliding as a generated one.
-sheet.checkPrefixes(rows)
+// as capable of colliding as a generated one -- and now that the index is part
+// of every generated prefix, an edit is the only way one can arise.
+def dupPrefixes = SS.duplicatePrefixes(rows)
 
+// WRITE FIRST, refuse after. This step is a draft for a person to read, and a
+// duplicate you cannot open the table to see is a duplicate you cannot fix: the
+// error message would be the only artifact of the run. The NEXT step -- the
+// batch -- is where a duplicate is fatal, because there it silently overwrites
+// one sample with another.
 TSV.write(rows, outSheet, sheet.columnOrder(rows))
 
 IJ.log("  " + merged.added + " row(s) added, " + merged.updated + " updated")
@@ -152,4 +159,24 @@ if (merged.missing) {
 }
 int nOn = rows.count { (it.include ?: "true").toString().toLowerCase() in ["true", "yes", "1"] }
 IJ.log("Wrote " + outSheet.getAbsolutePath())
+
+if (dupPrefixes) {
+    IJ.log("")
+    IJ.log("DUPLICATE PREFIX on " + dupPrefixes.size() + " name(s). The sheet was written anyway,")
+    IJ.log("so you can open it and fix them -- but it will not run as it stands:")
+    dupPrefixes.each { k, v ->
+        IJ.log("  " + k + "  <- " + v.collect { it.path + "[" + it.series_index + "]" }.join(" AND "))
+    }
+    IJ.log("  The prefix is the output filename and the `name` column, so two rows")
+    IJ.log("  would overwrite each other on disk and merge into one sample in R.")
+    if (!allowDuplicatePrefix) {
+        // No "Done:" line, and an exception in the log. Headless runs do not
+        // exit, so the log IS the exit status -- that is what fiji_wait reads.
+        throw new IllegalStateException(
+            dupPrefixes.size() + " duplicated prefix(es); the sheet is at " +
+            outSheet.getAbsolutePath() + " for editing. Pass allowDuplicatePrefix to finish anyway.")
+    }
+    IJ.log("  allowDuplicatePrefix is set -- finishing anyway.")
+}
+
 IJ.log("Done: " + rows.size() + " series, " + nOn + " included")

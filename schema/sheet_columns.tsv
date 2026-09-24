@@ -2,7 +2,7 @@ sheet	column	owner	type	required	description
 files	path	user	string	yes	image file; absolute, or relative to the image root given at run time
 files	alias	seeded	string	no	short name for this file, used to build every prefix; defaults to the basename without its extension
 files	include	user	boolean	no	seeds the include of every series read from this file; default true
-samples	prefix	seeded	string	yes	sanitised <alias>_<series_name>; IS the output filename prefix and the name column of the outline table
+samples	prefix	seeded	string	yes	sanitised <alias>_s<NNNN>_<series_name>, the index zero-padded to four digits; IS the output filename prefix and the name column of the outline table
 samples	alias	machine	string	yes	the alias this prefix was built from
 samples	path	machine	string	yes	the file this series lives in, as written in files.tsv
 samples	series_index	machine	integer	yes	0-based index Bio-Formats addresses the series by

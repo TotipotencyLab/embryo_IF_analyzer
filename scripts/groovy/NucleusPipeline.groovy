@@ -273,6 +273,14 @@ class NucleusPipeline {
                 // Two runs that used different readers must not be
                 // indistinguishable afterwards.
                 open_method            : (p.open_method ?: ""),
+                // Which series of which file this directory came from. Blank in
+                // the interactive runner, where the image was already open and
+                // nothing told us. Identity comes from content, not from the
+                // filename -- so the prefix should not have to be parsed apart
+                // to answer this.
+                source_file            : (p.source_file ?: ""),
+                series_index           : (p.series_index == null ? "" : p.series_index),
+                series_name            : (p.series_name ?: ""),
                 // NB: width/height in PIXELS. The outline tables are written in
                 //     calibrated units, so without these the R side cannot
                 //     reconstruct the image extent -- the bounding box of the

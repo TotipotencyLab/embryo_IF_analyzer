@@ -106,7 +106,7 @@ construction**, not bad luck.
 - **Identity comes from file content, not the filename.** `.cli_scan_inputs()`
   reads `sample` from the outline table's `name` column and `feature` from the
   roi id prefix; `.cli_parse_contract()` is a fallback that fires only when the
-  content path fails. A verbose `<alias>_<series>` prefix full of underscores is
+  content path fails. A verbose `<alias>_s<NNNN>_<series>` prefix full of underscores is
   therefore safe, and a series named after a feature is a non-issue (there is a
   passing test: `nucleus_test_nucleus_outline.txt` -> sample `nucleus_test`).
 - **`run_input_fingerprint()`** in `scripts/R/feature_join.r` already uses
@@ -165,7 +165,7 @@ the old names — that needs an explicit warning listing the changed prefixes.
 | `alias` unique | files | error | two files claiming one name |
 | basename duplicated across paths | files | **warn, naming both paths** | reused filename for a different dataset |
 | `basename:size` identical across paths | files | **warn** | the same file copied elsewhere — what alias cannot see |
-| sanitised `<alias>_<series>` unique | samples | error | the composed collision |
+| sanitised `<alias>_s<NNNN>_<series>` unique | samples | **written, then error** | the composed collision; the sheet is written first so it can be edited |
 
 The composed check is **not** redundant: alias `A_Series` + series `001` collides
 with alias `A` + series `Series001`. Unique parts, colliding composite — the same
@@ -323,4 +323,6 @@ on the classpath. Cross-check its behaviour against the real `.lif` above.
 2. Folder name for the schema file — `schema/` proposed; `internal/` the
    alternative.
 3. Whether `Make_SampleSheet` should refuse, rather than warn, on a duplicated
-   input basename.
+   input basename. (Settled for the duplicate *prefix*: write the sheet, then
+   fail, so the table can be opened and fixed. The basename warning is
+   unchanged.)

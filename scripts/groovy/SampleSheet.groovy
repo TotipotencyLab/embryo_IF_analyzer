@@ -207,9 +207,34 @@ class SampleSheet {
         return out
     }
 
-    /** sanitise(<alias>_<series name>), via the same function the pipeline uses. */
-    String composePrefix(String alias, String seriesName) {
-        return RX.sanitize(alias + "_" + seriesName)
+    /**
+     * Zero-padded to a FIXED width, not to the file's series count.
+     *
+     * Deriving the width from the count would re-pad every prefix in a file
+     * that grew from 999 series to 1001 -- the same instability as
+     * disambiguating only what happens to collide today. Four digits, widening
+     * on its own past 9999.
+     */
+    static final String INDEX_FORMAT = "s%04d"
+
+    /**
+     * sanitise(<alias>_s<NNNN>_<series name>), via the same sanitiser the
+     * pipeline uses.
+     *
+     * The index is ALWAYS present, not added only where names collide. Series
+     * names repeat freely -- a tile scan is many series under one name, and
+     * `Series001` is a Leica default -- and a prefix that depends on which
+     * OTHER series happen to share its name is a prefix that changes when a
+     * file is re-acquired. With alias unique across files (checkFiles enforces
+     * it) and the index unique within one, the composite is unique by
+     * construction rather than by checking.
+     *
+     * `s` rather than a bare number because `slide05_0331_O1_1_10x` gives a
+     * human no way to tell the index from the name.
+     */
+    String composePrefix(String alias, Object seriesIndex, String seriesName) {
+        def idx = String.format(INDEX_FORMAT, (seriesIndex ?: 0) as Integer)
+        return RX.sanitize(alias + "_" + idx + "_" + seriesName)
     }
 
     /**
@@ -236,7 +261,7 @@ class SampleSheet {
                       (System.currentTimeMillis() - t0) + " ms")
             series.each { sr ->
                 def row = new LinkedHashMap()
-                row.prefix = composePrefix(fr.alias, sr.series_name)
+                row.prefix = composePrefix(fr.alias, sr.series_index, sr.series_name)
                 row.alias = fr.alias
                 row.path = fr.path
                 row.putAll(sr)
@@ -259,8 +284,12 @@ class SampleSheet {
      * SANITISED string, because two series names differing only in whitespace
      * or punctuation become one filename.
      */
+    static Map duplicatePrefixes(List<Map> rows) {
+        return rows.groupBy { it.prefix }.findAll { k, v -> v.size() > 1 }
+    }
+
     void checkPrefixes(List<Map> rows) {
-        def dup = rows.groupBy { it.prefix }.findAll { k, v -> v.size() > 1 }
+        def dup = duplicatePrefixes(rows)
         if (dup) {
             def detail = dup.collect { k, v ->
                 k + " <- " + v.collect { it.path + "[" + it.series_index + "] " + it.series_name }.join(" AND ")

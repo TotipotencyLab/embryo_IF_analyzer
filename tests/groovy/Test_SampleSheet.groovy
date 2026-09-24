@@ -74,6 +74,12 @@ def imgA = writeMultiSeries(new File(rawDir, "plateA.ome.tif"),
     0.25d, 0.9d)
 // A SECOND file whose series names are the same -- the collision the alias
 // exists to solve, and the one a real batch of .lif files always has.
+// Two series under ONE name: a tile scan is many fields of one acquisition, and
+// this is the shape that could not produce a sheet at all before the index was
+// forced into the prefix.
+def imgT = writeMultiSeries(new File(rawDir, "tiles.ome.tif"),
+    [["O1_1 10x", 16, 16, 1], ["O1_1 10x", 16, 16, 1]], 0.5d, 1.0d)
+
 def imgB = writeMultiSeries(new File(rawDir, "plateB.ome.tif"),
     [["Series001", 40, 40, 2], ["Series002", 40, 40, 2]],
     0.5d, 1.1d)
@@ -95,8 +101,10 @@ check("path is a files column",                sheet.schema.columns("files").con
 println ""
 println "=== scan mode ==="
 def scanned = sheet.scan(rawDir, ["ome.tif", "tif", "lif"])
-check("scan finds both files",                 scanned.size(), 2)
+check("scan finds every image",                scanned.size(), 3)
 check("alias defaults to the basename",        scanned[0].alias, "plateA.ome")
+check("...and scan is sorted by name",         scanned.collect { it.path },
+      ["plateA.ome.tif", "plateB.ome.tif", "tiles.ome.tif"])
 check("include defaults on",                   scanned[0].include, "true")
 
 println ""
@@ -112,10 +120,10 @@ check("checkFiles is quiet on a clean table",  sheet.checkFiles(fileRows, rawDir
 
 def built = sheet.build(fileRows, rawDir, ["condition"])
 check("5 series across the two files",         built.size(), 5)
-check("prefix is alias + series",              built[0].prefix, "A_Series001")
+check("prefix is alias + index + series",      built[0].prefix, "A_s0000_Series001")
 // Same series name, different file -- unique only because of the alias.
-check("the other file's Series001 differs",    built.find { it.path == "plateB.ome.tif" && it.series_index == 0 }.prefix, "B_Series001")
-check("a space in the name is sanitised",      built[2].prefix, "A_Image005_Denoised")
+check("the other file's Series001 differs",    built.find { it.path == "plateB.ome.tif" && it.series_index == 0 }.prefix, "B_s0000_Series001")
+check("a space in the name is sanitised",      built[2].prefix, "A_s0002_Image005_Denoised")
 check("no prefix collision",                   errOf { sheet.checkPrefixes(built) }, null)
 
 println ""
@@ -147,19 +155,42 @@ check("a repeated path is fatal",              errOf { sheet.checkFiles(dupPath,
 def dupAlias = [[path: "x.tif", alias: "a", include: "true"], [path: "y.tif", alias: "a", include: "true"]]
 check("a repeated alias is fatal",             errOf { sheet.checkFiles(dupAlias, rawDir) }?.contains("same alias"), true)
 
-// Unique alias, unique series names, COLLIDING composite. This is why the check
-// runs on the composed string and not on the parts.
-def collide = [[prefix: sheet.composePrefix("A", "B_C"),  path: "p", series_index: 0, series_name: "B_C"],
-               [prefix: sheet.composePrefix("A_B", "C"),  path: "q", series_index: 0, series_name: "C"]]
+// Unique alias, unique series names, COLLIDING composite. Much rarer now that
+// the index sits between them, but still reachable with an alias that ends the
+// way an index begins -- which is why the check runs on the composed string and
+// not on the parts.
+def collide = [[prefix: sheet.composePrefix("A", 0, "s0000_B"), path: "p", series_index: 0, series_name: "s0000_B"],
+               [prefix: sheet.composePrefix("A_s0000", 0, "B"), path: "q", series_index: 0, series_name: "B"]]
 check("the two compose to the same prefix",    collide[0].prefix, collide[1].prefix)
 check("...and that is fatal",                  errOf { sheet.checkPrefixes(collide) }?.contains("not unique"), true)
+check("duplicatePrefixes names the offender",  sheet.duplicatePrefixes(collide).keySet().toList(), [collide[0].prefix])
+check("...and is quiet on a clean table",      sheet.duplicatePrefixes(built), [:])
 
-// The other way two distinct names become one filename: sanitise() collapses
-// whitespace, so "Image005 Denoised" and "Image005_Denoised" are the same file.
-def sanitiseClash = [[prefix: sheet.composePrefix("A", "Image005 Denoised"), path: "p", series_index: 0, series_name: "Image005 Denoised"],
-                     [prefix: sheet.composePrefix("A", "Image005_Denoised"), path: "p", series_index: 1, series_name: "Image005_Denoised"]]
-check("a space and an underscore sanitise alike", sanitiseClash[0].prefix, sanitiseClash[1].prefix)
-check("...and that is fatal too",              errOf { sheet.checkPrefixes(sanitiseClash) }?.contains("not unique"), true)
+// sanitise() collapses whitespace, so "Image005 Denoised" and
+// "Image005_Denoised" become one filename. They are different SERIES of one
+// file, so the index now separates them -- this used to be fatal.
+def sanitiseClash = [[prefix: sheet.composePrefix("A", 0, "Image005 Denoised"), path: "p", series_index: 0, series_name: "Image005 Denoised"],
+                     [prefix: sheet.composePrefix("A", 1, "Image005_Denoised"), path: "p", series_index: 1, series_name: "Image005_Denoised"]]
+check("the names still sanitise alike",
+      sanitiseClash[0].prefix.replace("s0000", ""), sanitiseClash[1].prefix.replace("s0001", ""))
+check("...but the index keeps them apart",     errOf { sheet.checkPrefixes(sanitiseClash) }, null)
+
+println ""
+println "=== the index is forced, so a repeated series name is not a collision ==="
+// Before this, a tile scan could not produce a sheet: checkPrefixes refused it,
+// correctly, and the error message was the only artifact of the run.
+def tileRows = sheet.build([[path: "tiles.ome.tif", alias: "T", include: "true"]], rawDir, [])
+check("two series really do share one name",   tileRows.collect { it.series_name }.unique(), ["O1_1 10x"])
+check("...but not one prefix",                 tileRows.collect { it.prefix },
+      ["T_s0000_O1_1_10x", "T_s0001_O1_1_10x"])
+check("...so the sheet builds",                errOf { sheet.checkPrefixes(tileRows) }, null)
+
+// Fixed width, not derived from the series count: a file growing from 999 to
+// 1001 series must not re-pad every prefix it already had.
+check("index 0 pads to four digits",           sheet.composePrefix("A", 0, "x"), "A_s0000_x")
+check("index 331",                             sheet.composePrefix("A", 331, "x"), "A_s0331_x")
+check("past 9999 it widens, never wraps",      sheet.composePrefix("A", 12345, "x"), "A_s12345_x")
+check("a string index is accepted",            sheet.composePrefix("A", "7", "x"), "A_s0007_x")
 
 println ""
 println "=== duplicate basenames warn rather than stop ==="
@@ -202,7 +233,7 @@ println ""
 println "=== reseed is opt-in, and says what it changed ==="
 def reseeded = sheet.merge(refreshed, TSV.read(outTsv), ["prefix", "include"], false)
 def r0 = reseeded.rows.find { it.path == "plateA.ome.tif" && it.series_index.toString() == "0" }
-check("reseed restores the generated prefix",  r0.prefix, "A_Series001")
+check("reseed restores the generated prefix",  r0.prefix, "A_s0000_Series001")
 check("reseed restores the seeded include",    r0.include, "true")
 check("it reports which columns it touched",   reseeded.reseeded.keySet().sort(), ["include", "prefix"])
 check("cell_type is yours and untouched",      r0.cell_type, "oocyte")
@@ -259,6 +290,58 @@ println "=== Tsv refuses what would corrupt a column ==="
 check("a tab in a cell is refused",            errOf { TSV.cell("a\tb") }?.contains("tab"), true)
 check("a newline in a cell is refused",        errOf { TSV.cell("a\nb") }?.contains("newline"), true)
 check("null becomes blank",                    TSV.cell(null), "")
+
+println ""
+println "=== Make_SampleSheet writes the sheet, THEN refuses ==="
+// The ordering lives in the `#@` front end, so it is exercised the way the
+// fiji-headless-testing skill describes: strip the parameter lines and inject a
+// Binding. It is worth a test rather than a read-through, because the whole
+// point is WHICH HAPPENS FIRST -- a duplicate you cannot open the table to see
+// is a duplicate you cannot fix, and the error message would otherwise be the
+// only artifact of the run.
+def msFile = new File(LIBDIR, "Make_SampleSheet.groovy")
+def msBody = msFile.getText("UTF-8").readLines().findAll { !it.trim().startsWith("#@") }.join("\n")
+def runMakeSheet = { File msFilesArg, File msOutArg, boolean msAllowArg ->
+    def b = new Binding()
+    b.setVariable("javax.script.filename", msFile.getAbsolutePath())
+    b.setVariable("filesSheet", msFilesArg)
+    b.setVariable("outSheet", msOutArg)
+    b.setVariable("imageRoot", rawDir.getAbsolutePath())
+    b.setVariable("inherit", "")
+    b.setVariable("scanDir", "")
+    b.setVariable("scanExt", "ome.tif tif lif")
+    b.setVariable("skipExplored", false)
+    b.setVariable("reseed", "")
+    b.setVariable("reseedAll", false)
+    b.setVariable("prune", false)
+    b.setVariable("allowDuplicatePrefix", msAllowArg)
+    new GroovyShell(b).evaluate(msBody, "Make_SampleSheet_stripped.groovy")
+}
+
+def msFiles = new File(tmp, "ms_files.tsv")
+def msOut = new File(tmp, "ms_samples.tsv")
+TSV.write([[path: "tiles.ome.tif", alias: "T", include: "true"]], msFiles, ["path", "alias", "include"])
+
+check("a tile scan builds without complaint",  errOf { runMakeSheet(msFiles, msOut, false) }, null)
+def msRows = TSV.read(msOut)
+check("...into two distinct prefixes",         msRows.collect { it.prefix },
+      ["T_s0000_O1_1_10x", "T_s0001_O1_1_10x"])
+
+// Now break it the only way that is still possible: by hand.
+msRows[1].prefix = msRows[0].prefix
+TSV.write(msRows, msOut, sheet.columnOrder(msRows))
+
+def msErr = errOf { runMakeSheet(msFiles, msOut, false) }
+check("an edited duplicate is refused",        msErr?.contains("duplicated prefix"), true)
+check("...naming the sheet to go and fix",     msErr?.contains(msOut.getAbsolutePath()), true)
+// The point of the whole exercise: the file exists, holding the duplicate, so
+// it can be opened and corrected.
+check("...and the sheet was written anyway",   msOut.isFile(), true)
+check("...still holding both rows",            TSV.read(msOut).size(), 2)
+check("...and still duplicated, not silently repaired",
+      TSV.read(msOut).collect { it.prefix }.unique().size(), 1)
+
+check("allowDuplicatePrefix finishes quietly", errOf { runMakeSheet(msFiles, msOut, true) }, null)
 
 tmp.deleteDir()
 println ""

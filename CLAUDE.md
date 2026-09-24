@@ -221,6 +221,23 @@ fourth fork.** A new assay should be a new configuration of the shared library.
 
 ## Standing decisions
 
+- **The sample prefix always carries the series index**, as
+  `sanitise(<alias>_s<NNNN>_<series_name>)`, never only where names happen to
+  collide. Series names repeat freely — a tile scan is many series under one
+  name, `Series001` is a Leica default — so with `alias` unique across files and
+  the index unique within one, the prefix is unique *by construction*. Padding is
+  a fixed four digits: deriving it from the file's series count would re-pad
+  every prefix in a file that grew from 999 to 1001, which is the same
+  instability as disambiguating only today's collisions.
+- **Duplicate prefixes are written by `Make_SampleSheet` and refused by the
+  batch.** The asymmetry is deliberate. The sheet is a draft for a person to
+  read, and a duplicate you cannot open the table to see is one you cannot fix —
+  the old behaviour threw before writing, so the error message was the only
+  artifact of the run. It now writes the sheet and *then* fails (headless runs do
+  not exit, so the log is the exit status: an exception and no `Done:` line).
+  `allowDuplicatePrefix` downgrades that. The batch refuses outright for included
+  rows, because there two rows sharing a prefix overwrite each other's output;
+  `.cli_read_sample_sheet()` refuses on the R side too.
 - **The batch opens an image one of two ways, and records which.**
   `BF.openImagePlus` — the importer, the code behind the series-chooser dialog —
   prepares a description of *every* series in the file before returning the one
