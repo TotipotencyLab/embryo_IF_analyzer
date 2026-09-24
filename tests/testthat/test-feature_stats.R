@@ -431,3 +431,74 @@ test_that("the log hint names only columns that get a panel", {
   expect_true("area_sum" %in% names(cand))
   expect_false("z_min" %in% names(cand))
 })
+
+# --- z_step from the Fiji config ----------------------------------------------
+# Fiji has recorded pixel_depth in _config.txt since 0.2.0. Before this it had
+# to be typed on the command line, and a volume nobody could be bothered to
+# supply a z step for simply did not exist.
+
+test_that("volume is inferred from pixel_depth when --z_step is not given", {
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2"))
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  source_cli("annotate_features_cli.r")
+  source_cli("feature_stat_cli.r")
+
+  feat <- withr::local_tempdir()
+  suppressMessages(annotate_features_cli(c(
+    "--input", fixture_dir(), "--feature", "nucleus", "--outdir", feat)))
+
+  # Beside the features, because --res_dir is searched first and the fixture's
+  # own config sits there without a pixel_depth.
+  writeLines(c("parameter\tvalue",
+               "image_width\t1400",
+               "pixel_width\t0.2227",
+               "pixel_depth\t0.75"),
+             file.path(feat, "GRV_Position010_config.txt"))
+
+  out <- withr::local_tempdir()
+  st <- suppressWarnings(suppressMessages(feature_stat_cli(c(
+    "--input", feat, "--outdir", out, "--no_plot"))))
+
+  expect_true("volume" %in% colnames(st))
+  # Cavalieri: the value has to be the product, not merely present.
+  expect_equal(st$volume, st$area_sum * 0.75)
+})
+
+test_that("an explicit --z_step beats the config", {
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2"))
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  source_cli("annotate_features_cli.r")
+  source_cli("feature_stat_cli.r")
+
+  feat <- withr::local_tempdir()
+  suppressMessages(annotate_features_cli(c(
+    "--input", fixture_dir(), "--feature", "nucleus", "--outdir", feat)))
+  writeLines(c("parameter\tvalue", "pixel_depth\t0.75"),
+             file.path(feat, "GRV_Position010_config.txt"))
+
+  out <- withr::local_tempdir()
+  st <- suppressWarnings(suppressMessages(feature_stat_cli(c(
+    "--input", feat, "--outdir", out, "--no_plot", "--z_step", "2"))))
+  expect_equal(st$volume, st$area_sum * 2)
+})
+
+test_that("results written before 0.2.0 degrade rather than inventing a z step", {
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2"))
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  source_cli("annotate_features_cli.r")
+  source_cli("feature_stat_cli.r")
+
+  feat <- withr::local_tempdir()
+  suppressMessages(annotate_features_cli(c(
+    "--input", fixture_dir(), "--feature", "nucleus", "--outdir", feat)))
+
+  # The fixture's _config.txt is found and read; it simply has no pixel_depth,
+  # which must mean "no volume", never a default of 1.0.
+  out <- withr::local_tempdir()
+  st <- suppressWarnings(suppressMessages(feature_stat_cli(c(
+    "--input", feat, "--outdir", out, "--res_dir", fixture_dir(), "--no_plot"))))
+  expect_false("volume" %in% colnames(st))
+})

@@ -104,9 +104,9 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = "per-channel aggregation: wmean, mean, median, sd, min, max, sum")
   p <- add_argument(p, "--z_step", short = "-z", type = "numeric", default = NA,
                     help = paste("distance between slices, in the outline unit (microns).",
-                                 "Adds a 'volume' column = area_sum x z_step. Fiji records",
-                                 "pixel_depth in _config.txt since 0.2.x, but this CLI does",
-                                 "not read it yet, so it must still be given here"))
+                                 "Adds a 'volume' column = area_sum x z_step.",
+                                 "[default: pixel_depth from each sample's _config.txt,",
+                                 "which Fiji has recorded since 0.2.0]"))
   p <- add_argument(p, "--class", short = "-k", type = "character", nargs = Inf, default = NULL,
                     help = paste("assign each feature to a class from its own statistics.",
                                  "Space-separated tokens on ONE flag, not a repeated flag:",
@@ -189,11 +189,9 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   # Say why a column is absent, rather than leaving the reader to hunt for it in
   # --show_avail_stats and find nothing. area_med only stands in for size while
   # the object is a sphere, so the volume route matters for irregular ones.
-  if (is.na(argv$z_step)) {
-    message("No --z_step given, so no 'volume' column. ",
-            "area_sum is the shape-free size measure; --z_step turns it into ",
-            "volume (Fiji does not record pixel_depth, so it cannot be inferred).")
-  }
+  # What happened is reported AFTER the loop, once it is known: whether a
+  # z step was found is a fact about the files, not about the arguments.
+  z_used <- c()
 
   n_with_signal <- 0L
   for (path in files) {
@@ -222,10 +220,15 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                            "feature_id", "feature_type", "sample",
                            "parent_feature_id", "parent_feature_type",
                            "parent_containment", "parent_match"))
+    # An explicit --z_step wins everywhere; otherwise each file answers for
+    # itself out of the config Fiji wrote beside it.
+    z <- if (!is.na(argv$z_step)) argv$z_step else .z_step_for(feats, path, res_dirs)
+    if (!is.na(z)) z_used[[basename(path)]] <- z
+
     st <- summarise_feature_stats(feats, res = res,
                                   channel_stat = argv$channel_stat,
                                   meta_cols = meta_cols,
-                                  z_step = if (is.na(argv$z_step)) NULL else argv$z_step)
+                                  z_step = if (is.na(z)) NULL else z)
     if (!nrow(st)) next
     per_file[[path]] <- st
     rejects[[path]] <- feature_reject_counts(feats)
@@ -236,6 +239,28 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   message("  ", nrow(stats), " feature(s) across ",
           dplyr::n_distinct(stats$sample), " sample(s)")
+
+  # Where the volume column came from, or why there is not one. area_med only
+  # stands in for size while the object is a sphere, so whether volume exists is
+  # worth stating rather than leaving the reader to hunt for it in
+  # --show_avail_stats and find nothing.
+  if (!is.na(argv$z_step)) {
+    message("  volume = area_sum x ", argv$z_step, " (--z_step)")
+  } else if (length(z_used)) {
+    vals <- sort(unique(unlist(z_used)))
+    message("  volume = area_sum x pixel_depth from _config.txt (",
+            length(z_used), " file(s); ", paste(vals, collapse = ", "), ")")
+    if (length(vals) > 1L) {
+      message("    NB: the z step differs between files. Each used its own, ",
+              "which is right -- but a statistic pooled across them is not in ",
+              "one instrument's units.")
+    }
+  } else {
+    message("  no 'volume' column: no --z_step, and no usable pixel_depth in a ",
+            "_config.txt beside the inputs. area_sum is the shape-free size ",
+            "measure meanwhile. (pixel_depth is blank for single-plane images, ",
+            "where there is no z axis to measure.)")
+  }
   if (n_with_signal == 0L) {
     # Not fatal, but the single most likely reason the plots look thin.
     warning("No measurement table was found for any sample, so there is NO ",
@@ -340,6 +365,39 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 #' reporting name is the new one while the file on disk still carries the name
 #' Fiji wrote. The `roi` column keeps that original prefix for exactly this
 #' reason.
+#' The z step for one features file, from the Fiji config that produced it
+#'
+#' `pixel_depth` is written per image, so this is asked per file -- and a
+#' features .rds is written per sample, so per file IS per sample in anything
+#' the pipeline produced. A hand-built file holding several samples that
+#' disagree gets no inference rather than an arbitrary one of them: pixel size
+#' varies 4x within a single .lif here, so "they are all about the same" is not
+#' a safe assumption to make quietly.
+#'
+#' @return a positive number, or NA_real_
+.z_step_for <- function(feats, features_path, res_dirs) {
+  tab <- sf::st_drop_geometry(feats)
+  here <- dirname(features_path)
+  dirs <- unique(c(res_dirs, here,
+                   file.path(here, ".."),
+                   file.path(here, "..", "segmentation")))
+  vals <- c()
+  for (smp in unique(tab$sample)) {
+    cfg <- .cli_read_config(.cli_find_config(smp, dirs))
+    v <- .cli_config_num(cfg, "pixel_depth")
+    # Blank for a single plane, by design on the Fiji side: no z axis, no volume.
+    if (!is.na(v) && v > 0) vals[[smp]] <- v
+  }
+  if (!length(vals)) return(NA_real_)
+  if (length(unique(unlist(vals))) > 1L) {
+    warning("Samples in ", basename(features_path), " record different ",
+            "pixel_depth values (", paste(sort(unique(unlist(vals))), collapse = ", "),
+            "); no volume inferred. Pass --z_step to choose one.", call. = FALSE)
+    return(NA_real_)
+  }
+  return(unname(unlist(vals))[1])
+}
+
 .read_res_for <- function(feats, features_path, res_dirs) {
   tab <- sf::st_drop_geometry(feats)
   here <- dirname(features_path)
