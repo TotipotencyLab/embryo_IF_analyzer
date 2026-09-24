@@ -200,12 +200,31 @@ Provenance, read long after the run. Fields that other code depends on:
 |---|---|
 | `image_width`, `image_height` | **pixels.** `montage_qc_cli.r`, to draw its panel over the same frame as the Fiji PNG |
 | `pixel_width`, `pixel_height`, `pixel_unit` | the same, to convert that frame to µm |
+| `pixel_depth` | the z step, in `pixel_unit`. **Blank when the image is a single plane** — ImageJ defaults the calibration to 1.0 with no z axis and Bio-Formats reports no physical size, so a written 1.0 would be a plausible number for a distance that does not exist. Written since 0.2.x; `feature_stat_cli.r --z_step` does not read it yet |
 | `script` | records the repo `VERSION` that produced the directory |
 | `overview_channels`, `overview_overlay_suffix` | which overview PNGs exist, so a results folder can be read later without guessing. Blank when none were written |
 
 Everything else is a record of the run's parameters. A key that is absent must
 be handled, not assumed: configs written before a field existed are still valid
 input (`montage_qc_cli.r` warns and degrades rather than failing).
+
+**This file can be read back in as the parameters of another run.**
+`RunConfig.groovy` parses exactly the shape `RoiExport.saveRunConfig()` writes,
+so "tune one image in the GUI, take its config, run the batch with it" needs no
+converter. Three rules make that safe:
+
+- an **unknown** key is an error — silently ignoring `nucleus_sigma` when the
+  parameter is `nucleus_blur_sigma` is how a typo becomes a default nobody sees;
+- the **provenance** fields above (`timestamp`, `image_*`, `nucleus_count`, …)
+  are ignored on purpose, so a whole `_config.txt` can go back in unedited;
+- a value that will not coerce is an error naming the key. Booleans especially:
+  in Groovy a non-empty string is truthy, so `"false"` read from a file would
+  otherwise *enable* what it guards.
+
+`#` comments and blank lines are allowed, and the header is optional. One value
+is translated on the way back: a blank `z_spec` is written as the readable
+`(all)`, and `NucleusPipeline.fromConfig()` maps it back to blank — without
+that, feeding a run its own config fails on the one field nobody set.
 
 ---
 
@@ -338,9 +357,10 @@ for growing ones, which are visibly irregular. `area_sum` — summed
 cross-sectional area — is the shape-free alternative, and `--z_step` turns it
 into a real volume by the Cavalieri estimate (`area_sum × z_step`).
 
-`--z_step` has to be supplied because **Fiji's `_config.txt` records
-`pixel_width` and `pixel_height` but not `pixel_depth`**, so the slice spacing
-is not recoverable from a results directory. `volume` is also an *undercount*
+`--z_step` still has to be supplied. Fiji's `_config.txt` **has recorded
+`pixel_depth` since 0.2.x**, but nothing on the R side reads it yet, and for
+results produced before that it is not in the file at all — so the slice
+spacing is not recoverable from every results directory. `volume` is also an *undercount*
 wherever the object was missed on a slice inside its own range — nothing is
 interpolated, and `z_gaps` is the column that says how much is missing.
 

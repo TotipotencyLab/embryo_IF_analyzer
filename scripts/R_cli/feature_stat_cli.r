@@ -104,8 +104,9 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = "per-channel aggregation: wmean, mean, median, sd, min, max, sum")
   p <- add_argument(p, "--z_step", short = "-z", type = "numeric", default = NA,
                     help = paste("distance between slices, in the outline unit (microns).",
-                                 "Adds a 'volume' column = area_sum x z_step. Fiji does not",
-                                 "record pixel_depth in _config.txt, so it must be given here"))
+                                 "Adds a 'volume' column = area_sum x z_step. Fiji records",
+                                 "pixel_depth in _config.txt since 0.2.x, but this CLI does",
+                                 "not read it yet, so it must still be given here"))
   p <- add_argument(p, "--class", short = "-k", type = "character", nargs = Inf, default = NULL,
                     help = paste("assign each feature to a class from its own statistics.",
                                  "Space-separated tokens on ONE flag, not a repeated flag:",

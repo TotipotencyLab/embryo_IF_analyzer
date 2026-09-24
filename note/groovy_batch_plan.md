@@ -5,7 +5,7 @@ the feature is built. **Delete it once the batch path is delivered**; anything i
 it that is still true then belongs in `note/data_formats.md`, `CLAUDE.md` or a
 skill, not here.
 
-Status: **A done** (`NucleusPipeline` extracted). B-E not started. Last updated 2026-09-24.
+Status: **A and B done.** C-E not started. Last updated 2026-09-24.
 
 ---
 
@@ -203,7 +203,12 @@ Key on **`path` + `series_index`** — never on `prefix`, which the user may edi
 
 ### Config file format
 
-**`key = value`, the same syntax `_config.txt` already uses**, plus `#` comments.
+**The same two-column `parameter<TAB>value` table `_config.txt` already is**,
+plus `#` comments and an optional header. (Recorded because the design
+discussion above described this as `key = value`, which it never was — the
+principle "read back exactly what we write" was right, the syntax was
+misremembered. A line without a tab is refused with a message saying so,
+since `key = value` is the mistake a reader is most likely to make.)
 Chosen over YAML (which is available — SnakeYAML is on the classpath) because:
 
 1. it closes the tune-then-batch loop with **no converter** — every run already
@@ -287,7 +292,7 @@ from the GUI, and the difference is captured in its own `_config.txt`.
 | | PR | contents | verification |
 |---|---|---|---|
 | ~~**A**~~ | **DONE.** `NucleusPipeline.groovy`; `Run_NucleusSelector.groovy` 206 -> 97 lines; `basename` override added for D | | reference diff: all six output files byte-identical, `_config.txt` identical bar the timestamp. Groovy suite 187 passed / 0 failed; R 677/0/0 under 4.6.1 |
-| **B** | `RunConfig` read/write (`key = value`, `#` comments, unknown-key error); `pixel_depth` into `_config.txt` | format change ⇒ `note/data_formats.md` + `test-data_formats.R` same commit | round-trip; feed the fixture's own `_config.txt` back in |
+| ~~**B**~~ | **DONE.** `RunConfig.groovy` (parse/format/coerce, unknown-key error, provenance ignored); `NucleusPipeline.PARAM_TYPES`/`DEFAULTS`/`fromConfig`; `pixel_depth` in `_config.txt`, blank for a single plane | | reference diff: measurement files byte-identical, `_config.txt` differs by exactly the one added row. Groovy 233 passed / 0 failed; R 682/0/0 |
 | **C** | `schema/sheet_columns.tsv` + readers · `Make_SampleSheet.groovy` (`--scan`, merge, `--skip_explored`, `--reseed`/`--reseed_all`, the five checks, headless-capable) · `files.tsv` template · `data_formats.md` §1 rewritten · commit `Inspect_ImageFile.groovy` | | run on the real LIF: 15 rows, prefixes unique, dims match §2 |
 | **D** | `Run_NucleusSelector_Batch.groovy` — loop, per-row try/catch, `batch_summary.tsv`, mixed-pixel-size warning, `addToRoiManager` forced off, images closed each iteration | | one-row sheet over Position010 reproduces the fixture byte-for-byte; then a 2-row sheet on the LIF |
 | **E** | R honours `include`; `--z_step` defaults from `pixel_depth`; consumes the schema file | independent of A–D | existing suite + a sheet with `include=FALSE` |

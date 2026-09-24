@@ -132,6 +132,48 @@ check("script names the entry point",          cfg["script"]?.startsWith("Test_N
 check("output_basename matches the override",  cfg["output_basename"], "sheetAlias_Series001")
 check("nucleus_count is recorded",             cfg["nucleus_count"], "8")
 
+println ""
+println "=== pixel_depth: recorded for a stack, BLANK for a single plane ==="
+// feature_stat_cli.r needs the z step for `volume` and had to be told by hand,
+// because nothing wrote it down. Bio-Formats populates it on import.
+def readCfg = { File f ->
+    def m = [:]
+    f.eachLine { line ->
+        def parts = line.split("\t", -1)
+        if (parts.length == 2 && parts[0] != "parameter") m[parts[0]] = parts[1]
+    }
+    return m
+}
+
+def outC = new File(tmp, "c"); outC.mkdirs()
+def impC = makeImp("stackimage")
+impC.getCalibration().pixelDepth = 0.9999285454545455d
+impC.getCalibration().pixelWidth = 0.25d
+pipe.run(impC, outC, baseParams + [basename: "stk"])
+def cfgC = readCfg(new File(outC, "stk_config.txt"))
+check("pixel_depth is written for a stack",    cfgC["pixel_depth"], "0.9999285454545455")
+check("pixel_width still written beside it",   cfgC["pixel_width"], "0.25")
+check("image_slices says it is a stack",       cfgC["image_slices"], "4")
+
+// ImageJ defaults pixelDepth to 1.0 when there is no z axis, and Bio-Formats
+// reports the physical size as null there. Writing 1.0 would hand a reader a
+// plausible number for a distance that does not exist -- area_sum x 1.0 is an
+// area wearing a volume's name.
+def outD = new File(tmp, "d"); outD.mkdirs()
+def st1 = new ij.ImageStack(200, 200)
+def ip1 = new ByteProcessor(200, 200)
+ip1.setColor(255); ip1.fill(new OvalRoi(30, 30, 50, 50)); ip1.fill(new OvalRoi(120, 120, 50, 50))
+st1.addSlice(ip1)
+def impD = new ImagePlus("planeimage", st1)
+impD.setDimensions(1, 1, 1)
+check("the single-plane probe really has 1 slice", impD.getNSlices(), 1)
+check("...and ImageJ's default depth is 1.0",  impD.getCalibration().pixelDepth, 1.0d)
+pipe.run(impD, outD, baseParams + [basename: "pln"])
+def cfgD = readCfg(new File(outD, "pln_config.txt"))
+check("pixel_depth is BLANK for one plane",    cfgD["pixel_depth"], "")
+check("...the key is still present",           cfgD.containsKey("pixel_depth"), true)
+check("2 ROIs found on the single plane",      cfgD["nucleus_count"], "2")
+
 tmp.deleteDir()
 println ""
 println "passed: ${passed}   FAILED: ${failed}"
