@@ -4,16 +4,16 @@
 #@ String  (label="Position token in slice label (blank = use title)", value="Position") positionPattern
 #@ String  (label="Z-slices to project (blank = all; e.g. 1-20,35-40)", value="") zSpec
 #@ String  (label="Channels (comma separated; blank = all)", value="") channelsCsv
-#@ String  (label="Projection", choices={"max","mean","median","sum","sd","min"}) method
-#@ String  (label="Contrast", choices={"auto","none"}) contrast
+#@ String  (label="Projection", value="max", choices={"max","mean","median","sum","sd","min"}) method
+#@ String  (label="Contrast", value="auto", choices={"auto","none"}) contrast
 #@ Integer (label="Output width in px (0 = original)", value=500) outWidth
 #@ Integer (label="Output height in px (0 = follow width)", value=0) outHeight
-#@ String  (label="Outlines from", choices={"None","ROI zip file(s)","ROI Manager"}) roiSource
+#@ String  (label="Outlines from", value="None", choices={"None","ROI zip file(s)","ROI Manager"}) roiSource
 #@ File    (label="ROI zip (optional)", style="file", required=false) roiZip
 #@ String  (label="  colour", value="yellow") roiColor
 #@ File    (label="Second ROI zip (optional)", style="file", required=false) roiZip2
 #@ String  (label="  colour", value="magenta") roiColor2
-#@ String  (label="Outline mode", choices={"merged","all","none"}) roiMode
+#@ String  (label="Outline mode", value="merged", choices={"merged","all","none"}) roiMode
 #@ Double  (label="Line width (output px)", value=1.0) lineWidth
 #@ String  (label="Output file suffix ((auto) = blank when no outlines, _overlay when there are)", value="(auto)") outSuffix
 

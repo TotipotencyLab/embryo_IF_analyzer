@@ -2,7 +2,7 @@
 #@ String  (persist=false, label="Series: blank = all, '1030-1069', '3 7 9', or 'name:<series name>'", value="") seriesSpec
 #@ Boolean (persist=false, label="Show physical pixel size", value=true) showCalibration
 #@ Boolean (persist=false, label="Show stage position", value=false) showStage
-#@ String  (persist=false, label="Check pixels: none | middle | all", choices={"none","middle","all"}) checkPixels
+#@ String  (persist=false, label="Check pixels: none | middle | all", value="none", choices={"none","middle","all"}) checkPixels
 #@ Boolean (persist=false, label="Group repeated names and judge whether they are copies", value=true) groupByName
 
 // Inspect_ImageFile.groovy

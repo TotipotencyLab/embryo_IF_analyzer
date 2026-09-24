@@ -87,6 +87,26 @@ a JVM sitting there looking like slow work. Measured on
 `#@ Boolean (label="...") boolBare`. Give every parameter a default or mark it
 optional, and treat an unexpectedly silent run as this until proven otherwise.
 
+**`choices=` without `value=` is exactly this case, and it does not look like
+it.** A dropdown reads as though it has a default — the first entry — and in the
+GUI it does. Headless it is a required parameter with nothing to fall back on:
+
+```groovy
+#@ String (choices={"auto","importer","reader"}) mode              // HANGS if omitted
+#@ String (value="auto", choices={"auto","importer","reader"}) mode  // fine
+```
+
+Measured: omitted, the first produced nothing in 90 s; the second ran with
+`mode=auto`. Naming the first choice explicitly changes nothing in the dialog,
+because that is already what SciJava picks — so there is no cost to doing it
+everywhere, and one script gaining a new dropdown is otherwise enough to stop
+every existing headless caller that does not know to pass it.
+
+**What this failure looks like** is worth memorising, because it is not an
+error. A 284-byte log holding nothing but the launcher's two *"Unable to locate
+a Java Runtime"* lines — which are normal stderr noise on this machine — and a
+JVM that never exits. The absence of output IS the symptom.
+
 ⚠️⚠️ **`#@` parameter values PERSIST between runs — including from the GUI into
 headless.** SciJava remembers what a parameter was last set to and reuses it when
 the value is not supplied, so a headless batch can silently run with a string

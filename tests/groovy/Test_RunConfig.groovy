@@ -134,6 +134,23 @@ check("the inspector is covered",
       frontEnds.any { it.getName() == "Inspect_ImageFile.groovy" }, true)
 check("the opener is covered",
       frontEnds.any { it.getName() == "Open_LifFile.groovy" }, true)
+// A `choices=` parameter with no `value=` is REQUIRED WITH NO DEFAULT, and a
+// headless run given no value for it blocks forever waiting for a dialog that
+// cannot appear: no output, no error, no exit. Diagnosed from a 284-byte log
+// holding nothing but the launcher's two "Unable to locate a Java Runtime"
+// lines -- which are normal stderr noise here, and were not the problem.
+//
+// Naming the first choice explicitly changes nothing, because that is what
+// SciJava already picks for the dialog. So there is no reason for any of them
+// to be left implicit, and this is cheap to enforce for all of them rather
+// than arguing per script about which might one day run headless.
+frontEnds.each { f ->
+    def bad = f.getText("UTF-8").readLines().findAll {
+        it.trim().startsWith("#@") && it.contains("choices=") && !it.contains("value=")
+    }
+    check("every choices= in " + f.getName() + " names its default", bad, [])
+}
+
 frontEnds.each { f ->
     def body = f.getText("UTF-8").readLines().findAll { !(it.trim().startsWith("#@")) }.join("\n")
     String err = null
