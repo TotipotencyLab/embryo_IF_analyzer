@@ -101,7 +101,40 @@ overview PNGs nobody asked for. It is the same trap as `Set Measurements` and
 ```
 
 Put `persist=false` on **every** parameter of any script whose output must
-depend only on its inputs. Persistence is a convenience for a dialog a human is
+depend only on its inputs.
+
+⚠️⚠️ **`ImporterOptions` is the same trap, and it reaches the GUI.**
+`loci.plugins.in.ImporterOptions` is backed by ImageJ preferences, and the
+importer calls `saveOptions()` after a successful open — so options set
+programmatically become the operator's defaults. Measured, in one process:
+
+```
+A. unguarded   before: windowless=false   after: windowless=true    <- leaked
+B. guarded     before: windowless=false   after: windowless=false
+```
+
+`setWindowless(true)` in a script leaves `.bioformats.windowless=true` in
+`IJ_Prefs.txt`, and from then on **dragging a file onto Fiji silently opens the
+first series instead of offering the series chooser** — the dialog does not come
+back on its own. Reported by a user after a single run of an inspection script.
+
+Two defences, in order of preference:
+
+1. **Do not use `ImporterOptions` at all** when you only need to look. Going
+   through `ImageReader` directly — `reader.openBytes(reader.getIndex(z,c,t))` —
+   reads pixels with no preference involvement whatsoever.
+2. When you genuinely need a window or a full `ImagePlus`, save and restore
+   every preference you touch:
+
+```groovy
+boolean prev = ij.Prefs.get("bioformats.windowless", false)
+try   { /* build options, BF.openImagePlus(opt) */ }
+finally { ij.Prefs.set("bioformats.windowless", prev) }
+```
+
+To put a machine right afterwards:
+`ij.Prefs.set("bioformats.windowless", false); ij.Prefs.savePreferences()`
+ Persistence is a convenience for a dialog a human is
 looking at; it is a correctness bug anywhere else. The tell is a run whose
 recorded parameters do not match what you passed — which is a good reason for a
 batch to write the parameters it actually used.

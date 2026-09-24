@@ -66,17 +66,33 @@ class BatchRunner {
      * range is that the trap is one line away.
      */
     Object openSeries(File image, int seriesIndex) {
-        def opt = Class.forName("loci.plugins.in.ImporterOptions").newInstance()
-        opt.setId(image.getAbsolutePath())
-        opt.setWindowless(true)
-        opt.clearSeries()
-        opt.setSeriesOn(seriesIndex, true)
-        def imps = Class.forName("loci.plugins.BF").openImagePlus(opt)
-        if (imps == null || imps.length == 0) {
-            throw new IllegalStateException(
-                "Bio-Formats opened no image for series " + seriesIndex + " of " + image.getName())
+        // ImporterOptions is BACKED BY IMAGEJ PREFERENCES, and the importer
+        // calls saveOptions() after a successful open -- so setWindowless(true)
+        // here does not stay here. It lands in IJ_Prefs.txt as
+        // `.bioformats.windowless=true` and the operator's Fiji then stops
+        // showing the series chooser when they drag a .lif onto it. Observed
+        // exactly that after one run.
+        //
+        // Same family as Set Measurements, Prefs.blackBackground and SciJava's
+        // `#@` persistence: a global preference that a run must not be allowed
+        // to redecorate. The value is put back whatever happens.
+        def prefs = Class.forName("ij.Prefs")
+        boolean prevWindowless = prefs.get("bioformats.windowless", false)
+        try {
+            def opt = Class.forName("loci.plugins.in.ImporterOptions").newInstance()
+            opt.setId(image.getAbsolutePath())
+            opt.setWindowless(true)
+            opt.clearSeries()
+            opt.setSeriesOn(seriesIndex, true)
+            def imps = Class.forName("loci.plugins.BF").openImagePlus(opt)
+            if (imps == null || imps.length == 0) {
+                throw new IllegalStateException(
+                    "Bio-Formats opened no image for series " + seriesIndex + " of " + image.getName())
+            }
+            return imps[0]
+        } finally {
+            prefs.set("bioformats.windowless", prevWindowless)
         }
-        return imps[0]
     }
 
     /** Sheet says one thing, the file says another: the sheet is stale. */

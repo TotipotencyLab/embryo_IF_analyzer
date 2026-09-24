@@ -158,6 +158,25 @@ def agree = [[prefix: "T", path: "one.ome.tif", series_index: 0, include: "true"
 check("a matching sheet is quiet",             runner.run(agree, raw, params, new File(tmp, "out5")).warnings.size(), 0)
 
 println ""
+println "=== the batch must not redecorate the operator's Fiji ==="
+// ImporterOptions is backed by ImageJ preferences and the importer saves them,
+// so an unguarded setWindowless(true) leaves `.bioformats.windowless=true`
+// behind -- after which dragging a .lif onto Fiji silently opens the first
+// series instead of offering the chooser. It happened, to a real person, from
+// one run. Same family as Set Measurements and Prefs.blackBackground.
+ij.Prefs.set("bioformats.windowless", false)
+def guarded = [[prefix: "G", path: "one.ome.tif", series_index: 0, include: "true"]]
+runner.run(guarded, raw, params, new File(tmp, "out7"))
+check("windowless is left as it was found",
+      ij.Prefs.get("bioformats.windowless", false), false)
+// And the other way round: a user who WANTS it on must keep it on.
+ij.Prefs.set("bioformats.windowless", true)
+runner.run(guarded, raw, params, new File(tmp, "out8"))
+check("...and a true value is preserved too",
+      ij.Prefs.get("bioformats.windowless", false), true)
+ij.Prefs.set("bioformats.windowless", false)
+
+println ""
 println "=== the sheet's prefix names the output, not the image ==="
 // resolveImageId() would dig "Series001" out of both files, which is exactly
 // the collision the sheet exists to prevent.
