@@ -1,7 +1,7 @@
 #@ ImagePlus imp
 #@ Integer (label="DNA/DAPI channel", value=1) dnaCh
 #@ Double  (label="Blur sigma", value=2.0) sigma
-#@ String  (label="Threshold method", choices={"Default","Triangle","Otsu","Huang","IsoData","Mean","Relative"}) method
+#@ String  (label="Threshold method", value="Default", choices={"Default","Triangle","Otsu","Huang","IsoData","Mean","Relative"}) method
 #@ Double  (label="Relative fraction (only if method=Relative)", value=0.6) relFraction
 #@ Integer (label="Shrink nucleus ROI before thresholding (px)", value=0) erodePx
 #@ String  (label="Particle size (px^2)", value="3-300") particleSize

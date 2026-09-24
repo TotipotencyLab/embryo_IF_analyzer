@@ -6,12 +6,12 @@
 #@ Integer (label="DNA/DAPI channel", value=1) dnaCh
 #@ String  (label="Channels to measure (comma separated)", value="1,2,3") channelsCsv
 #@ Double  (label="Nucleus: blur sigma", value=8.0) nucSigma
-#@ String  (label="Nucleus: threshold method", choices={"Huang2","Huang","Default","Otsu","Triangle","IsoData"}) nucMethod
+#@ String  (label="Nucleus: threshold method", value="Huang2", choices={"Huang2","Huang","Default","Otsu","Triangle","IsoData"}) nucMethod
 #@ String  (label="Nucleus: particle size (calibrated units^2)", value="80-Infinity") nucSize
 #@ Boolean (label="Nucleus: split touching nuclei (watershed)", value=false) nucWatershed
 #@ Boolean (label="Detect nucleoli", value=true) doNucleoli
 #@ Double  (label="Nucleolus: blur sigma", value=3.0) nucleolusSigma
-#@ String  (label="Nucleolus: threshold method", choices={"Relative","Default","Otsu","Triangle","Huang","IsoData"}) nucleolusMethod
+#@ String  (label="Nucleolus: threshold method", value="Relative", choices={"Relative","Default","Otsu","Triangle","Huang","IsoData"}) nucleolusMethod
 #@ Double  (label="Nucleolus: relative fraction (if Relative)", value=0.6) relFraction
 #@ Integer (label="Nucleolus: shrink nucleus ROI (px)", value=0) erodePx
 #@ String  (label="Nucleolus: particle size (calibrated units^2)", value="3-150") nucleolusSize

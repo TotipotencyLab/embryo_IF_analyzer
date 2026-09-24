@@ -4,7 +4,7 @@
 #@ File    (persist=false, label="Run config (blank = defaults)", style="file", required=false) configFile
 #@ String  (persist=false, label="Output prefix, prepended to every sample", value="") outPrefix
 #@ Boolean (persist=false, label="Save overview PNGs", value=false) saveOverview
-#@ String  (persist=false, label="Image opening method", choices={"auto","importer","reader"}) openMode
+#@ String  (persist=false, label="Image opening method", value="auto", choices={"auto","importer","reader"}) openMode
 
 // Run_NucleusSelector_Batch.groovy
 //
