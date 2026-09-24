@@ -370,12 +370,36 @@ class SampleSheet {
                 missing: missing, reseeded: reseeded]
     }
 
-    /** Column order for the written sheet: schema order first, yours after. */
+    /**
+     * Where your own columns are placed among the schema's.
+     *
+     * Not the end. A sheet is read left to right by a person deciding what to
+     * run, and the columns that decision turns on are `prefix`, `include` and
+     * whatever condition/genotype they typed -- while size_x and pixel_type are
+     * reference material they scroll to. Putting the metadata immediately after
+     * `include` keeps all three together at the left edge.
+     */
+    static final String EXTRA_COLUMNS_AFTER = "include"
+
+    /**
+     * Column order for the written sheet.
+     *
+     * Order is presentation only -- every reader here and on the R side works
+     * by column NAME, and the merge matches on path + series_index -- so this
+     * is free to change, and reordering an existing sheet costs nothing.
+     */
     List<String> columnOrder(List<Map> rows) {
         def known = schema.columns("samples")
         def extra = []
         rows.each { r -> r.keySet().each { if (!known.contains(it) && !extra.contains(it)) extra << it } }
         def present = known.findAll { c -> rows.any { it.containsKey(c) } }
-        return present + extra
+        int at = present.indexOf(EXTRA_COLUMNS_AFTER)
+        if (at < 0 || !extra) {
+            return present + extra
+        }
+        // take/drop rather than subList: subList returns a VIEW, and the
+        // concatenation below would then be built on top of a live window into
+        // the list it is reading.
+        return present.take(at + 1) + extra + present.drop(at + 1)
     }
 }

@@ -1,0 +1,30 @@
+# Every parameter the nucleus pipeline accepts, at its default value.
+# GENERATED from NucleusPipeline.DEFAULTS -- Test_RunConfig fails if the two
+# drift, so edit the code's defaults rather than this file.
+#
+# Copy it, change what you need, and pass it as configFile. Or skip it and use
+# the _config.txt from a run you tuned in the GUI: that file reads back as a
+# config, which is the point of the format. Provenance fields in it (timestamp,
+# nucleus_count, open_method, ...) are ignored on the way in.
+parameter	value
+output_prefix	
+position_pattern	Position
+z_spec	(all)
+dna_channel	1
+channels_measured	1,2,3
+nucleus_blur_sigma	8.0
+nucleus_threshold	Huang2
+nucleus_particle_size	80-Infinity
+nucleus_watershed	false
+nucleoli_enabled	true
+nucleolus_blur_sigma	3.0
+nucleolus_threshold	Relative
+nucleolus_rel_fraction	0.6
+nucleolus_erode_px	0
+nucleolus_particle_size	3-150
+nucleolus_circularity	0.50-1.00
+save_roi_zips	true
+save_outlines	true
+save_measurements	true
+save_config	true
+save_overview	false

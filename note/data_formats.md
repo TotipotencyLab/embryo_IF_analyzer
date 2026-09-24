@@ -79,6 +79,11 @@ the run. `allowDuplicatePrefix` downgrades that to a warning. The batch refuses
 outright, for included rows, because there two rows sharing a prefix overwrite
 each other's output files; `.cli_read_sample_sheet()` on the R side refuses too.
 
+Column **order** is presentation only — every reader on both sides works by
+column name, and the merge matches on `path` + `series_index` — so the sheet is
+written in the order a person reads it: `prefix`, `include`, then your own
+metadata columns, then the file's facts. Rearranging it breaks nothing.
+
 Machine columns are `alias`, `path`, `series_index`, `series_name`, `size_x`,
 `size_y`, `size_z`, `size_c`, `size_t`, `pixel_type`, `pixel_width`,
 `pixel_height`, `pixel_depth`, `pixel_unit` and `file_size`. `pixel_depth` is

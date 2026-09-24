@@ -165,8 +165,32 @@ frontEnds.each { f ->
 println ""
 println "=== RunConfig: the read half of the same format ==="
 
+
 def RC = new GroovyClassLoader().parseClass(new File(LIBDIR, "RunConfig.groovy"))
 def NP = new GroovyClassLoader().parseClass(new File(LIBDIR, "NucleusPipeline.groovy"))
+
+println ""
+println "=== the shipped config template is the code's own defaults ==="
+// config/ is the folder whose contract is "copy one out and edit it", so a
+// template that has drifted from the code is worse than no template: it is a
+// file that looks authoritative and is wrong. This one is GENERATED from
+// NucleusPipeline.DEFAULTS, and this check is what stops it drifting after.
+def tmplFile = new File("config/nucleus_config_template.txt")
+check("the template is committed",             tmplFile.isFile(), true)
+if (tmplFile.isFile()) {
+    def tmpl = RC.parse(tmplFile.getText("UTF-8"), "template")
+    check("it sets every parameter, and only those",
+          tmpl.keySet().sort(), NP.PARAM_TYPES.keySet().sort())
+    // Read it the way a run would, and it must come back as the defaults.
+    def asRun = NP.fromConfig(RC.readParams(tmplFile, NP.PARAM_TYPES))
+    def drifted = NP.DEFAULTS.findAll { k, v -> String.valueOf(asRun[k]) != String.valueOf(v) }
+    check("every value round-trips to DEFAULTS", drifted, [:])
+    // z_spec is the one that cannot be written literally: blank is saved as the
+    // readable "(all)" and mapped back on the way in.
+    check("z_spec is written the readable way", tmpl.z_spec, "(all)")
+    check("...and comes back blank",            asRun.z_spec, "")
+}
+
 
 // The point of reading the format we write: a run's own config goes back in.
 def roundTrip = RC.parse(RC.format([a: "x", b: 2, c: true, d: null]))

@@ -343,6 +343,29 @@ check("...and still duplicated, not silently repaired",
 
 check("allowDuplicatePrefix finishes quietly", errOf { runMakeSheet(msFiles, msOut, true) }, null)
 
+println ""
+println "=== the columns you edit sit on the left ==="
+// A sheet is read left to right by a person deciding what to run, and the
+// columns that decision turns on are prefix, include and whatever metadata they
+// typed -- while size_x and pixel_type are reference material. Order is
+// presentation only: every reader here and in R works by column NAME, and the
+// merge matches on path + series_index, so this is free to arrange.
+def ordered = sheet.columnOrder([[prefix: "p", include: "true", condition: "wt",
+                                  operator: "cr", alias: "A", series_index: 0,
+                                  series_name: "s", path: "x", size_x: 1]])
+check("prefix, then include",                  ordered.take(2), ["prefix", "include"])
+check("...then YOUR columns, in the order given", ordered[2..3], ["condition", "operator"])
+check("...then the file's own facts",          ordered[4..7],
+      ["alias", "series_index", "series_name", "path"])
+check("...and the measurements last",          ordered[-1], "size_x")
+check("nothing was dropped or invented",       ordered.sort(false),
+      ["alias", "condition", "include", "operator", "path", "prefix",
+       "series_index", "series_name", "size_x"])
+// A sheet with no metadata of its own must not grow a hole where they would go.
+def bare = sheet.columnOrder([[prefix: "p", include: "true", path: "x"]])
+check("no extras, no gap",                     bare, ["prefix", "include", "path"])
+
+
 tmp.deleteDir()
 println ""
 println "passed: ${passed}   FAILED: ${failed}"

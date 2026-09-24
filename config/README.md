@@ -7,6 +7,12 @@ it, and point the CLIs at your copy — nothing here is read automatically.
   every other column is your own metadata and is carried through onto the
   outputs, where `--group_by` can use it. `Make_SampleSheet.groovy` can
   generate one instead of you writing it by hand.
+- `nucleus_config_template.txt` — every parameter `Run_NucleusSelector.groovy`
+  and the batch runner accept, at their default values, in the same
+  `parameter`/`value` shape a run's own `_config.txt` uses. Copy it and edit, or
+  skip it entirely and take the `_config.txt` from a run you tuned in the GUI —
+  that file reads back as a config, which is the point of the format. It is
+  generated from the code's own defaults and a test fails if the two drift.
 - `files_template.tsv` — the *file* table that `Make_SampleSheet.groovy` reads:
   one row per image file, with the `alias` that makes every sample prefix
   unique across files (the series index makes it unique *within* one). Metadata you put here is seeded onto every series of
