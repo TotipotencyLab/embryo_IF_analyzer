@@ -1,19 +1,33 @@
 #@ File    (persist=false, label="Image file (.lif, .czi, ...)", style="file") imageFile
-#@ String  (persist=false, label="Series index, or 'name:<series name>'", value="0") seriesSpec
+#@ String  (persist=false, label="Series: '5', '1 3', '1,4, 6-8', or 'name:<series name>'", value="0") seriesSpec
 #@ Boolean (persist=false, label="Autoscale display", value=true) autoscale
-#@ Boolean (persist=false, label="Open as virtual stack (big series, no copy in RAM)", value=false) virtualStack
+#@ Boolean (persist=false, label="Open as virtual stack (big series, no copy in RAM)", value=true) virtualStack
+#@ Integer (persist=false, label="Refuse to open more than this many windows at once", value=12) maxWindows
 
 // Open_LifFile.groovy
 //
-// Open ONE chosen series into a Fiji window, by index or by name.
+// Open one or several chosen series into Fiji windows, by index or by name.
 //
 // The Bio-Formats importer dialog lists every series with a preview, which is
 // the right tool until the file is big: a .lif with 1563 series does not fit in
-// that list usefully, and building the previews is slow. This asks for an index
-// instead. Use Inspect_ImageFile.groovy first to find out which index you want
+// that list usefully, and building the previews is slow. This asks for indices
+// instead. Use Inspect_ImageFile.groovy first to find out which ones you want
 // -- it reads the header only, so it is instant even on 200 GiB.
 //
-// GUI script. Headless it will open the image and have nowhere to show it.
+// Series forms are shared with the inspector (SeriesSpec.groovy):
+//
+//   5                  one
+//   1 3 7   /  1,3,7   several
+//   6-8                an inclusive range
+//   1,4, 6-8           mixed
+//   name:slide20/O1_2  every series of that name -- a tile scan is many series
+//                      under one name, so this can be a lot of windows
+//
+// maxWindows is a deliberate floor under the obvious accident: `name:` on a
+// tiled acquisition, or a range typed with one digit too many, would otherwise
+// try to open forty stacks at once and take the session with it.
+//
+// GUI script. Headless it will open the images and have nowhere to show them.
 //
 // ---------------------------------------------------------------------------
 // ⚠️ ImporterOptions IS BACKED BY IMAGEJ PREFERENCES.
@@ -35,11 +49,29 @@
 
 import ij.IJ
 import ij.Prefs
+import loci.formats.FormatTools
 import loci.formats.ImageReader
 import loci.formats.MetadataTools
 import loci.formats.meta.IMetadata
 import loci.plugins.BF
 import loci.plugins.in.ImporterOptions
+
+def resolveLibDir = {
+    def cands = []
+    try { cands << binding.variables["javax.script.filename"] } catch (ignored) {}
+    try { cands << binding.variables["org.scijava.script.ScriptModule"]?.getInfo()?.getPath() } catch (ignored) {}
+    for (c in cands) {
+        if (c) { def f = new File(c.toString()); if (f.exists() && f.getParentFile() != null) return f.getParentFile() }
+    }
+    return null
+}
+def libDir = resolveLibDir()
+if (libDir == null || !new File(libDir, "SeriesSpec.groovy").exists()) {
+    IJ.error("Cannot locate the Groovy library files.\n\nSave this script into scripts/groovy/ and run it from there.")
+    return
+}
+def SS = new GroovyClassLoader(this.class.classLoader)
+             .parseClass(new File(libDir, "SeriesSpec.groovy"))
 
 def path = imageFile.getAbsolutePath()
 
@@ -49,72 +81,62 @@ IMetadata meta = MetadataTools.createOMEXMLMetadata()
 reader.setMetadataStore(meta)
 reader.setId(path)
 int n = reader.getSeriesCount()
+def names = (0..<n).collect { meta.getImageName(it) ?: "" }
 
-int series = -1
-def spec = (seriesSpec ?: "").trim()
-if (spec.toLowerCase().startsWith("name:")) {
-    def want = spec.substring(5).trim()
-    def hits = (0..<n).findAll { (meta.getImageName(it) ?: "") == want }
-    if (hits.isEmpty()) {
-        reader.close()
-        IJ.error("No series named '" + want + "' in " + new File(path).getName() +
-                 "\n\nRun Inspect_ImageFile.groovy to list what is in there.")
-        return
-    }
-    if (hits.size() > 1) {
-        // A repeated name is a tile scan, not a mistake -- but this can only
-        // open one, so say which and why rather than picking silently.
-        IJ.log("'" + want + "' names " + hits.size() + " series: " + hits.take(12) +
-               (hits.size() > 12 ? " ..." : ""))
-        IJ.log("  That is one acquisition with many fields. Opening the first, " + hits[0] +
-               "; give an index to choose another.")
-    }
-    series = hits[0]
-} else {
-    try {
-        series = spec as int
-    } catch (Exception e) {
-        reader.close()
-        IJ.error("Series must be a number, or 'name:<series name>'. Got: " + spec)
-        return
-    }
-}
-if (series < 0 || series >= n) {
+def wanted
+try {
+    wanted = SS.parse(seriesSpec, names, n)
+} catch (Exception e) {
     reader.close()
-    IJ.error("Series " + series + " is out of range: this file has 0.." + (n - 1))
+    IJ.error("Series selection\n\n" + e.getMessage())
     return
 }
 
-reader.setSeries(series)
-def label = meta.getImageName(series) ?: ("series " + series)
-long px = (long) reader.getSizeX() * reader.getSizeY() * reader.getSizeZ() * reader.getSizeC()
-int bpp = loci.formats.FormatTools.getBytesPerPixel(reader.getPixelType())
-double mib = (px * bpp) / 1048576.0d
+if (wanted.size() > maxWindows) {
+    reader.close()
+    IJ.error("That asks for " + wanted.size() + " series (" + SS.describe(wanted) + ").\n\n" +
+             "A repeated name is a tile scan -- one acquisition, many fields -- so `name:` can\n" +
+             "select dozens. Narrow the selection, or raise the window limit above " + maxWindows + ".")
+    return
+}
 
-IJ.log("Opening [" + series + "] " + label)
-IJ.log("  " + reader.getSizeX() + "x" + reader.getSizeY() +
-       "  z=" + reader.getSizeZ() + " c=" + reader.getSizeC() + " t=" + reader.getSizeT() +
-       "  " + String.format("%.0f MiB", mib) + (virtualStack ? " (virtual)" : " in RAM"))
-
-// Is there anything in it? One middle plane, straight off the reader -- a
-// series full of zeros opens as a perfectly good black window and looks like a
-// display problem rather than an empty acquisition.
-try {
-    byte[] raw = reader.openBytes(reader.getIndex((int)(reader.getSizeZ() / 2), 0, 0))
-    int mx = 0
-    for (int i = 0; i < raw.length; i++) { int v = raw[i] & 0xFF; if (v > mx) mx = v }
-    if (mx == 0) {
-        IJ.log("  WARNING: the middle plane of channel 1 is entirely zero.")
-        IJ.log("  If the window comes up black, the series really is empty -- it is not the display.")
+// --- what is about to be opened, before any of it is read ------------------
+double totalMiB = 0d
+def empties = []
+IJ.log("=== " + new File(path).getName() + ": opening " + wanted.size() + " series (" +
+       SS.describe(wanted) + ") ===")
+wanted.each { int s ->
+    reader.setSeries(s)
+    long px = (long) reader.getSizeX() * reader.getSizeY() * reader.getSizeZ() * reader.getSizeC()
+    double mib = (px * FormatTools.getBytesPerPixel(reader.getPixelType())) / 1048576.0d
+    totalMiB += mib
+    // Is there anything in it? One middle plane, straight off the reader. A
+    // series full of zeros opens as a perfectly good black window and looks
+    // like a display problem rather than an empty acquisition.
+    String note = ""
+    try {
+        byte[] raw = reader.openBytes(reader.getIndex((int)(reader.getSizeZ() / 2), 0, 0))
+        int mx = 0
+        for (int i = 0; i < raw.length; i++) { int v = raw[i] & 0xFF; if (v > mx) mx = v }
+        if (mx == 0) { note = "   <-- middle plane is EMPTY"; empties << s }
+    } catch (Throwable t) {
+        note = "   (could not pre-check pixels: " + t.getMessage() + ")"
     }
-} catch (Throwable t) {
-    IJ.log("  (could not pre-check the pixels: " + t.getMessage() + ")")
+    IJ.log(String.format("  [%d] %-34s %dx%d z=%d c=%d  %.0f MiB%s",
+                         s, (names[s] ?: "(unnamed)").take(34),
+                         reader.getSizeX(), reader.getSizeY(),
+                         reader.getSizeZ(), reader.getSizeC(), mib, note))
 }
 reader.close()
 
-if (!virtualStack && mib > 4096) {
-    IJ.log("  NOTE: " + String.format("%.1f GiB", mib / 1024.0d) +
-           " is a lot to hold in RAM. Tick the virtual stack option if Fiji stalls.")
+IJ.log(String.format("  total %.0f MiB%s", totalMiB, virtualStack ? " (virtual -- not held in RAM)" : " in RAM"))
+if (!virtualStack && totalMiB > 4096) {
+    IJ.log("  NOTE: " + String.format("%.1f GiB", totalMiB / 1024.0d) +
+           " is a lot to hold at once. Tick the virtual stack option if Fiji stalls.")
+}
+if (empties) {
+    IJ.log("  WARNING: series " + empties + " have an entirely zero middle plane.")
+    IJ.log("  If those windows come up black, the data really is absent -- it is not the display.")
 }
 
 // --- open, with every preference restored afterwards -----------------------
@@ -125,18 +147,20 @@ boolean prevOpenAll    = Prefs.get("bioformats.openAllSeries", false)
 try {
     def opt = new ImporterOptions()
     opt.setId(path)
-    // windowless: we have already chosen the series in our own dialog, so the
+    // windowless: the series were already chosen in our own dialog, so the
     // importer's chooser would be a second question about the same thing.
     opt.setWindowless(true)
     opt.setAutoscale(autoscale)
     opt.setVirtual(virtualStack)
     opt.setOpenAllSeries(false)
+    // One call for the whole selection: Bio-Formats returns an ImagePlus per
+    // series and opens the file once, rather than once per window.
     opt.clearSeries()
-    opt.setSeriesOn(series, true)
+    wanted.each { int s -> opt.setSeriesOn(s, true) }
 
     def imps = BF.openImagePlus(opt)
     if (imps == null || imps.length == 0) {
-        IJ.error("Bio-Formats returned no image for series " + series)
+        IJ.error("Bio-Formats returned no image for " + SS.describe(wanted))
         return
     }
     imps.each { it.show() }

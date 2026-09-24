@@ -91,36 +91,39 @@ println ""
 def names = (0..<n).collect { meta.getImageName(it) ?: "" }
 
 // --- which series ----------------------------------------------------------
-// In Groovy a closure is a value: `{ args -> body }` assigned to a variable and
-// invoked like a method.
-def spec = (seriesSpec ?: "").trim()
-def wanted
-if (!spec) {
-    wanted = (0..<n).toList()
-} else if (spec.toLowerCase().startsWith("name:")) {
-    def want = spec.substring(5).trim()
-    wanted = (0..<n).findAll { names[it] == want }
-    if (wanted.isEmpty()) {
-        println "No series is named exactly >>>${want}<<<"
-        // A trailing space in a Leica name is invisible; say so rather than
-        // leaving the reader to wonder.
-        def near = (0..<n).findAll { names[it]?.trim() == want }
-        if (near) println "  but ${near.size()} match after trimming whitespace: ${near.take(10)}"
-        reader.close()
-        println "Done: nothing to show"
-        return
+// Parsed by SeriesSpec.groovy, shared with Open_LifFile.groovy. A second copy
+// of this would be a second set of edge cases to get wrong, and the two scripts
+// must accept the same answers or the workflow "inspect these, now open those"
+// breaks at the join.
+def resolveLibDir = {
+    def cands = []
+    try { cands << binding.variables["javax.script.filename"] } catch (ignored) {}
+    try { cands << binding.variables["org.scijava.script.ScriptModule"]?.getInfo()?.getPath() } catch (ignored) {}
+    for (c in cands) {
+        if (c) { def f = new File(c.toString()); if (f.exists() && f.getParentFile() != null) return f.getParentFile() }
     }
-} else if (spec ==~ /^\d+\s*-\s*\d+$/) {
-    def p = spec.split(/\s*-\s*/)
-    wanted = ((p[0] as int)..(p[1] as int)).toList()
-} else {
-    wanted = spec.split(/[\s,]+/).findAll { it }.collect { it as int }
+    return null
 }
-def outOfRange = wanted.findAll { it < 0 || it >= n }
-if (outOfRange) {
-    println "Out of range (file has 0..${n - 1}): ${outOfRange.take(10)}"
-    wanted = wanted - outOfRange
+def libDir = resolveLibDir()
+if (libDir == null || !new File(libDir, "SeriesSpec.groovy").exists()) {
+    println "Cannot locate SeriesSpec.groovy -- run this script from scripts/groovy/"
+    reader.close()
+    return
 }
+def SS = new GroovyClassLoader(this.class.classLoader)
+             .parseClass(new File(libDir, "SeriesSpec.groovy"))
+
+def wanted
+try {
+    wanted = SS.parse(seriesSpec, names, n)
+} catch (Exception e) {
+    println "Series selection: " + e.getMessage()
+    reader.close()
+    println "Done: nothing to show"
+    return
+}
+println "Selected: ${SS.describe(wanted)}   (${wanted.size()} series)"
+println ""
 
 // A small helper function to extract the physical (not pixel) size of the image.
 // `?:` is the Elvis operator, returning the right side when the left is null or
