@@ -10,36 +10,111 @@ Column names below are exact, including case.
 
 ---
 
-## 1. Sample sheet — you write this
+## 1. The two sheets
 
-Optional everywhere. Supplies experimental metadata and, where given, restricts
-which files are processed. It never supplies paths: `--input` always answers
-"where is the data".
+`files.tsv` (one row per **file**) → `Make_SampleSheet.groovy` → `samples.tsv`
+(one row per **series**) → the batch runner, and the R CLIs' `--sample_sheet`.
 
-Read by `.cli_read_sample_sheet()`. Accepted extensions: `.tsv` / `.txt`
-(tab-delimited), `.csv`, `.xlsx` / `.xls`.
+`samples.tsv` *is* the sample sheet the R side has always read. It used to be
+written by hand with `prefix` plus your metadata; now it can be generated, with
+machine-read columns alongside. Nothing about `--sample_sheet` changed.
+
+The column list both are checked against is
+[`schema/sheet_columns.tsv`](../schema/sheet_columns.tsv) — internal, read by
+both languages, and the reason there is no second copy to drift.
+
+### Who owns a column
+
+| owner | on regeneration | examples |
+|---|---|---|
+| `machine` | **overwritten** — facts about the file | `series_index`, `series_name`, `size_*`, `pixel_*`, `file_size` |
+| `seeded` | **written once, then yours** | `prefix`, `alias`, `include`, inherited `condition`/`genotype` |
+| `user` | **never touched** | anything you add |
+
+A seeded value does **not** re-propagate when `files.tsv` changes — predictable
+beats clever, and a fix there must not silently rewrite rows you have edited.
+`reseed` (space-separated column names) forces it; `reseedAll` covers every
+seeded column and therefore rewrites `prefix` from `alias`. Every reseed reports
+what it changed.
+
+Rows are matched across regenerations on **`path` + `series_index`**, never on
+`prefix` — you may edit that, and editing `alias` rewrites it.
+
+### `files.tsv` — you write this
 
 | Column | Required | Meaning |
 |---|---|---|
-| `prefix` | **yes** | the file stem Fiji wrote, e.g. `GRV_Position010` — everything before `_<feature>_outline.txt`. Must be unique; whitespace is trimmed. Rename the column with `--id_column`. |
-| anything else | no | carried through verbatim onto every output row, and usable in `--group_by` |
+| `path` | **yes** | image file; absolute, or relative to the image root given at run time |
+| `alias` | no | short name used to build every prefix from this file. Defaults to the basename without its extension |
+| `include` | no | seeds the `include` of every series read from this file. Default true |
+| anything else | no | seeded onto every series of that file — typed once instead of per series |
+
+Template: [`config/files_template.tsv`](../config/files_template.tsv). Scan mode
+writes a skeleton for you.
+
+### `samples.tsv` — generated, then yours to edit
+
+`prefix` is `sanitise(<alias>_<series_name>)`, and the invariant everything rests
+on is:
+
+> **the `prefix` column == the output filename prefix == the `name` column of
+> the outline table.**
+
+That is why the *sanitised* value is written into the sheet, not the raw one: a
+sheet saying `my run` while the disk says `my_run` fails the R join with nothing
+visibly wrong.
+
+Machine columns are `alias`, `path`, `series_index`, `series_name`, `size_x`,
+`size_y`, `size_z`, `size_c`, `size_t`, `pixel_type`, `pixel_width`,
+`pixel_height`, `pixel_depth`, `pixel_unit` and `file_size`. `pixel_depth` is
+**blank for a single plane** — there is no z axis to measure, and Bio-Formats
+reports none. `file_size` with the basename is the fingerprint that spots a
+copied or replaced file, and what `skipExplored` compares against before
+deciding a file is unchanged.
 
 ⚠️ A metadata column may not be named after one the CLIs write themselves —
-`roi`, `z`, `area`, `is_bridge`, `geometry`, `sample`, `run_id`, `feature_id`, `feature_type`,
-`parent_*`, `feature_class`, `n_detected`, `n_invalid`, `n_failed`, `n_roi`.
-The sheet is
-rejected with the offending name rather than the column being silently renamed
-to `area...7`. (The `--id_column` itself is exempt: it is the key, not
-metadata.)
+`roi`, `z`, `area`, `is_bridge`, `geometry`, `sample`, `run_id`, `feature_id`,
+`feature_type`, `parent_*`, `feature_class`, `n_detected`, `n_invalid`,
+`n_failed`, `n_roi`. The sheet is rejected with the offending name rather than
+the column being silently renamed to `area...7`. (The `--id_column` itself is
+exempt: it is the key, not metadata.)
 
 Template: [`config/sample_sheet_template.tsv`](../config/sample_sheet_template.tsv).
 
-Behaviour when it is supplied:
+### What is checked, and how hard
+
+| check | severity | catches |
+|---|---|---|
+| `path` unique | **error** | the same file listed twice |
+| `alias` unique | **error** | two files claiming one name |
+| basename repeated across paths | warning | a filename reused for different data |
+| basename **and** size repeated | warning | one file copied elsewhere — what `alias` cannot see |
+| composed `prefix` unique | **error** | the collision the parts do not show |
+
+The last is not implied by the others. Alias `A` with series `B_C` composes to
+the same string as alias `A_B` with series `C`; and `sanitise()` collapses
+whitespace, so `Image005 Denoised` and `Image005_Denoised` are one filename.
+Both are checked on the sanitised composite, which is what reaches the disk.
+
+### `include`
+
+One column, one meaning. The file-level `include` is a **default generator**:
+each series row inherits its file's value and can then be flipped individually.
+There is no two-level logic at run time.
+
+`samples.tsv` stays a **complete inventory** — an excluded file still gets its
+rows, marked off. A record that silently omits things is worse than one listing
+them as off, the same reasoning that keeps an orphan feature rather than
+dropping it.
+
+### Behaviour when a sheet is given to the R CLIs
 
 - rows naming a `prefix` with no matching file → **warning**, listed
 - files whose sample is not in the sheet → dropped, reported as a message
 - no overlap at all → **error** (a silent empty run is the failure mode this
   repo is built to avoid)
+
+Accepted extensions: `.tsv` / `.txt` (tab-delimited), `.csv`, `.xlsx` / `.xls`.
 
 ---
 

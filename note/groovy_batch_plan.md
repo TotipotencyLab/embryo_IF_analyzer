@@ -5,7 +5,7 @@ the feature is built. **Delete it once the batch path is delivered**; anything i
 it that is still true then belongs in `note/data_formats.md`, `CLAUDE.md` or a
 skill, not here.
 
-Status: **A and B done.** C-E not started. Last updated 2026-09-24.
+Status: **A, B and C done.** D not started; E not started. Last updated 2026-09-24.
 
 ---
 
@@ -293,7 +293,7 @@ from the GUI, and the difference is captured in its own `_config.txt`.
 |---|---|---|---|
 | ~~**A**~~ | **DONE.** `NucleusPipeline.groovy`; `Run_NucleusSelector.groovy` 206 -> 97 lines; `basename` override added for D | | reference diff: all six output files byte-identical, `_config.txt` identical bar the timestamp. Groovy suite 187 passed / 0 failed; R 677/0/0 under 4.6.1 |
 | ~~**B**~~ | **DONE.** `RunConfig.groovy` (parse/format/coerce, unknown-key error, provenance ignored); `NucleusPipeline.PARAM_TYPES`/`DEFAULTS`/`fromConfig`; `pixel_depth` in `_config.txt`, blank for a single plane | | reference diff: measurement files byte-identical, `_config.txt` differs by exactly the one added row. Groovy 233 passed / 0 failed; R 682/0/0 |
-| **C** | `schema/sheet_columns.tsv` + readers · `Make_SampleSheet.groovy` (`--scan`, merge, `--skip_explored`, `--reseed`/`--reseed_all`, the five checks, headless-capable) · `files.tsv` template · `data_formats.md` §1 rewritten · commit `Inspect_ImageFile.groovy` | | run on the real LIF: 15 rows, prefixes unique, dims match §2 |
+| ~~**C**~~ | **DONE.** `schema/sheet_columns.tsv` + `SheetSchema`/`Tsv`/`SampleSheet` · `Make_SampleSheet.groovy` (scan + build + merge, headless) · `config/files_template.tsv` · `data_formats.md` §1 rewritten · `Inspect_ImageFile.groovy` committed | | real LIF: 15 rows, prefixes unique and sanitised, dims match §2; rerun over a hand-edited sheet kept every edit (0 added, 15 updated). Groovy 123 on the new/changed tests; R 692/0/0 |
 | **D** | `Run_NucleusSelector_Batch.groovy` — loop, per-row try/catch, `batch_summary.tsv`, mixed-pixel-size warning, `addToRoiManager` forced off, images closed each iteration | | one-row sheet over Position010 reproduces the fixture byte-for-byte; then a 2-row sheet on the LIF |
 | **E** | R honours `include`; `--z_step` defaults from `pixel_depth`; consumes the schema file | independent of A–D | existing suite + a sheet with `include=FALSE` |
 

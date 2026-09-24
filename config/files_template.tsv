@@ -1,0 +1,3 @@
+path	alias	include	condition	genotype	notes
+raw/260909_IHC_DDx4p23_sA7A568.lif	sA7A568	true	IHC	wt	example row -- replace with your own
+raw/260917_RNF4KI_DDX4.lif	RNF4KI	true	IHC	ko	

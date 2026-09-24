@@ -90,6 +90,36 @@ test_that("the config file is a two-column parameter/value table", {
   expect_false("pixel_depth" %in% d$parameter)
 })
 
+test_that("the sheet column schema is readable and its owners are known", {
+  # schema/sheet_columns.tsv exists so this list does NOT live twice, once in
+  # Groovy and once in R. This is the R half reading it; Test_SampleSheet is
+  # the Groovy half.
+  f <- file.path(repo_root(), "schema", "sheet_columns.tsv")
+  skip_if_not(file.exists(f), "schema/sheet_columns.tsv not found")
+  d <- read.delim(f, stringsAsFactors = FALSE)
+  expect_identical(colnames(d),
+                   c("sheet", "column", "owner", "type", "required", "description"))
+  expect_true(all(d$sheet %in% c("files", "samples")))
+  expect_true(all(d$owner %in% c("machine", "seeded", "user")))
+  expect_true(all(d$type %in% c("string", "integer", "double", "boolean")))
+  expect_true(all(d$required %in% c("yes", "no")))
+
+  # prefix is the join key the R side already requires, and it must be seeded
+  # rather than machine: regeneration must not overwrite one you edited.
+  pre <- d[d$sheet == "samples" & d$column == "prefix", ]
+  expect_identical(nrow(pre), 1L)
+  expect_identical(pre$owner, "seeded")
+  expect_identical(pre$required, "yes")
+  expect_identical(d$owner[d$sheet == "samples" & d$column == "series_index"], "machine")
+
+  # Every samples column has to be described where people look for it.
+  doc <- paste(readLines(file.path(repo_root(), "note", "data_formats.md"),
+                         warn = FALSE), collapse = "\n")
+  undocumented <- setdiff(d$column[d$sheet == "samples"],
+                          unlist(regmatches(doc, gregexpr("[A-Za-z_]+", doc))))
+  expect_identical(undocumented, character(0))
+})
+
 test_that("pixel_depth is written by the Groovy side and documented here", {
   # Cross-language, so it is a source check rather than a call: the writer is
   # Groovy and the documentation is Markdown, and the failure being guarded

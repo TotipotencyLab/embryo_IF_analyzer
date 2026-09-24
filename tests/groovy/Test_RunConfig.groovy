@@ -119,8 +119,15 @@ check("logs the display range",                src.contains("view.lo") && src.co
 // cheap check to "Fiji would compile this", and it is the only coverage the
 // Run_*.groovy scripts have.
 println ""
-println "=== every Run_*.groovy still compiles ==="
-new File(LIBDIR).listFiles().findAll { it.getName().startsWith("Run_") }.sort().each { f ->
+println "=== every `#@` front end still compiles ==="
+// Run_* AND Make_*: both carry a `#@` block, and a new verb prefix that is not
+// listed here would be compiled by nothing at all.
+def frontEnds = new File(LIBDIR).listFiles().findAll {
+    it.getName().startsWith("Run_") || it.getName().startsWith("Make_")
+}.sort()
+check("there is more than one verb prefix covered",
+      frontEnds.collect { it.getName().split("_")[0] }.unique().sort(), ["Make", "Run"])
+frontEnds.each { f ->
     def body = f.getText("UTF-8").readLines().findAll { !(it.trim().startsWith("#@")) }.join("\n")
     String err = null
     try {

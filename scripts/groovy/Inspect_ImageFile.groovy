@@ -37,19 +37,22 @@ def path = imageFile.getAbsolutePath()
 // setId(), or the store is never populated -- the metadata is read as the file
 // is opened, not on demand.
 def reader = new ImageReader()
-IMetadata meta = MetadataTools.createOMEXMLMetadata()
-reader.setMetadataStore(meta)
-reader.setId(path)
+IMetadata meta = MetadataTools.createOMEXMLMetadata() // empty metadata container (not linked to any file)
+reader.setMetadataStore(meta) // wire `reader` and `meta` together.
+reader.setId(path) // Actual read of the file metadata - the file got opened and parsed. The information also populates to the `meta` object.
 
-// A small helper. In Groovy a closure is a value: `{ args -> body }` assigned to
+// A small helper function to extract the physical (not pixel) size of the image.
+// In Groovy a closure is a value: `{ args -> body }` assigned to
 // a variable and invoked like a method. `?:` is the Elvis operator, returning
 // the right side when the left is null or falsy.
 def physical = { int series, String axis ->
     if (!showCalibration) return ""
     try {
+        // switch-like code structure: `(condition) ? (value) : (condition2) ? (value2) : (default value)`
         def len = (axis == "X") ? meta.getPixelsPhysicalSizeX(series)
                 : (axis == "Y") ? meta.getPixelsPhysicalSizeY(series)
-                                : meta.getPixelsPhysicalSizeZ(series)
+                : (axis == "Z") ? meta.getPixelsPhysicalSizeZ(series)
+                                : null
         // `?.` is safe navigation: it yields null instead of throwing when the
         // receiver is null, which physical sizes often are.
         return (len == null) ? "-" : String.format("%.4f %s", len.value().doubleValue(),
@@ -64,6 +67,7 @@ println "File   : ${path}"
 println "Format : ${reader.getFormat()}"
 println "Series : ${n}"
 println ""
+// Print information of each series
 println String.format("%-5s %-34s %6s %6s %5s %4s %4s  %-9s %s",
                       "idx", "name", "X", "Y", "Z", "C", "T", "type", "pixel size (X, Y, Z)")
 println "-" * 118
