@@ -32,6 +32,7 @@ class RunConfig {
     static final List<String> PROVENANCE_KEYS = [
         "timestamp", "script", "imagej_version",
         "image_title", "image_width", "image_height", "image_slices", "image_channels",
+        "open_method",
         "pixel_width", "pixel_height", "pixel_depth", "pixel_unit",
         "output_basename", "z_slices_analysed", "measurements",
         "overview_saved", "overview_channels", "overview_overlay_suffix",

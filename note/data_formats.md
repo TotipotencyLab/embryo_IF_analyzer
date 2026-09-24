@@ -277,6 +277,7 @@ Provenance, read long after the run. Fields that other code depends on:
 | `pixel_width`, `pixel_height`, `pixel_unit` | the same, to convert that frame to µm |
 | `pixel_depth` | the z step, in `pixel_unit`. **Blank when the image is a single plane** — ImageJ defaults the calibration to 1.0 with no z axis and Bio-Formats reports no physical size, so a written 1.0 would be a plausible number for a distance that does not exist. Written since 0.2.x; `feature_stat_cli.r --z_step` does not read it yet |
 | `script` | records the repo `VERSION` that produced the directory |
+| `open_method` | which reader opened the image: `importer` (Bio-Formats' own) or `reader` (one held open across the file). **Blank when the image was already open**, i.e. the interactive runner, where the operator opened it however they liked. The two are asserted to produce byte-identical output, but two runs that used different ones must not be indistinguishable afterwards |
 | `overview_channels`, `overview_overlay_suffix` | which overview PNGs exist, so a results folder can be read later without guessing. Blank when none were written |
 
 Everything else is a record of the run's parameters. A key that is absent must
@@ -317,12 +318,28 @@ is a complete record of what the run did rather than of what succeeded:
 | `prefix` | the sample, as the sheet named it |
 | `path`, `series_index` | which image it came from |
 | `status` | `ok`, `failed`, or `excluded` |
+| `open_method` | `importer` or `reader`, whichever actually opened it; blank for `excluded` rows |
 | `n_nucleus`, `n_nucleolus` | counts, blank when the row did not run |
 | `seconds` | wall time for that image |
 | `message` | for `failed`, the exception, flattened to one line |
 
 A row failing does not stop the batch. On a long run this file, not the log, is
 what says which images need attention.
+
+The batch chooses between two ways of opening an image, and `open_method`
+records which one ran. `importer` is Bio-Formats' own `BF.openImagePlus` — the
+code behind the series-chooser dialog, which prepares a description of **every**
+series in the file before returning the one asked for. Its cost is therefore
+O(series in the file) *per call*, and the batch calls it once per row: 182 s per
+row on a 1563-series `.lif`, against 1.5 s on a 15-series one. `reader` holds a
+single reader open for the whole file and assembles the `ImagePlus` directly,
+which reads the same series in 0.11 s.
+
+`auto` (the default) picks `importer` at or below 16 series in the file and
+`reader` above it. Both are kept rather than one replacing the other: the
+importer handles format corners the hand-built path does not, and keeping both
+is what lets `Test_BatchRunner` assert they produce the same bytes — the only
+guard against silent drift when Bio-Formats is next upgraded.
 
 `batch_params.txt` — the parameters actually used, in the same
 `parameter`/`value` shape as `_config.txt`, holding only the re-feedable subset

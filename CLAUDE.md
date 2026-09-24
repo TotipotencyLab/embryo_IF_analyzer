@@ -221,6 +221,20 @@ fourth fork.** A new assay should be a new configuration of the shared library.
 
 ## Standing decisions
 
+- **The batch opens an image one of two ways, and records which.**
+  `BF.openImagePlus` — the importer, the code behind the series-chooser dialog —
+  prepares a description of *every* series in the file before returning the one
+  asked for, so its cost is O(series in the file) **per call**: 182 s on a
+  1563-series `.lif` against 1.5 s on a 15-series one, paid once per row. The
+  `reader` path holds one reader open per file and assembles the `ImagePlus`
+  directly — 0.11 s for the same series. `auto` keeps the importer at or below
+  16 series and switches above it. **Both are kept.** The importer handles format
+  corners the hand-built path does not, and keeping both is what lets
+  `Test_BatchRunner` assert the two produce identical bytes — the only guard
+  against silent drift when Bio-Formats is next upgraded. That path reimplements
+  calibration, plane order, window title and slice labels by hand, and three of
+  those four were wrong at first in a way that changed the output while every
+  measured number stayed correct.
 - **Bio-Formats `ImporterOptions` writes ImageJ preferences.** The importer
   saves them after a successful open, so `setWindowless(true)` in a script
   leaves `.bioformats.windowless=true` behind and the operator's Fiji stops

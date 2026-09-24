@@ -4,6 +4,7 @@
 #@ File    (persist=false, label="Run config (blank = defaults)", style="file", required=false) configFile
 #@ String  (persist=false, label="Output prefix, prepended to every sample", value="") outPrefix
 #@ Boolean (persist=false, label="Save overview PNGs", value=false) saveOverview
+#@ String  (persist=false, label="Image opening method", choices={"auto","importer","reader"}) openMode
 
 // Run_NucleusSelector_Batch.groovy
 //
@@ -54,6 +55,10 @@ def fromFile = (configFile != null && configFile.isFile())
 def params = NP.fromConfig(fromFile)
 params.script_name = "Run_NucleusSelector_Batch.groovy"
 params.save_overview = saveOverview
+// A request, not a decision: BatchRunner turns "auto" into importer or reader
+// per file and records which one ran. See BatchRunner's opening section for why
+// the two exist.
+params.open_mode = openMode
 if (outPrefix?.trim()) params.output_prefix = outPrefix.trim()
 
 if (configFile != null && configFile.isFile()) {

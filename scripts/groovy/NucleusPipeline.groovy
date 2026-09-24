@@ -267,6 +267,12 @@ class NucleusPipeline {
                 script                 : (p.script_name ?: "NucleusPipeline.groovy") + " " + RX.repoVersion(libDir),
                 imagej_version         : IJ.getVersion(),
                 image_title            : imp.getTitle(),
+                // How the image was opened: "importer" or "reader" from the
+                // batch, BLANK when the image was already open (the interactive
+                // runner, where the operator opened it however they liked).
+                // Two runs that used different readers must not be
+                // indistinguishable afterwards.
+                open_method            : (p.open_method ?: ""),
                 // NB: width/height in PIXELS. The outline tables are written in
                 //     calibrated units, so without these the R side cannot
                 //     reconstruct the image extent -- the bounding box of the
