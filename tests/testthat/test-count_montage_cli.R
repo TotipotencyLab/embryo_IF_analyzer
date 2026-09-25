@@ -441,10 +441,47 @@ test_that("the rejected drawing says so, and says why they were rejected", {
       "--output", out))),
     "no VALID feature")
 
-  # The reason comes off the id, so a rejected feature and a failed ROI cannot
-  # be drawn as the same thing. These were grouped and then failed a rule.
+  # These were grouped and then failed a rule -- the reason is in the id.
   ids <- readRDS(rds)$feature_id
   expect_true(all(startsWith(ids, "invalid_nucleus_")))
+})
+
+test_that("rejected geometry stays in the grey layer, never the feature layer", {
+  # plot_features_topView() draws per-ROI geometry grey and unioned FEATURES
+  # coloured. The coloured stroke means "this was accepted", so rejected ROIs
+  # must not appear in it: a skim-reader would count them. It is also what the
+  # same ROIs look like in an ordinary run, where they are grey underneath the
+  # features that were accepted.
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  source_cli("annotate_features_cli.r")
+  source_cli("montage_qc_cli.r")
+
+  feat <- withr::local_tempdir()
+  suppressWarnings(suppressMessages(annotate_features_cli(c(
+    "--input", fixture_dir(), "--feature", "nucleus", "--outdir", feat,
+    "--min_z_span", "default=1000"))))
+  rds <- file.path(feat, "GRV_Position010_features.rds")
+
+  d <- withr::local_tempdir()
+  magick::image_write(magick::image_blank(300, 300, color = "gray30"),
+                      file.path(d, "proj.png"))
+  cfg <- file.path(d, "frame_config.txt")
+  writeLines(c("parameter\tvalue", "image_width\t1400", "image_height\t1400",
+               "pixel_width\t0.1414", "pixel_height\t0.1414"), cfg)
+  out <- file.path(d, "m.png")
+  suppressWarnings(suppressMessages(montage_qc_cli(c(
+    "--features", rds, "--projection", file.path(d, "proj.png"),
+    "--config", cfg, "--output", out))))
+
+  # The panel is grey-on-white. Any coloured pixel would be a feature stroke,
+  # and there is no feature -- so the drawn area must be greyscale throughout.
+  img <- magick::image_read(out)
+  w <- magick::image_info(img)$width
+  panel <- magick::image_crop(img, paste0(round(w / 2), "x+", round(w / 2), "+0"))
+  px <- as.integer(magick::image_data(panel, channels = "rgb"))
+  expect_true(all(px[, , 1] == px[, , 2]) && all(px[, , 2] == px[, , 3]))
 })
 
 test_that("no features at all draws an empty frame, given the image extent", {
