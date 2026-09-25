@@ -150,7 +150,34 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   }
 
   valid <- .cli_valid_rows(feats)
-  if (!nrow(valid)) stop("No valid features to draw in panel (iii)", call. = FALSE)
+
+  # "Nothing was valid" is a RESULT, and this panel exists to show results. It
+  # used to stop here, which refused to draw the picture in the one case it is
+  # most wanted: a field of tissue with no oocyte in it looks exactly like a
+  # field where detection silently failed, and only the rejected outlines tell
+  # the two apart. Real slides are mostly such fields -- the test data always
+  # had an oocyte in it, because it was chosen for having one.
+  drew_rejected <- FALSE
+  if (!nrow(valid)) {
+    if (nrow(feats)) {
+      message("Panel (iii): no VALID feature. Drawing the ", nrow(feats),
+              " rejected ROI(s) instead -- segmentation found something and ",
+              "grouping refused it.")
+      valid <- feats
+      # union_features groups on feature_id; rows that never got one would
+      # otherwise collapse into a single blob.
+      if ("feature_id" %in% colnames(valid)) {
+        valid$feature_id[is.na(valid$feature_id)] <- "unassigned"
+      }
+      drew_rejected <- TRUE
+    } else {
+      # Reachable when every ROI was filtered out before grouping (--roi_area,
+      # --min_circularity). NOT reachable from a detection that found nothing:
+      # NucleusPipeline.groovy returns before writing any table in that case, so
+      # there is no outline file and no features .rds to be here at all.
+      message("Panel (iii): no features at all. Drawing the empty frame.")
+    }
+  }
 
   # --- how each outline is labelled -------------------------------------------
   class_by <- .cli_resolve_arg(argv$feature_class_by, "--feature_class_by")
@@ -177,6 +204,27 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   }
   valid$feature_class <- compose_feature_class(sf::st_drop_geometry(valid),
                                                class_by, argv$class_sep)
+  # A rejected nucleus drawn as "nucleus" would be read as an accepted one --
+  # and they are not all rejected for the same reason. define_feature_group()
+  # writes WHY into the id itself: `invalid_nucleus_3` was grouped and then
+  # failed a rule, `failed_ROI_nucleus_3` never got that far, and a row with no
+  # id at all was never grouped. Taking the marker off the id keeps the three
+  # apart without this file having to know the list of reasons.
+  if (drew_rejected) {
+    why <- rep("unassigned", nrow(valid))
+    if ("feature_id" %in% colnames(valid)) {
+      for (ft in unique(valid$feature_type)) {
+        i <- which(valid$feature_type == ft & !is.na(valid$feature_id) &
+                     valid$feature_id != "unassigned")
+        if (length(i)) {
+          why[i] <- sub(paste0("_?", ft, "_[0-9]+$"), "",
+                        as.character(valid$feature_id[i]))
+        }
+      }
+    }
+    why[!nzchar(why)] <- "grouped"
+    valid$feature_class <- paste(why, valid$feature_class)
+  }
 
   cmap <- .cli_key_values(argv$color_map, "--color_map")
   cmap <- if (length(cmap)) unlist(cmap) else NULL
@@ -213,7 +261,8 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   # beside it, so the key goes in the caption instead. Naming what is inside
   # "other" is the point: a grey blob nobody can identify is how a QC panel
   # quietly stops being a QC panel.
-  cap <- paste0("R union, z-aware (", nrow(unioned), ")")
+  cap <- paste0(if (drew_rejected) "R union, z-aware, ALL REJECTED (" else
+                "R union, z-aware (", nrow(unioned), ")")
   if (!is.null(pal$palette)) {
     named <- setdiff(names(pal$palette), "other")
     cap <- paste0(cap, " | ",
@@ -317,6 +366,30 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
 .r_panel <- function(feats, unioned, extent, sample_name, path, panel_height,
                      palette = NULL) {
+  # Nothing to draw is still something to show, but only at a known scale: an
+  # empty panel whose extent came from the data would be an empty panel of
+  # unknowable size, sitting beside two Fiji PNGs it does not match.
+  nothing <- (is.null(feats) || !nrow(feats)) && (is.null(unioned) || !nrow(unioned))
+  if (nothing) {
+    if (is.null(extent)) {
+      stop("Panel (iii) has no feature to draw and no _config.txt to give the ",
+           "image frame, so an empty panel would be of unknown size. ",
+           "Pass --config.", call. = FALSE)
+    }
+    p <- ggplot2::ggplot() +
+      ggplot2::coord_sf(xlim = c(0, extent$xmax), ylim = c(0, extent$ymax),
+                        expand = FALSE) +
+      ggplot2::theme_void() +
+      ggplot2::theme(legend.position = "none",
+                     plot.margin = ggplot2::margin(0, 0, 0, 0),
+                     panel.background = ggplot2::element_rect(fill = "white",
+                                                              colour = NA))
+    h_in <- max(3, panel_height / 100)
+    aspect <- extent$xmax / extent$ymax
+    ggplot2::ggsave(path, p, width = h_in * max(0.6, aspect), height = h_in, dpi = 150)
+    return(invisible(path))
+  }
+
   # y_ref decides what the flip pivots about. With a known frame, flip about the
   # frame so the panel matches the Fiji PNG; otherwise about the data's own
   # bounding box, which is the best available but is a different crop.
