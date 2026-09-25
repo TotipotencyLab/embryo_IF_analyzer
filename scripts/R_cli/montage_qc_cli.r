@@ -150,60 +150,96 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   }
 
   valid <- .cli_valid_rows(feats)
-  if (!nrow(valid)) stop("No valid features to draw in panel (iii)", call. = FALSE)
+
+  # "Nothing was valid" is a RESULT, and this panel exists to show results. It
+  # used to stop here, which refused to draw the picture in the one case it is
+  # most wanted: a field of tissue with no oocyte in it looks exactly like a
+  # field where detection silently failed, and only the rejected outlines tell
+  # the two apart. Real slides are mostly such fields -- the test data always
+  # had an oocyte in it, because it was chosen for having one.
+  # plot_features_topView() draws two layers and they mean different things:
+  # per-ROI geometry faint and grey underneath, unioned FEATURES coloured on
+  # top. The coloured stroke is the "this was accepted" channel. Drawing
+  # rejected ROIs in it said `feature` about geometry the pipeline had refused,
+  # and contradicted every other plot, where the same ROIs are grey.
+  #
+  # So nothing valid means no union layer at all: the grey per-ROI outlines are
+  # drawn exactly as they would be in an ordinary run, and the caption carries
+  # the fact that none of them became a feature.
+  drew_rejected <- !nrow(valid) && nrow(feats) > 0
+  if (!nrow(valid)) {
+    if (nrow(feats)) {
+      message("Panel (iii): no VALID feature. Drawing the ", nrow(feats),
+              " rejected ROI(s) in grey -- segmentation found something and ",
+              "grouping refused it. Nothing here was counted.")
+    } else {
+      # Reachable when every ROI was filtered out before grouping (--roi_area,
+      # --min_circularity). NOT reachable from a detection that found nothing:
+      # NucleusPipeline.groovy returns before writing any table in that case, so
+      # there is no outline file and no features .rds to be here at all.
+      message("Panel (iii): no features at all. Drawing the empty frame.")
+    }
+  }
 
   # --- how each outline is labelled -------------------------------------------
-  class_by <- .cli_resolve_arg(argv$feature_class_by, "--feature_class_by")
-  if (is.null(class_by) || !length(class_by)) class_by <- "feature_type"
+  # Skipped entirely when nothing was accepted: there is no feature to colour,
+  # and composing a class for rejected geometry is what put it in the wrong
+  # layer in the first place.
+  unioned <- NULL
+  pal <- list(palette = NULL, other_members = character(0))
+  if (!drew_rejected) {
+    class_by <- .cli_resolve_arg(argv$feature_class_by, "--feature_class_by")
+    if (is.null(class_by) || !length(class_by)) class_by <- "feature_type"
 
-  if (!is.na(argv$feature_table)) {
-    if (!file.exists(argv$feature_table)) {
-      stop("--feature_table not found: ", argv$feature_table, call. = FALSE)
+    if (!is.na(argv$feature_table)) {
+      if (!file.exists(argv$feature_table)) {
+        stop("--feature_table not found: ", argv$feature_table, call. = FALSE)
+      }
+      ftab <- utils::read.delim(argv$feature_table, stringsAsFactors = FALSE)
+      if (!"sample" %in% colnames(valid)) valid$sample <- sample_name
+      geom <- sf::st_geometry(valid)
+      tab <- sf::st_drop_geometry(valid)
+      tab <- join_feature_table(tab, ftab, force = argv$force)
+      valid <- sf::st_set_geometry(tab, geom)
     }
-    ftab <- utils::read.delim(argv$feature_table, stringsAsFactors = FALSE)
-    if (!"sample" %in% colnames(valid)) valid$sample <- sample_name
-    geom <- sf::st_geometry(valid)
-    tab <- sf::st_drop_geometry(valid)
-    tab <- join_feature_table(tab, ftab, force = argv$force)
-    valid <- sf::st_set_geometry(tab, geom)
-  }
 
-  absent_cb <- setdiff(class_by, colnames(valid))
-  if (length(absent_cb)) {
-    stop("--feature_class_by column(s) not found: ", paste(absent_cb, collapse = ", "),
-         "\n  available: ", paste(colnames(sf::st_drop_geometry(valid)), collapse = ", "),
-         if (is.na(argv$feature_table)) "\n  (a column from the stats table needs --feature_table)" else "",
-         call. = FALSE)
-  }
-  valid$feature_class <- compose_feature_class(sf::st_drop_geometry(valid),
-                                               class_by, argv$class_sep)
-
-  cmap <- .cli_key_values(argv$color_map, "--color_map")
-  cmap <- if (length(cmap)) unlist(cmap) else NULL
-  if (!is.null(cmap)) {
-    bad <- cmap[!(cmap %in% grDevices::colors() | grepl("^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$", cmap))]
-    if (length(bad)) {
-      stop("--color_map has unusable colour(s): ", paste(bad, collapse = ", "),
-           "\n  use an R colour name (see colors()) or #RRGGBB", call. = FALSE)
+    absent_cb <- setdiff(class_by, colnames(valid))
+    if (length(absent_cb)) {
+      stop("--feature_class_by column(s) not found: ", paste(absent_cb, collapse = ", "),
+           "\n  available: ", paste(colnames(sf::st_drop_geometry(valid)), collapse = ", "),
+           if (is.na(argv$feature_table)) "\n  (a column from the stats table needs --feature_table)" else "",
+           call. = FALSE)
     }
-    # The reserved names are legitimate targets even though "other" never
-    # appears in the data -- it is the group the unmapped classes fold into.
-    unknown <- setdiff(names(cmap), c(unique(valid$feature_class), CLASS_RESERVED))
-    if (length(unknown)) {
-      warning("--color_map names class(es) not present: ", paste(unknown, collapse = ", "),
-              "\n  present: ", paste(sort(unique(valid$feature_class)), collapse = ", "),
-              call. = FALSE)
+    valid$feature_class <- compose_feature_class(sf::st_drop_geometry(valid),
+                                                 class_by, argv$class_sep)
+
+    cmap <- .cli_key_values(argv$color_map, "--color_map")
+    cmap <- if (length(cmap)) unlist(cmap) else NULL
+    if (!is.null(cmap)) {
+      bad <- cmap[!(cmap %in% grDevices::colors() | grepl("^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$", cmap))]
+      if (length(bad)) {
+        stop("--color_map has unusable colour(s): ", paste(bad, collapse = ", "),
+             "\n  use an R colour name (see colors()) or #RRGGBB", call. = FALSE)
+      }
+      # The reserved names are legitimate targets even though "other" never
+      # appears in the data -- it is the group the unmapped classes fold into.
+      unknown <- setdiff(names(cmap), c(unique(valid$feature_class), CLASS_RESERVED))
+      if (length(unknown)) {
+        warning("--color_map names class(es) not present: ", paste(unknown, collapse = ", "),
+                "\n  present: ", paste(sort(unique(valid$feature_class)), collapse = ", "),
+                call. = FALSE)
+      }
     }
+
+    # union AFTER the class is assigned, and carry it through the grouping or the
+    # summarise drops it.
+    unioned <- union_features(valid,
+                              group_cols = c("feature_id", "feature_type", "feature_class"))
+    message("Panel (iii): ", nrow(feats), " ROIs -> ", nrow(unioned), " unioned feature(s)")
+
+    pal <- class_palette(unioned$feature_class, cmap)
+    unioned$feature_class <- pal$values
   }
-
-  # union AFTER the class is assigned, and carry it through the grouping or the
-  # summarise drops it.
-  unioned <- union_features(valid,
-                            group_cols = c("feature_id", "feature_type", "feature_class"))
-  message("Panel (iii): ", nrow(feats), " ROIs -> ", nrow(unioned), " unioned feature(s)")
-
-  pal <- class_palette(unioned$feature_class, cmap)
-  unioned$feature_class <- pal$values
 
   r_png <- tempfile(fileext = ".png")
   .r_panel(feats, unioned, extent, sample_name, r_png, argv$panel_height,
@@ -213,7 +249,12 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   # beside it, so the key goes in the caption instead. Naming what is inside
   # "other" is the point: a grey blob nobody can identify is how a QC panel
   # quietly stops being a QC panel.
-  cap <- paste0("R union, z-aware (", nrow(unioned), ")")
+  cap <- if (drew_rejected) {
+    paste0("per-ROI outlines only \u2014 ", nrow(feats),
+           " ROI(s), NONE became a feature")
+  } else {
+    paste0("R union, z-aware (", nrow(unioned), ")")
+  }
   if (!is.null(pal$palette)) {
     named <- setdiff(names(pal$palette), "other")
     cap <- paste0(cap, " | ",
@@ -317,6 +358,30 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
 .r_panel <- function(feats, unioned, extent, sample_name, path, panel_height,
                      palette = NULL) {
+  # Nothing to draw is still something to show, but only at a known scale: an
+  # empty panel whose extent came from the data would be an empty panel of
+  # unknowable size, sitting beside two Fiji PNGs it does not match.
+  nothing <- (is.null(feats) || !nrow(feats)) && (is.null(unioned) || !nrow(unioned))
+  if (nothing) {
+    if (is.null(extent)) {
+      stop("Panel (iii) has no feature to draw and no _config.txt to give the ",
+           "image frame, so an empty panel would be of unknown size. ",
+           "Pass --config.", call. = FALSE)
+    }
+    p <- ggplot2::ggplot() +
+      ggplot2::coord_sf(xlim = c(0, extent$xmax), ylim = c(0, extent$ymax),
+                        expand = FALSE) +
+      ggplot2::theme_void() +
+      ggplot2::theme(legend.position = "none",
+                     plot.margin = ggplot2::margin(0, 0, 0, 0),
+                     panel.background = ggplot2::element_rect(fill = "white",
+                                                              colour = NA))
+    h_in <- max(3, panel_height / 100)
+    aspect <- extent$xmax / extent$ymax
+    ggplot2::ggsave(path, p, width = h_in * max(0.6, aspect), height = h_in, dpi = 150)
+    return(invisible(path))
+  }
+
   # y_ref decides what the flip pivots about. With a known frame, flip about the
   # frame so the panel matches the Fiji PNG; otherwise about the data's own
   # bounding box, which is the best available but is a different crop.
