@@ -92,6 +92,16 @@ reports none. `file_size` with the basename is the fingerprint that spots a
 copied or replaced file, and what `skipExplored` compares against before
 deciding a file is unchanged.
 
+**Passing the same sheet to both stages is the ordinary case.**
+`annotate_features_cli.r` binds the sheet's metadata onto every feature row, so
+a column such as `genotype` is already in the `_features.rds` by the time
+`feature_stat_cli.r` sees it. That step therefore **reconciles rather than
+re-joins**: a shared column whose values agree per sample is skipped (a
+`left_join` would produce `genotype.x`/`genotype.y`, after which `--group_by
+genotype` resolves to neither), and one whose values *disagree* is a hard error
+— the features were annotated from a different sheet, and silently preferring
+either copy would attach the wrong metadata to real numbers.
+
 **The R side reads this sheet too, and reads it the same way.** `include` is
 honoured by `.cli_read_sample_sheet()` with exactly the vocabulary
 `BatchRunner.isIncluded()` accepts (`true/yes/1`, `false/no/0`, blank or absent

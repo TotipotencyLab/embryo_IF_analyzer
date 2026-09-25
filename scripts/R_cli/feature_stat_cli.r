@@ -426,14 +426,64 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 }
 
 #' Join sample metadata onto the per-feature table
+#'
+#' A column may already be here. The commonest reason is the benign one: the
+#' SAME sheet was passed to annotate_features_cli.r, which binds its metadata
+#' onto every feature row, so `genotype` arrives in the .rds and is carried
+#' through as metadata -- by the very route this join would take. Guarding the
+#' sheet against every column of `stats` therefore refused the ordinary
+#' end-to-end run, telling the user to rename a column that was already theirs.
+#'
+#' Re-joining it is not the answer either: left_join would produce
+#' `genotype.x`/`genotype.y` and every later reference to `genotype` -- a
+#' --group_by, a --class rule, a plot facet -- would resolve to neither.
+#'
+#' So a shared column is reconciled instead. Equal per sample means it is the
+#' same metadata and the join simply skips it. Unequal means the features were
+#' annotated from a DIFFERENT sheet than the one being passed now, or a sheet
+#' column is named after a statistic this step computes. Either way, silently
+#' choosing one of the two would attach the wrong metadata to real numbers.
 .cli_join_sheet <- function(stats, sheet, id_column) {
-  .cli_check_reserved(sheet, id_column, extra = colnames(stats))
+  .cli_check_reserved(sheet, id_column)
   meta <- sheet
   names(meta)[names(meta) == id_column] <- "sample"
+
+  shared <- setdiff(base::intersect(colnames(meta), colnames(stats)), "sample")
+  if (length(shared)) {
+    # Metadata is constant within a sample, so one row per sample is the whole
+    # comparison.
+    have <- stats[!duplicated(stats$sample), c("sample", shared), drop = FALSE]
+    cmp <- merge(have, meta[, c("sample", shared), drop = FALSE],
+                 by = "sample", suffixes = c(".have", ".sheet"))
+    disagree <- character(0)
+    for (col in shared) {
+      a <- as.character(cmp[[paste0(col, ".have")]])
+      b <- as.character(cmp[[paste0(col, ".sheet")]])
+      if (!isTRUE(all.equal(a, b))) disagree <- c(disagree, col)
+    }
+    if (length(disagree)) {
+      stop("Sample sheet column(s) disagree with what is already on the features: ",
+           paste(disagree, collapse = ", "),
+           "\n  The features were annotated from a different sample sheet, or a ",
+           "sheet column is named after a statistic this step computes.",
+           "\n  Re-run annotate_features_cli.r with this sheet, or rename the ",
+           "column (e.g. ", disagree[1], " -> sample_", disagree[1], ").",
+           call. = FALSE)
+    }
+    message("  sample sheet: ", length(shared),
+            " column(s) already on the features, not re-joined (",
+            paste(utils::head(shared, 6), collapse = ", "),
+            if (length(shared) > 6) ", ..." else "", ")")
+    meta <- meta[, setdiff(colnames(meta), shared), drop = FALSE]
+  }
+
   unmatched <- setdiff(stats$sample, meta$sample)
   if (length(unmatched)) {
     warning(length(unmatched), " sample(s) are not in the sample sheet: ",
             paste(utils::head(unmatched, 5), collapse = ", "), call. = FALSE)
+  }
+  if (ncol(meta) <= 1L) {
+    return(stats)
   }
   return(dplyr::left_join(stats, meta, by = "sample"))
 }

@@ -502,3 +502,90 @@ test_that("results written before 0.2.0 degrade rather than inventing a z step",
     "--input", feat, "--outdir", out, "--res_dir", fixture_dir(), "--no_plot"))))
   expect_false("volume" %in% colnames(st))
 })
+
+# --- the sheet at both stages -------------------------------------------------
+# annotate_features_cli.r binds sheet metadata onto every feature row, so a
+# column arrives in the .rds and is carried through as metadata. Passing the
+# same sheet to this step then meets its own metadata coming the other way.
+
+test_that("the same sheet at both stages is the ordinary case, not a collision", {
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2"))
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  source_cli("annotate_features_cli.r")
+  source_cli("feature_stat_cli.r")
+
+  d <- withr::local_tempdir()
+  sheet <- file.path(d, "samples.tsv")
+  write.table(data.frame(prefix = "GRV_Position010", genotype = "wt", include = "true"),
+              sheet, sep = "\t", quote = FALSE, row.names = FALSE)
+
+  feat <- withr::local_tempdir()
+  suppressMessages(annotate_features_cli(c(
+    "--input", fixture_dir(), "--feature", "nucleus", "--outdir", feat,
+    "--sample_sheet", sheet)))
+
+  out <- withr::local_tempdir()
+  st <- suppressWarnings(suppressMessages(feature_stat_cli(c(
+    "--input", feat, "--outdir", out, "--res_dir", fixture_dir(),
+    "--no_plot", "--sample_sheet", sheet))))
+
+  # Present ONCE. A re-join would give genotype.x / genotype.y, after which
+  # --group_by genotype resolves to neither.
+  expect_true("genotype" %in% colnames(st))
+  expect_false(any(c("genotype.x", "genotype.y") %in% colnames(st)))
+  expect_identical(unique(st$genotype), "wt")
+})
+
+test_that("a sheet that disagrees with the annotation is refused, not merged", {
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2"))
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  source_cli("annotate_features_cli.r")
+  source_cli("feature_stat_cli.r")
+
+  d <- withr::local_tempdir()
+  one <- file.path(d, "a.tsv")
+  write.table(data.frame(prefix = "GRV_Position010", genotype = "wt"),
+              one, sep = "\t", quote = FALSE, row.names = FALSE)
+  feat <- withr::local_tempdir()
+  suppressMessages(annotate_features_cli(c(
+    "--input", fixture_dir(), "--feature", "nucleus", "--outdir", feat,
+    "--sample_sheet", one)))
+
+  # Same sample, different genotype: the features were annotated from another
+  # sheet. Quietly preferring either one would attach the wrong metadata to
+  # real numbers.
+  two <- file.path(d, "b.tsv")
+  write.table(data.frame(prefix = "GRV_Position010", genotype = "ko"),
+              two, sep = "\t", quote = FALSE, row.names = FALSE)
+  out <- withr::local_tempdir()
+  expect_error(
+    suppressWarnings(suppressMessages(feature_stat_cli(c(
+      "--input", feat, "--outdir", out, "--res_dir", fixture_dir(),
+      "--no_plot", "--sample_sheet", two)))),
+    "disagree with what is already on the features")
+})
+
+test_that("a column only the sheet has is still joined", {
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2"))
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  source_cli("annotate_features_cli.r")
+  source_cli("feature_stat_cli.r")
+
+  feat <- withr::local_tempdir()
+  # Annotated WITHOUT a sheet, so the join is the only source of metadata.
+  suppressMessages(annotate_features_cli(c(
+    "--input", fixture_dir(), "--feature", "nucleus", "--outdir", feat)))
+
+  d <- withr::local_tempdir()
+  sheet <- file.path(d, "s.tsv")
+  write.table(data.frame(prefix = "GRV_Position010", timepoint = "E3.5"),
+              sheet, sep = "\t", quote = FALSE, row.names = FALSE)
+  out <- withr::local_tempdir()
+  st <- suppressWarnings(suppressMessages(feature_stat_cli(c(
+    "--input", feat, "--outdir", out, "--res_dir", fixture_dir(),
+    "--no_plot", "--sample_sheet", sheet))))
+  expect_identical(unique(st$timepoint), "E3.5")
+})
