@@ -179,6 +179,19 @@ loop, including how to diff.
   the background-measurement question is unsettled. `note/if_quantification.md`
   records what that decision will involve.
 
+  **The sample sheet is shared with the Fiji side, and is read the same way at
+  both ends.** `.cli_read_sample_sheet()` honours `include` with exactly the
+  vocabulary `BatchRunner.isIncluded()` accepts, and applies it *before* the
+  duplicate-prefix check so that setting `include=false` on all but one of a
+  colliding pair works — which is what the Groovy error tells you to do. It then
+  drops `include` (a control column, never metadata) and the machine columns,
+  which it reads from `schema/sheet_columns.tsv` rather than listing again: a
+  generated sheet carries sixteen, and joining them through would put `size_x`
+  and `file_size` on every feature row. Dropped columns are reported.
+  `feature_stat_cli.r --z_step` defaults to `pixel_depth` from each sample's own
+  `_config.txt` — per sample, because pixel size varies fourfold inside one
+  `.lif` here. Missing or blank means no `volume` column, never a default of 1.
+
   **Identity comes from the file's content, not its name.** The `name` column
   holds the sample, the `roi` prefix holds the feature; the filename only has to
   select the right files. The previous filename parse used a greedy prefix and

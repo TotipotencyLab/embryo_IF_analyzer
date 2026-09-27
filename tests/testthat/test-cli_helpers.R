@@ -214,3 +214,128 @@ test_that(".cli_apply_sample_sheet errors when nothing overlaps", {
   expect_error(suppressWarnings(suppressMessages(
     .cli_apply_sample_sheet(contract, sheet))), "no sample in common")
 })
+
+# --- include ------------------------------------------------------------------
+# The same column is read by BatchRunner.isIncluded() on the Groovy side. These
+# pin the vocabularies together: one sheet, two readers, and a word that means
+# "run this" to one and not the other would show up only as a sample count.
+
+test_that(".cli_is_included accepts exactly what the Groovy side accepts", {
+  expect_identical(.cli_is_included(c("true", "yes", "1")), c(TRUE, TRUE, TRUE))
+  expect_identical(.cli_is_included(c("false", "no", "0")), c(FALSE, FALSE, FALSE))
+  expect_identical(.cli_is_included(c("TRUE", "False", " Yes ")), c(TRUE, FALSE, TRUE))
+  # Blank, absent and NA are included: a sheet without the column must behave
+  # exactly as it did before the column existed.
+  expect_identical(.cli_is_included(c("", NA, "  ")), c(TRUE, TRUE, TRUE))
+  # read.delim turns a column of TRUE/FALSE into logical, not character.
+  expect_identical(.cli_is_included(c(TRUE, FALSE, NA)), c(TRUE, FALSE, TRUE))
+  # ...and a column of 1/0 into integer.
+  expect_identical(.cli_is_included(c(1L, 0L)), c(TRUE, FALSE))
+  # "maybe" must not quietly mean one or the other.
+  expect_error(.cli_is_included(c("true", "maybe")), "true/false")
+})
+
+test_that(".cli_read_sample_sheet honours include and does not carry it through", {
+  d <- withr::local_tempdir()
+  p <- file.path(d, "s.tsv")
+  write.table(data.frame(prefix = c("A", "B", "C"),
+                         include = c("true", "false", "true"),
+                         condition = c("wt", "ko", "wt")),
+              p, sep = "\t", quote = FALSE, row.names = FALSE)
+  sheet <- suppressMessages(.cli_read_sample_sheet(p))
+  expect_identical(sheet$prefix, c("A", "C"))
+  # A control column, not metadata: left in, it would land on every output row
+  # as a column that is TRUE everywhere by construction.
+  expect_false("include" %in% colnames(sheet))
+  expect_identical(sheet$condition, c("wt", "wt"))
+})
+
+test_that("an excluded row may duplicate an included one", {
+  # The Groovy side refuses a duplicate prefix only among INCLUDED rows, and
+  # its error says to set include=false on all but one. That advice has to work
+  # here, or the two ends disagree about the same file.
+  d <- withr::local_tempdir()
+  p <- file.path(d, "s.tsv")
+  write.table(data.frame(prefix = c("A", "A"), include = c("true", "false")),
+              p, sep = "\t", quote = FALSE, row.names = FALSE)
+  expect_identical(nrow(suppressMessages(.cli_read_sample_sheet(p))), 1L)
+
+  # Both included is still fatal.
+  p2 <- file.path(d, "s2.tsv")
+  write.table(data.frame(prefix = c("A", "A"), include = c("true", "true")),
+              p2, sep = "\t", quote = FALSE, row.names = FALSE)
+  expect_error(suppressMessages(.cli_read_sample_sheet(p2)), "Duplicate")
+})
+
+test_that("a sheet with every row excluded is an error, not an empty run", {
+  d <- withr::local_tempdir()
+  p <- file.path(d, "s.tsv")
+  write.table(data.frame(prefix = c("A", "B"), include = c("false", "no")),
+              p, sep = "\t", quote = FALSE, row.names = FALSE)
+  expect_error(suppressMessages(.cli_read_sample_sheet(p)), "include=false")
+})
+
+# --- the schema file ----------------------------------------------------------
+
+test_that("machine columns come from the schema and are not carried through", {
+  machine <- .cli_sheet_machine_columns()
+  skip_if(!length(machine), "schema/sheet_columns.tsv not found from here")
+  # Read from schema/sheet_columns.tsv, not duplicated here: these are facts
+  # about the image file that Make_SampleSheet rewrites on every regeneration.
+  expect_true(all(c("size_x", "pixel_width", "file_size", "series_index") %in% machine))
+  expect_false("prefix" %in% machine)
+
+  d <- withr::local_tempdir()
+  p <- file.path(d, "s.tsv")
+  write.table(data.frame(prefix = "A", condition = "wt",
+                         size_x = 2048L, pixel_width = 0.22, file_size = 99L),
+              p, sep = "\t", quote = FALSE, row.names = FALSE)
+  sheet <- suppressMessages(.cli_read_sample_sheet(p))
+  expect_identical(colnames(sheet), c("prefix", "condition"))
+  # Dropped loudly, not silently: somebody who wanted pixel_width should be
+  # told where it went.
+  expect_message(.cli_read_sample_sheet(p), "machine column")
+})
+
+# --- the Fiji _config.txt -----------------------------------------------------
+
+test_that(".cli_read_config reads the two-column format, and blanks are NA", {
+  d <- withr::local_tempdir()
+  p <- file.path(d, "X_config.txt")
+  writeLines(c("parameter\tvalue",
+               "pixel_width\t0.2227",
+               "pixel_depth\t0.9999",
+               "output_prefix\t"), p)
+  cfg <- .cli_read_config(p)
+  expect_identical(cfg[["pixel_width"]], "0.2227")
+  expect_equal(.cli_config_num(cfg, "pixel_depth"), 0.9999)
+  # Absent and blank are both NA, never 0.
+  expect_true(is.na(.cli_config_num(cfg, "nothing_here")))
+  expect_true(is.na(.cli_config_num(cfg, "output_prefix")))
+
+  expect_null(.cli_read_config(NA_character_))
+  expect_null(.cli_read_config(file.path(d, "nope.txt")))
+  # A file that is not this format is refused rather than half-read.
+  q <- file.path(d, "other.txt")
+  writeLines(c("a\tb", "1\t2"), q)
+  expect_null(.cli_read_config(q))
+})
+
+test_that(".cli_find_config looks beside the tables, not only beside the .rds", {
+  d <- withr::local_tempdir()
+  sub <- file.path(d, "features"); dir.create(sub)
+  writeLines(c("parameter\tvalue", "pixel_depth\t1"), file.path(d, "S_config.txt"))
+  expect_true(is.na(.cli_find_config("S", sub)))
+  expect_false(is.na(.cli_find_config("S", c(sub, d))))
+  expect_true(is.na(.cli_find_config("missing", c(sub, d))))
+})
+
+test_that("the fixture predates pixel_depth, so no volume is inferred from it", {
+  # Deliberately NOT regenerated: results written before 0.2.0 have no
+  # pixel_depth, and the CLI has to degrade rather than invent a z step.
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  cfg <- .cli_read_config(.cli_find_config("GRV_Position010",
+                                           dirname(fixture_file("nucleus", "outline"))))
+  expect_false(is.null(cfg))
+  expect_true(is.na(.cli_config_num(cfg, "pixel_depth")))
+})

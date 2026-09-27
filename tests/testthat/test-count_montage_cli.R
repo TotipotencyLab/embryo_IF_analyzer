@@ -375,3 +375,150 @@ test_that("the default other is dark enough to separate from the ROI outlines", 
   pal <- class_palette(c("a", "b"), c(a = "red"))
   expect_identical(unname(pal$palette[["other"]]), "grey30")
 })
+
+# --- a field with nothing in it is a result, not a failure --------------------
+# Real slides are mostly such fields. The test data always had an oocyte in it
+# because it was chosen for having one, which is why this went unnoticed: the
+# panel refused to draw in exactly the case it is most wanted, since a field
+# with no oocyte looks identical to one where detection silently failed.
+
+test_that("a sample with no VALID feature still draws, showing what was rejected", {
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  source_cli("annotate_features_cli.r")
+  source_cli("montage_qc_cli.r")
+
+  # A z span nothing can satisfy: every ROI is grouped, then rejected.
+  feat <- withr::local_tempdir()
+  suppressWarnings(suppressMessages(annotate_features_cli(c(
+    "--input", fixture_dir(), "--feature", "nucleus", "--outdir", feat,
+    "--min_z_span", "default=1000"))))
+  rds <- file.path(feat, "GRV_Position010_features.rds")
+  feats <- readRDS(rds)
+  expect_gt(nrow(feats), 0)                      # ROIs are present ...
+  expect_equal(nrow(.cli_valid_rows(feats)), 0)  # ... and none of them valid
+
+  d <- withr::local_tempdir()
+  for (f in c("proj.png", "overlay.png")) {
+    magick::image_write(magick::image_blank(300, 300, color = "gray30"), file.path(d, f))
+  }
+  out <- file.path(d, "m.png")
+  suppressWarnings(suppressMessages(montage_qc_cli(c(
+    "--features", rds, "--projection", file.path(d, "proj.png"),
+    "--overlay", file.path(d, "overlay.png"),
+    "--config", file.path(fixture_dir(), "GRV_Position010_config.txt"),
+    "--output", out))))
+
+  expect_true(file.exists(out))
+  # Three panels side by side, so the R panel really was drawn rather than
+  # quietly dropped from the montage.
+  info <- magick::image_info(magick::image_read(out))
+  expect_gt(info$width, 2 * info$height)
+})
+
+test_that("the rejected drawing says so, and says why they were rejected", {
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  source_cli("annotate_features_cli.r")
+  source_cli("montage_qc_cli.r")
+
+  feat <- withr::local_tempdir()
+  suppressWarnings(suppressMessages(annotate_features_cli(c(
+    "--input", fixture_dir(), "--feature", "nucleus", "--outdir", feat,
+    "--min_z_span", "default=1000"))))
+  rds <- file.path(feat, "GRV_Position010_features.rds")
+
+  d <- withr::local_tempdir()
+  magick::image_write(magick::image_blank(300, 300, color = "gray30"),
+                      file.path(d, "proj.png"))
+  out <- file.path(d, "m.png")
+  expect_message(
+    suppressWarnings(montage_qc_cli(c(
+      "--features", rds, "--projection", file.path(d, "proj.png"),
+      "--config", file.path(fixture_dir(), "GRV_Position010_config.txt"),
+      "--output", out))),
+    "no VALID feature")
+
+  # These were grouped and then failed a rule -- the reason is in the id.
+  ids <- readRDS(rds)$feature_id
+  expect_true(all(startsWith(ids, "invalid_nucleus_")))
+})
+
+test_that("rejected geometry stays in the grey layer, never the feature layer", {
+  # plot_features_topView() draws per-ROI geometry grey and unioned FEATURES
+  # coloured. The coloured stroke means "this was accepted", so rejected ROIs
+  # must not appear in it: a skim-reader would count them. It is also what the
+  # same ROIs look like in an ordinary run, where they are grey underneath the
+  # features that were accepted.
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  source_cli("annotate_features_cli.r")
+  source_cli("montage_qc_cli.r")
+
+  feat <- withr::local_tempdir()
+  suppressWarnings(suppressMessages(annotate_features_cli(c(
+    "--input", fixture_dir(), "--feature", "nucleus", "--outdir", feat,
+    "--min_z_span", "default=1000"))))
+  rds <- file.path(feat, "GRV_Position010_features.rds")
+
+  d <- withr::local_tempdir()
+  magick::image_write(magick::image_blank(300, 300, color = "gray30"),
+                      file.path(d, "proj.png"))
+  cfg <- file.path(d, "frame_config.txt")
+  writeLines(c("parameter\tvalue", "image_width\t1400", "image_height\t1400",
+               "pixel_width\t0.1414", "pixel_height\t0.1414"), cfg)
+  out <- file.path(d, "m.png")
+  suppressWarnings(suppressMessages(montage_qc_cli(c(
+    "--features", rds, "--projection", file.path(d, "proj.png"),
+    "--config", cfg, "--output", out))))
+
+  # The panel is grey-on-white. Any coloured pixel would be a feature stroke,
+  # and there is no feature -- so the drawn area must be greyscale throughout.
+  img <- magick::image_read(out)
+  w <- magick::image_info(img)$width
+  panel <- magick::image_crop(img, paste0(round(w / 2), "x+", round(w / 2), "+0"))
+  px <- as.integer(magick::image_data(panel, channels = "rgb"))
+  expect_true(all(px[, , 1] == px[, , 2]) && all(px[, , 2] == px[, , 3]))
+})
+
+test_that("no features at all draws an empty frame, given the image extent", {
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  source_cli("montage_qc_cli.r")
+
+  feat_dir <- annotated_fixture()
+  feats <- readRDS(file.path(feat_dir, "GRV_Position010_features.rds"))
+  d <- withr::local_tempdir()
+  empty_rds <- file.path(d, "GRV_Position010_features.rds")
+  saveRDS(feats[0, , drop = FALSE], empty_rds)
+
+  magick::image_write(magick::image_blank(300, 300, color = "gray30"),
+                      file.path(d, "proj.png"))
+
+  # The fixture's own config predates image_width/image_height -- that is
+  # exactly why montage degrades when it is all there is -- so the frame has to
+  # be supplied here.
+  cfg <- file.path(d, "frame_config.txt")
+  writeLines(c("parameter\tvalue",
+               "image_width\t1400", "image_height\t1400",
+               "pixel_width\t0.1414", "pixel_height\t0.1414"), cfg)
+
+  out <- file.path(d, "m.png")
+  suppressWarnings(suppressMessages(montage_qc_cli(c(
+    "--features", empty_rds, "--projection", file.path(d, "proj.png"),
+    "--config", cfg, "--output", out))))
+  expect_true(file.exists(out))
+
+  # Without the extent, an empty panel would be of unknown size sitting beside
+  # Fiji PNGs it does not match. Refused, and it says why.
+  out2 <- file.path(d, "m2.png")
+  expect_error(
+    suppressWarnings(suppressMessages(montage_qc_cli(c(
+      "--features", empty_rds, "--projection", file.path(d, "proj.png"),
+      "--output", out2)))),
+    "unknown size")
+})

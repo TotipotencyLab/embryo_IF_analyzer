@@ -608,6 +608,71 @@
   return(df)
 }
 
+#' Is this row included? The same vocabulary the Groovy side accepts
+#'
+#' Deliberately identical to `BatchRunner.isIncluded()`: one sheet is read by
+#' both ends, and a column that means "run this" in Fiji and something else in R
+#' is the kind of divergence that shows up as a quiet difference in sample
+#' count, months later. Blank or absent is included -- a sheet without the
+#' column behaves exactly as it did before the column existed.
+#'
+#' @param v the `include` column, character, logical or numeric
+#' @return logical vector, same length
+.cli_is_included <- function(v) {
+  if (is.logical(v)) {
+    return(ifelse(is.na(v), TRUE, v))
+  }
+  s <- tolower(trimws(as.character(v)))
+  out <- rep(NA, length(s))
+  out[s %in% c("", "true", "yes", "1")] <- TRUE
+  out[s %in% c("false", "no", "0")] <- FALSE
+  out[is.na(s)] <- TRUE
+  if (anyNA(out)) {
+    stop("Sample sheet 'include' must be true/false (or yes/no, 1/0); got: ",
+         paste(unique(s[is.na(out)]), collapse = ", "), call. = FALSE)
+  }
+  return(out)
+}
+
+#' schema/sheet_columns.tsv, if this checkout has one
+#'
+#' Searched upward from the script and from the working directory, so it is
+#' found whether a CLI is run from the repo, from a results folder, or sourced
+#' by a test. A script copied out of the repo finds nothing and carries on --
+#' the schema refines the output, it is not required to produce it.
+.cli_find_schema <- function() {
+  starts <- c(.cli_script_dir(), getwd())
+  starts <- starts[!is.na(starts)]
+  for (start in starts) {
+    d <- start
+    for (i in seq_len(5)) {
+      p <- file.path(d, "schema", "sheet_columns.tsv")
+      if (file.exists(p)) return(normalizePath(p, mustWork = FALSE))
+      parent <- dirname(d)
+      if (identical(parent, d)) break
+      d <- parent
+    }
+  }
+  return(NA_character_)
+}
+
+#' The samples columns the Groovy side writes and overwrites
+#'
+#' These are facts about the image file, not about the experiment, and
+#' `Make_SampleSheet` rewrites them on every regeneration. Carrying them into
+#' the outputs would put `size_x` and `file_size` on every feature row as though
+#' somebody had typed them as metadata.
+.cli_sheet_machine_columns <- function() {
+  p <- .cli_find_schema()
+  if (is.na(p)) return(character(0))
+  d <- tryCatch(utils::read.delim(p, stringsAsFactors = FALSE, check.names = FALSE),
+                error = function(e) NULL)
+  if (is.null(d) || !all(c("sheet", "column", "owner") %in% colnames(d))) {
+    return(character(0))
+  }
+  return(as.character(d$column[d$sheet == "samples" & d$owner == "machine"]))
+}
+
 .cli_read_sample_sheet <- function(path, id_column = "prefix") {
   # Read sample sheet specific to this repo
   sheet <- .cli_read_table(path, "sample sheet")
@@ -617,12 +682,86 @@
   }
   .cli_check_reserved(sheet, id_column)
   sheet[[id_column]] <- trimws(as.character(sheet[[id_column]]))
+
+  # include is applied BEFORE the duplicate check, on purpose. The Groovy side
+  # refuses a duplicate prefix only among INCLUDED rows, and its error tells you
+  # to set include=false on all but one. That advice has to work here too, or
+  # the two ends disagree about the same file.
+  if ("include" %in% colnames(sheet)) {
+    keep <- .cli_is_included(sheet[["include"]])
+    if (any(!keep)) {
+      message("  sample sheet: include=false on ", sum(!keep), " row(s), ",
+              sum(keep), " kept")
+    }
+    sheet <- sheet[keep, , drop = FALSE]
+    if (!nrow(sheet)) {
+      stop("Every row of the sample sheet has include=false: ", path, call. = FALSE)
+    }
+    # A control column, never metadata: it says whether to analyse the row, and
+    # would otherwise land on every output row as a column that is TRUE
+    # everywhere by construction.
+    sheet[["include"]] <- NULL
+  }
+
   if (anyDuplicated(sheet[[id_column]])) {
     stop("Duplicate '", id_column, "' in sample sheet: ",
          paste(unique(sheet[[id_column]][duplicated(sheet[[id_column]])]),
                collapse = ", "), call. = FALSE)
   }
+
+  # Machine columns are dropped rather than joined. Reported, not silent: a
+  # generated samples.tsv carries sixteen of them, and somebody who wanted one
+  # should be told where it went rather than left wondering.
+  drop <- base::intersect(colnames(sheet),
+                          setdiff(.cli_sheet_machine_columns(), id_column))
+  if (length(drop)) {
+    message("  sample sheet: ", length(drop),
+            " machine column(s) not carried into the output (",
+            paste(utils::head(drop, 6), collapse = ", "),
+            if (length(drop) > 6) ", ..." else "", ")")
+    sheet <- sheet[, setdiff(colnames(sheet), drop), drop = FALSE]
+  }
   return(sheet)
+}
+
+# --- the Fiji _config.txt beside a results folder -----------------------------
+
+#' Find `<sample>_config.txt`
+#'
+#' Fiji writes it beside the outline tables, which is not necessarily where the
+#' .rds ended up, so every plausible directory is tried.
+#'
+#' @return a path, or NA_character_
+.cli_find_config <- function(sample, dirs) {
+  cands <- file.path(dirs, paste0(sample, "_config.txt"))
+  hit <- cands[file.exists(cands)]
+  if (!length(hit)) return(NA_character_)
+  return(normalizePath(hit[1], mustWork = FALSE))
+}
+
+#' Read a `_config.txt` into a named character vector
+#'
+#' @return named character, or NULL when the file is missing or not this format
+.cli_read_config <- function(path) {
+  if (length(path) != 1L || is.na(path) || !file.exists(path)) return(NULL)
+  cfg <- tryCatch(utils::read.delim(path, stringsAsFactors = FALSE,
+                                    check.names = FALSE, comment.char = "#"),
+                  error = function(e) NULL)
+  if (is.null(cfg) || !all(c("parameter", "value") %in% colnames(cfg))) return(NULL)
+  out <- as.character(cfg$value)
+  names(out) <- as.character(cfg$parameter)
+  return(out)
+}
+
+#' One numeric field out of a `_config.txt`
+#'
+#' Blank is NA, not zero: `pixel_depth` is deliberately blank for a single-plane
+#' image, because there is no z axis to measure.
+.cli_config_num <- function(cfg, key) {
+  if (is.null(cfg) || !key %in% names(cfg)) return(NA_real_)
+  v <- suppressWarnings(as.numeric(cfg[[key]]))
+  if (length(v) != 1L) return(NA_real_)
+  return(v)
 }
 
 # Columns the CLIs write themselves. A sample sheet column of the same name

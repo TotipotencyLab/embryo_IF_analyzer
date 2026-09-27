@@ -226,6 +226,55 @@ test_that("a duplicate prefix is refused downstream, allowed at sheet time", {
                "Duplicate '", fixed = TRUE)
 })
 
+test_that("both ends read `include` the same way, and the doc says so", {
+  # One sheet, two readers. A word that means "run this" to Fiji and something
+  # else to R would show up only as a sample count, months later.
+  br <- file.path(repo_root(), "scripts", "groovy", "BatchRunner.groovy")
+  skip_if_not(file.exists(br), "BatchRunner.groovy not found")
+  groovy <- paste(readLines(br, warn = FALSE), collapse = "\n")
+
+  # The accepted words, asserted against the Groovy source rather than restated.
+  for (word in c("true", "yes", "false", "no")) {
+    expect_match(groovy, paste0('"', word, '"'), fixed = TRUE)
+  }
+  expect_true(all(.cli_is_included(c("true", "yes", "1"))))
+  expect_false(any(.cli_is_included(c("false", "no", "0"))))
+  expect_error(.cli_is_included("maybe"), "true/false")
+
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  expect_true(any(grepl("BatchRunner.isIncluded", doc, fixed = TRUE)))
+})
+
+test_that("the machine columns R drops are the schema's, not a second list", {
+  schema <- read.delim(file.path(repo_root(), "schema", "sheet_columns.tsv"),
+                       stringsAsFactors = FALSE)
+  want <- schema$column[schema$sheet == "samples" & schema$owner == "machine"]
+  expect_gt(length(want), 0L)
+  # Read at run time, so adding a machine column to the schema needs no R edit.
+  expect_setequal(.cli_sheet_machine_columns(), want)
+
+  helpers <- paste(readLines(file.path(repo_root(), "scripts", "R_cli",
+                                       "cli_helpers.r"), warn = FALSE),
+                   collapse = "\n")
+  expect_match(helpers, "sheet_columns.tsv", fixed = TRUE)
+  # ...and no hardcoded copy of the list alongside it.
+  expect_false(grepl('"size_x", "size_y"', helpers, fixed = TRUE))
+})
+
+test_that("pixel_depth is documented as the z_step default, not as unread", {
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  row <- grep("^\\|\\s*`pixel_depth`\\s*\\|", doc, value = TRUE)
+  expect_length(row, 1L)
+  expect_match(row, "defaults `--z_step` to it", fixed = TRUE)
+  # The claim this replaced must be gone, not merely joined by the new one.
+  expect_false(any(grepl("nothing on the R side reads it yet", doc, fixed = TRUE)))
+
+  cli <- paste(readLines(file.path(repo_root(), "scripts", "R_cli",
+                                   "feature_stat_cli.r"), warn = FALSE),
+               collapse = "\n")
+  expect_match(cli, "pixel_depth", fixed = TRUE)
+})
+
 # --- the R CLI outputs --------------------------------------------------------
 
 test_that("annotate writes the documented columns", {

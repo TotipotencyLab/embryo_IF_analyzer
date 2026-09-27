@@ -92,6 +92,34 @@ reports none. `file_size` with the basename is the fingerprint that spots a
 copied or replaced file, and what `skipExplored` compares against before
 deciding a file is unchanged.
 
+**Passing the same sheet to both stages is the ordinary case.**
+`annotate_features_cli.r` binds the sheet's metadata onto every feature row, so
+a column such as `genotype` is already in the `_features.rds` by the time
+`feature_stat_cli.r` sees it. That step therefore **reconciles rather than
+re-joins**: a shared column whose values agree per sample is skipped (a
+`left_join` would produce `genotype.x`/`genotype.y`, after which `--group_by
+genotype` resolves to neither), and one whose values *disagree* is a hard error
+— the features were annotated from a different sheet, and silently preferring
+either copy would attach the wrong metadata to real numbers.
+
+**The R side reads this sheet too, and reads it the same way.** `include` is
+honoured by `.cli_read_sample_sheet()` with exactly the vocabulary
+`BatchRunner.isIncluded()` accepts (`true/yes/1`, `false/no/0`, blank or absent
+= included); a word neither side agrees on is an error rather than a guess. It
+is applied **before** the duplicate-prefix check, so setting `include=false` on
+all but one of a colliding pair works on both ends — which is what the Groovy
+error tells you to do. The column is then dropped: it says whether to analyse a
+row, and would otherwise land on every output row as a column that is `TRUE`
+everywhere by construction.
+
+The **machine columns are dropped too**, read from `schema/sheet_columns.tsv`
+rather than listed again in R. They are facts about the image file that
+`Make_SampleSheet` rewrites on every regeneration, and a generated sheet carries
+sixteen of them — joined through, they would put `size_x` and `file_size` on
+every feature row as though somebody had typed them as metadata. The run reports
+which were dropped. A CLI copied out of the repo finds no schema, keeps
+everything, and still runs.
+
 ⚠️ A metadata column may not be named after one the CLIs write themselves —
 `roi`, `z`, `area`, `is_bridge`, `geometry`, `sample`, `run_id`, `feature_id`,
 `feature_type`, `parent_*`, `feature_class`, `n_detected`, `n_invalid`,
@@ -295,7 +323,7 @@ Provenance, read long after the run. Fields that other code depends on:
 |---|---|
 | `image_width`, `image_height` | **pixels.** `montage_qc_cli.r`, to draw its panel over the same frame as the Fiji PNG |
 | `pixel_width`, `pixel_height`, `pixel_unit` | the same, to convert that frame to µm |
-| `pixel_depth` | the z step, in `pixel_unit`. **Blank when the image is a single plane** — ImageJ defaults the calibration to 1.0 with no z axis and Bio-Formats reports no physical size, so a written 1.0 would be a plausible number for a distance that does not exist. Written since 0.2.x; `feature_stat_cli.r --z_step` does not read it yet |
+| `pixel_depth` | the z step, in `pixel_unit`. **Blank when the image is a single plane** — ImageJ defaults the calibration to 1.0 with no z axis and Bio-Formats reports no physical size, so a written 1.0 would be a plausible number for a distance that does not exist. Written since 0.2.0, and `feature_stat_cli.r` now **defaults `--z_step` to it**, per sample, from the config beside the inputs |
 | `script` | records the repo `VERSION` that produced the directory |
 | `source_file`, `series_index`, `series_name` | which series of which file produced this directory. Written by the batch, **blank in the interactive runner** where the image was already open and nothing told it. Identity comes from content, not from the filename, so the prefix should not have to be parsed apart to answer this |
 | `open_method` | which reader opened the image: `importer` (Bio-Formats' own) or `reader` (one held open across the file). **Blank when the image was already open**, i.e. the interactive runner, where the operator opened it however they liked. The two are asserted to produce byte-identical output, but two runs that used different ones must not be indistinguishable afterwards |
@@ -483,7 +511,7 @@ rejects table instead of being folded in.
 | `n_bridge`, `frac_bridge` | bridge ROIs in the feature, and their share of `n_roi_all`; `0` unless `--bridge_roi` was used |
 | `max_roi_per_z` | most **seed** ROIs the feature has on any one slice. **`> 1` means it spans objects sitting side by side**, not one object followed through z. Bridges are excluded: a bridge often lies *over* what it connects, so counting them would read `2` on a good rescue |
 | `area_med`, `area_mean`, `area_max`, `area_sum` | per-slice ROI area, µm². `area_sum` is the shape-free size measure — see below |
-| `volume` | `area_sum × --z_step`, µm³. **Only when `--z_step` is given** — the run says so when it is not, since an absent column is otherwise indistinguishable from a missing feature |
+| `volume` | `area_sum × z_step`, µm³. Present when a z step is **known**: `--z_step` if given, otherwise `pixel_depth` read from each sample's `_config.txt`. The run says which, and says so when there is none — an absent column is otherwise indistinguishable from a missing feature |
 | `circ_med`, `circ_min` | only when the `_res.txt` was found |
 | `ch<N>_signal` | one column per channel measured; only when the `_res.txt` was found |
 | `class` | the `--class` a feature matched, or `unclassified`; only when `--class` was given |
@@ -504,10 +532,15 @@ for growing ones, which are visibly irregular. `area_sum` — summed
 cross-sectional area — is the shape-free alternative, and `--z_step` turns it
 into a real volume by the Cavalieri estimate (`area_sum × z_step`).
 
-`--z_step` still has to be supplied. Fiji's `_config.txt` **has recorded
-`pixel_depth` since 0.2.x**, but nothing on the R side reads it yet, and for
-results produced before that it is not in the file at all — so the slice
-spacing is not recoverable from every results directory. `volume` is also an *undercount*
+`--z_step` no longer has to be supplied. Fiji's `_config.txt` has recorded
+`pixel_depth` since 0.2.0, and `feature_stat_cli.r` reads it **per sample**,
+from the config beside that sample's tables — not once for the run, because
+pixel size varies within a single `.lif` here (0.4456 / 0.2227 / 0.1098 µm) and
+one z step for all of them would be wrong for most. An explicit `--z_step` wins
+everywhere. Two cases still yield no `volume`, and both are said aloud rather
+than defaulted: results produced before 0.2.0 have no `pixel_depth` in the file
+at all, and a single-plane image leaves it **blank on purpose**, because there
+is no z axis to measure. `volume` is also an *undercount*
 wherever the object was missed on a slice inside its own range — nothing is
 interpolated, and `z_gaps` is the column that says how much is missing.
 

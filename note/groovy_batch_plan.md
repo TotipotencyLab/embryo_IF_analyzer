@@ -295,7 +295,12 @@ from the GUI, and the difference is captured in its own `_config.txt`.
 | ~~**B**~~ | **DONE.** `RunConfig.groovy` (parse/format/coerce, unknown-key error, provenance ignored); `NucleusPipeline.PARAM_TYPES`/`DEFAULTS`/`fromConfig`; `pixel_depth` in `_config.txt`, blank for a single plane | | reference diff: measurement files byte-identical, `_config.txt` differs by exactly the one added row. Groovy 233 passed / 0 failed; R 682/0/0 |
 | ~~**C**~~ | **DONE.** `schema/sheet_columns.tsv` + `SheetSchema`/`Tsv`/`SampleSheet` · `Make_SampleSheet.groovy` (scan + build + merge, headless) · `config/files_template.tsv` · `data_formats.md` §1 rewritten · `Inspect_ImageFile.groovy` committed | | real LIF: 15 rows, prefixes unique and sanitised, dims match §2; rerun over a hand-edited sheet kept every edit (0 added, 15 updated). Groovy 123 on the new/changed tests; R 692/0/0 |
 | ~~**D**~~ | **DONE.** `BatchRunner.groovy` + `Run_NucleusSelector_Batch.groovy`; per-row try/catch, `batch_summary.tsv`, `batch_params.txt`, mixed-pixel-size and stale-sheet warnings, images closed each iteration, `persist=false` | | one-row sheet over Position010 fed the FIXTURE'S OWN `_config.txt`: outlines and ROI zips byte-identical to the interactive run, `_config.txt` differs only in `script`. R join verified identical. Test_BatchRunner 38 |
-| **E** | R honours `include`; `--z_step` defaults from `pixel_depth`; consumes the schema file | independent of A–D | existing suite + a sheet with `include=FALSE` |
+| ~~**E**~~ | **DONE.** `.cli_read_sample_sheet()` honours `include` (same vocabulary as `BatchRunner.isIncluded`, applied *before* the duplicate check) and drops it; machine columns read from `schema/sheet_columns.tsv` and dropped from the metadata join; `feature_stat_cli.r --z_step` defaults to `pixel_depth` from each sample's `_config.txt`, per sample | | R suite 710 -> 759 / 0 failed under 4.6.1. The inference was checked by disabling it and watching exactly the two inference assertions fail while the explicit `--z_step` one kept passing |
+
+**A–E are delivered.** This note was written to be deleted once they were; what
+is still only here rather than in `note/data_formats.md`, `CLAUDE.md` or the
+`fiji-headless-testing` skill is §2 (the measured facts about the example
+`.lif`) and §8 (the questions that were open during the design).
 
 Batch robustness requirements for D, easy to forget:
 
