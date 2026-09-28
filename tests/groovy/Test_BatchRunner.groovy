@@ -189,6 +189,37 @@ check("a failed row has no threshold",         sum.find { it.prefix == "B" }.thr
 check("an excluded row has no coverage",       sum.find { it.prefix == "D" }.mask_pct, "")
 
 println ""
+println "=== the overview override refuses what it does not recognise ==="
+// save_overview is a real parameter and a config carries it, so this dialog
+// field is an OVERRIDE, not a setting: "(from config)" leaves the config alone.
+// A Boolean could not express that -- it has no third state -- which is why it
+// stopped being one.
+check("the neutral value leaves the config alone",
+      BR.overviewOverride("(from config)"), null)
+check("blank means the same",                  BR.overviewOverride(""), null)
+check("absent means the same",                 BR.overviewOverride(null), null)
+check("yes overrides to true",                 BR.overviewOverride("yes"), true)
+check("no overrides to false",                 BR.overviewOverride("no"), false)
+check("surrounding space is tolerated",        BR.overviewOverride("  yes  "), true)
+
+// THE ONE THAT MATTERS. A `#@ String` with choices={...} is NOT validated
+// against those choices on the command line -- SciJava passes any string
+// through. Measured: a script declaring {"(from config)","yes","no"} and run
+// with pick=true receives the String "true".
+//
+// This switch WAS a Boolean. A caller carrying saveOverview=true from before
+// the change would land in the override branch, compare "true" == "yes", and
+// silently turn overviews OFF -- the opposite of what it says. Refusing is the
+// only safe reading, because "true" plainly means yes to whoever wrote it and
+// there is no way to honour that without guessing.
+check("the OLD boolean value is refused, not read as 'no'",
+      errOf { BR.overviewOverride("true") }?.contains("saveOverview must be one of"), true)
+check("...and the message says why it changed",
+      errOf { BR.overviewOverride("true") }?.contains("true/false switch before"), true)
+check("false is refused too",                  errOf { BR.overviewOverride("false") } != null, true)
+check("and anything else",                     errOf { BR.overviewOverride("maybe") } != null, true)
+
+println ""
 println "=== a bad threshold request costs ONE error, not one per row ==="
 // The batch checks the threshold before the loop. Without that, "Manual with
 // no range" would open a stack, blur it, and fail -- for every included row.

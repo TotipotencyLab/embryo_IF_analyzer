@@ -31,9 +31,6 @@
 
 import ij.IJ
 
-// The dialog value that means "whatever the config says".
-final String OVERVIEW_FROM_CONFIG = "(from config)"
-
 def resolveLibDir = {
     def cands = []
     try { cands << binding.variables["javax.script.filename"] } catch (ignored) {}
@@ -70,9 +67,11 @@ params.script_name = "Run_NucleusSelector_Batch.groovy"
 // Same convention the output prefix used to use: a neutral value means "do not
 // override". Useful on a long batch, where a quick no-PNG pass should not mean
 // editing the config and then editing it back.
-if (saveOverview != OVERVIEW_FROM_CONFIG) {
-    params.save_overview = (saveOverview == "yes")
-}
+// BatchRunner owns the vocabulary and REFUSES anything else -- a `#@ String`
+// with choices is not validated on the command line, so an old
+// saveOverview=true would otherwise silently mean "no".
+def overviewOverride = BR.overviewOverride(saveOverview)
+if (overviewOverride != null) params.save_overview = overviewOverride
 // A request, not a decision: BatchRunner turns "auto" into importer or reader
 // per file and records which one ran. See BatchRunner's opening section for why
 // the two exist.

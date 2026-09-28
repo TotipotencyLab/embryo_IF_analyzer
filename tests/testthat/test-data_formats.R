@@ -372,6 +372,16 @@ test_that("the batch overview switch overrides the config instead of replacing i
   src <- paste(readLines(b, warn = FALSE), collapse = "\n")
   expect_match(src, "(from config)", fixed = TRUE)
   expect_false(grepl("Boolean (persist=false, label=\"Save overview", src, fixed = TRUE))
+  # The vocabulary and the refusal live in BatchRunner, not in the front end:
+  # a `#@` script is only ever compiled by the suite, never run, so a check
+  # written there could not be tested at all.
+  br <- file.path(repo_root(), "scripts", "groovy", "BatchRunner.groovy")
+  br_src <- paste(readLines(br, warn = FALSE), collapse = "\n")
+  expect_match(br_src, "overviewOverride", fixed = TRUE)
+  expect_match(br_src, "OVERVIEW_CHOICES", fixed = TRUE)
+  # NOT asserted here: the caller in sandbox/, which passed the old boolean.
+  # sandbox/ is gitignored, so a check on it would pass vacuously on every
+  # checkout but this one.
   # The dead field is gone: BatchRunner passes the sheet prefix as basename,
   # which wins over output_prefix outright, so this could never take effect.
   expect_false(grepl("outPrefix", src, fixed = TRUE))
