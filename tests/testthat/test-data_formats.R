@@ -325,6 +325,68 @@ test_that("Manual thresholding and the per-slice option are parameters, and docu
   expect_false(grepl("persist=false", m_line, fixed = TRUE))
 })
 
+test_that("every run-config parameter is written back, and the rule is recorded", {
+  # An absent key in _config.txt is legal -- readParams rejects unknown keys,
+  # not missing ones -- so a parameter the writer forgets silently becomes its
+  # DEFAULT on the next run. The round trip fails while looking like it worked.
+  # Three couplings around this file already had a set-difference assertion and
+  # never drifted; this one had none and drifted three times.
+  np <- file.path(repo_root(), "scripts", "groovy", "NucleusPipeline.groovy")
+  tnp <- file.path(repo_root(), "tests", "groovy", "Test_NucleusPipeline.groovy")
+  skip_if_not(all(file.exists(np, tnp)), "Groovy library not found")
+
+  np_src <- paste(readLines(np, warn = FALSE), collapse = "\n")
+  # The five that were missing, now written.
+  for (k in c("save_roi_zips", "save_outlines", "save_measurements",
+              "save_config", "save_overview")) {
+    expect_gte(lengths(regmatches(np_src, gregexpr(k, np_src, fixed = TRUE))), 2L)
+  }
+  # The guard itself, in the test that observes a config it actually produced
+  # rather than scraping source for key names.
+  tnp_src <- paste(readLines(tnp, warn = FALSE), collapse = "\n")
+  expect_match(tnp_src, "every parameter is written back", fixed = TRUE)
+  expect_match(tnp_src, "NOT_WRITTEN", fixed = TRUE)
+
+  cl <- readLines(file.path(repo_root(), "CLAUDE.md"), warn = FALSE)
+  expect_true(any(grepl("Every `PARAM_TYPES` key must be written back", cl, fixed = TRUE)))
+  # The four couplings, as a table naming where each is asserted.
+  expect_true(any(grepl("what `saveRunConfig()` actually writes", cl, fixed = TRUE)))
+  # And why the sample sheet needs none of it: one run-time schema file, read by
+  # both languages. Someone "fixing" the sheet to look like the config would be
+  # going backwards.
+  expect_true(any(grepl("read at \\*run time\\* by `SheetSchema.groovy`", cl)))
+
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  expect_true(any(grepl("single deliberate exception", doc, fixed = TRUE)))
+  # The writer/reader inventory: the R CLIs read this file by hard-coded field
+  # name and nothing checks them against the writer.
+  expect_true(any(grepl("no run-time schema file", doc, fixed = TRUE)))
+})
+
+test_that("the batch overview switch overrides the config instead of replacing it", {
+  # save_overview is a real parameter and a config now carries it, so a Boolean
+  # on the batch dialog would be two sources of truth with the config's value
+  # permanently unreachable -- a Boolean has no third state for "leave it".
+  b <- file.path(repo_root(), "scripts", "groovy", "Run_NucleusSelector_Batch.groovy")
+  skip_if_not(file.exists(b), "batch runner not found")
+  src <- paste(readLines(b, warn = FALSE), collapse = "\n")
+  expect_match(src, "(from config)", fixed = TRUE)
+  expect_false(grepl("Boolean (persist=false, label=\"Save overview", src, fixed = TRUE))
+  # The vocabulary and the refusal live in BatchRunner, not in the front end:
+  # a `#@` script is only ever compiled by the suite, never run, so a check
+  # written there could not be tested at all.
+  br <- file.path(repo_root(), "scripts", "groovy", "BatchRunner.groovy")
+  br_src <- paste(readLines(br, warn = FALSE), collapse = "\n")
+  expect_match(br_src, "overviewOverride", fixed = TRUE)
+  expect_match(br_src, "OVERVIEW_CHOICES", fixed = TRUE)
+  # NOT asserted here: the caller in sandbox/, which passed the old boolean.
+  # sandbox/ is gitignored, so a check on it would pass vacuously on every
+  # checkout but this one.
+  # The dead field is gone: BatchRunner passes the sheet prefix as basename,
+  # which wins over output_prefix outright, so this could never take effect.
+  expect_false(grepl("outPrefix", src, fixed = TRUE))
+})
+
 test_that("the sample prefix carries the series index, and the doc says so", {
   # Series names repeat -- a tile scan is many series under one name -- so the
   # index is what makes the prefix unique WITHIN a file, as the alias does

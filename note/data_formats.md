@@ -337,7 +337,25 @@ ar round solidity filename roi pos z
 
 ### `_config.txt` — two columns, `parameter` and `value`
 
-Provenance, read long after the run. Fields that other code depends on:
+Provenance, read long after the run. **Eleven non-test files across both
+languages touch it**, which is most of the reason a field name is expensive to
+change — renaming one from the Groovy side would not naturally lead anyone to
+grep the R CLIs:
+
+| | |
+|---|---|
+| **writes** | `NucleusPipeline` (via `RoiExport.saveRunConfig()`) — the only writer |
+| **reads as parameters** | `RunConfig.readParams()`, called by `Run_NucleusSelector_Batch.groovy`. Unknown key ⇒ error; absent key ⇒ the default |
+| **reads individual fields** | `montage_qc_cli.r` (`image_width`/`image_height`, `pixel_width`/`pixel_height`) · `feature_stat_cli.r` (`pixel_depth` ⇒ `--z_step`) · `cli_helpers.r` (`.cli_read_config()`) |
+| **schema** | `NucleusPipeline.PARAM_TYPES` (parameters) + `RunConfig.PROVENANCE_KEYS` (everything else) |
+| **template** | `config/nucleus_config_template.txt`, generated from `NucleusPipeline.DEFAULTS` |
+
+Unlike the sample sheet, there is **no run-time schema file** both languages
+read — `schema/sheet_columns.tsv` has no counterpart here. The R readers above
+therefore know these field names by hard-coded string, and nothing checks them
+against the writer. Changing a field name means grepping this table.
+
+Fields that other code depends on:
 
 | Field | Used by |
 |---|---|
@@ -355,6 +373,19 @@ Provenance, read long after the run. Fields that other code depends on:
 Everything else is a record of the run's parameters. A key that is absent must
 be handled, not assumed: configs written before a field existed are still valid
 input (`montage_qc_cli.r` warns and degrades rather than failing).
+
+⚠️ **That tolerance is also the trap.** Because an absent key is legal, a
+parameter the writer forgets silently becomes its *default* on the next run
+rather than an error. `Test_NucleusPipeline` asserts every `PARAM_TYPES` key is
+written, against a config that was actually produced.
+
+**`output_prefix` is the single deliberate exception.** It decides what the
+output is *called*, not what work happens — the same category as `outdir`, which
+is likewise not in the config — so writing it would make a re-run reproduce the
+previous run's filenames and overwrite it instead of landing beside it for
+comparison. What the names were is recorded anyway, as `output_basename`. It is
+also **interactive-only**: the batch passes the sheet's `prefix` as `basename`,
+which wins over `output_prefix` outright.
 
 **This file can be read back in as the parameters of another run.**
 `RunConfig.groovy` parses exactly the shape `RoiExport.saveRunConfig()` writes,

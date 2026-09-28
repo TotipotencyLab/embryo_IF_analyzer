@@ -100,6 +100,43 @@ class BatchRunner {
 
     static final List<String> OPEN_MODES = ["auto", "importer", "reader"]
 
+    /** The batch dialog's overview value meaning "whatever the config says". */
+    static final String OVERVIEW_FROM_CONFIG = "(from config)"
+    static final List<String> OVERVIEW_CHOICES = [OVERVIEW_FROM_CONFIG, "yes", "no"]
+
+    /**
+     * Resolve the batch dialog's overview switch. `null` means leave the
+     * config's own save_overview alone.
+     *
+     * It lives here rather than in the `#@` front end so that it can be tested:
+     * a front end is only ever compiled by the test suite, never run.
+     *
+     * ⚠️ AND IT MUST REFUSE WHAT IT DOES NOT RECOGNISE. A `#@ String` with
+     * `choices={...}` is NOT validated against those choices on the command
+     * line -- SciJava passes any string straight through. Measured: a script
+     * declaring choices {"(from config)","yes","no"} and run with `pick=true`
+     * receives the String "true".
+     *
+     * That matters because this switch used to be a Boolean. A caller carrying
+     * `saveOverview=true` from before the change would otherwise land in the
+     * override branch, compare "true" == "yes", and SILENTLY TURN OVERVIEWS
+     * OFF -- the opposite of what it says. Same reasoning as OPEN_MODES, which
+     * has refused an unknown mode since it was added.
+     */
+    static Boolean overviewOverride(Object v) {
+        String s = (v == null || !v.toString().trim()) ? OVERVIEW_FROM_CONFIG
+                                                       : v.toString().trim()
+        if (!OVERVIEW_CHOICES.contains(s)) {
+            throw new IllegalArgumentException(
+                "saveOverview must be one of " + OVERVIEW_CHOICES.join(", ") +
+                "; got >>>" + v + "<<<\n" +
+                "  It was a true/false switch before, and a command line is not " +
+                "checked against the dialog's choices -- so a leftover " +
+                "saveOverview=true would have meant 'no'.")
+        }
+        return (s == OVERVIEW_FROM_CONFIG) ? null : (s == "yes")
+    }
+
     /**
      * Above this many series in the FILE, `auto` stops using the importer.
      *

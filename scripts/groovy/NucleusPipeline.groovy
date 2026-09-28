@@ -53,6 +53,16 @@ class NucleusPipeline {
     // config file setting it would give every image in a batch the same name
     // and each would overwrite the last. It is passed per image, by the caller.
     // `script_name` likewise identifies the caller, not the request.
+    //
+    // `output_prefix` IS here -- a config may set it -- but it is the one
+    // parameter saveRunConfig() deliberately does not write back. It decides
+    // what the output is CALLED, not what work happens, which puts it in the
+    // same category as `outdir`: an invocation, not an analysis. Writing it
+    // would make a re-run reproduce the previous run's filenames and overwrite
+    // it rather than land beside it for comparison. What the names actually
+    // were is already recorded, as the `output_basename` provenance field.
+    // Test_NucleusPipeline names it as the single exclusion, so its absence
+    // reads as a decision rather than as the oversight the save_* keys were.
     static final Map<String, String> PARAM_TYPES = [
         output_prefix          : "string",
         position_pattern       : "string",
@@ -420,6 +430,23 @@ class NucleusPipeline {
                 overview_height        : p.overview_height,
                 overview_contrast      : p.overview_contrast,
                 overview_saturated     : p.overview_saturated,
+                // The five save_* switches. They decide WHAT WORK HAPPENS, so
+                // they are parameters and must survive the round trip: a config
+                // produced by a run that had overviews on, fed back in without
+                // them, silently writes none -- and the four that default ON
+                // come back on after being switched off. Test_NucleusPipeline
+                // asserts every PARAM_TYPES key is written, which is the guard
+                // that was missing when these five were not.
+                save_roi_zips          : p.save_roi_zips,
+                save_outlines          : p.save_outlines,
+                save_measurements      : p.save_measurements,
+                save_config            : p.save_config,
+                save_overview          : p.save_overview,
+                // Redundant with save_overview above, and kept: it is the
+                // OUTCOME rather than the request, it reads back as provenance
+                // rather than as a parameter, and it has been in this file
+                // since 0.2.0 beside overview_channels. The two cannot drift --
+                // they are the same expression.
                 overview_saved         : p.save_overview,
                 // Which overview files exist, so a results folder can be read
                 // later without guessing. Blank when none were written.
