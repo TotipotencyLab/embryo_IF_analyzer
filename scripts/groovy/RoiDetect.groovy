@@ -160,7 +160,26 @@ class RoiDetect {
         validateThreshold(method, rangeSpec)
 
         def mask = new Duplicator().run(imp, channel, channel, 1, imp.getNSlices(), 1, 1)
-        if (sigma > 0) IJ.run(mask, "Gaussian Blur...", "sigma=${sigma} stack")
+        // Blurred one plane at a time, NOT with IJ.run(..., "stack").
+        //
+        // The stack form is parallelised over slices (PARALLELIZE_STACKS), and
+        // each worker converts its byte plane to a float one -- 415 MB per
+        // thread on the large tile merges, eight of them at once. Measured peak
+        // there was 9218 MB against a ceiling that starts at 8889 MB and only
+        // grows to 9607 MB: it survived on the garbage collector keeping up,
+        // which is a margin that passes in testing and fails on the run that
+        // matters. Per slice, one float plane is live at a time.
+        //
+        // The pixels are identical: measured on 8- and 16-bit synthetic stacks,
+        // 0 of 16384 pixels differ from the IJ.run form, because "stack" mode
+        // is this same 2D blur applied per plane. Test_BuildMask pins that.
+        if (sigma > 0) {
+            def blur = new ij.plugin.filter.GaussianBlur()
+            def blurStack = mask.getStack()
+            for (int z = 1; z <= blurStack.getSize(); z++) {
+                blur.blurGaussian(blurStack.getProcessor(z), sigma)
+            }
+        }
         int maxValue = (imp.getBitDepth() == 16) ? 65535 : 255
 
         // --- Manual: no algorithm runs at all ------------------------------
@@ -285,22 +304,45 @@ class RoiDetect {
         return [mask: mask, threshold: thresholdUsed, lo: lo, hi: hi, coverage: coverage]
     }
 
-    /** Mark pixels in [lo, hi] as 255 and everything else 0, as an 8-bit stack. */
+    /**
+     * Mark pixels in [lo, hi] as 255 and everything else 0, as an 8-bit stack.
+     *
+     * ⚠️ MUTATES THE STACK IT IS GIVEN. Every caller is buildMask, and the stack
+     * it passes is buildMask's own Duplicator copy, which nothing else holds.
+     * Do not call this on an image you did not just duplicate.
+     *
+     * WHY IN PLACE
+     *   The old version built a second full stack while the first was still
+     *   referenced by the loop, so both were live from slice 1 onward. On an
+     *   11344 x 9590 x 25 tile merge that is a third complete copy of the pixel
+     *   data (2594 MB) arriving at the worst possible moment -- the original
+     *   image is still held because both channels are measured after the mask is
+     *   built -- and it was where the run died with OutOfMemoryError. On 8-bit
+     *   input the copy bought nothing whatsoever: 8-bit in, 8-bit out.
+     *   Measured peak for that series: 10375 MB required against ~9607 MB
+     *   available; in place it is 7781 MB. See note/large_series_memory.md.
+     */
     static void applyRange(ImagePlus imp, int lo, int hi) {
-        def src = imp.getStack()
-        def out = new ij.ImageStack(imp.getWidth(), imp.getHeight())
-        for (int z = 1; z <= src.getSize(); z++) {
-            def ip = src.getProcessor(z)
-            def bp = new ij.process.ByteProcessor(imp.getWidth(), imp.getHeight())
-            for (int y = 0; y < imp.getHeight(); y++) {
-                for (int x = 0; x < imp.getWidth(); x++) {
-                    int v = ip.get(x, y)
-                    if (v >= lo && v <= hi) bp.set(x, y, 255)
+        if (imp.getBitDepth() == 8) {
+            def src = imp.getStack()
+            for (int z = 1; z <= src.getSize(); z++) {
+                // getPixels() hands back the LIVE array, so this edits the stack.
+                byte[] px = (byte[]) src.getProcessor(z).getPixels()
+                for (int i = 0; i < px.length; i++) {
+                    int v = px[i] & 0xff
+                    // ⚠️ The else branch is not optional. The old code started
+                    // from a fresh ByteProcessor -- already all zero -- and only
+                    // ever wrote 255. In place, a pixel outside the range keeps
+                    // its original grey value unless it is written, and detect()
+                    // puts setThreshold(128, 255) on the result: the background
+                    // would be the raw image and the ROIs would look plausible.
+                    // Assigning unconditionally makes that impossible to forget.
+                    px[i] = (byte) ((v >= lo && v <= hi) ? 255 : 0)
                 }
             }
-            out.addSlice(src.getSliceLabel(z), bp)
+            return
         }
-        imp.setStack(out)
+        replaceWith8Bit(imp) { int v -> v >= lo && v <= hi }
     }
 
     /** Zero one slice in place, leaving the rest of the stack alone. */
@@ -313,12 +355,14 @@ class RoiDetect {
 
     /** Replace a stack with an empty 8-bit mask of the same shape. */
     static void blank(ImagePlus imp) {
-        def out = new ij.ImageStack(imp.getWidth(), imp.getHeight())
-        for (int z = 1; z <= imp.getStackSize(); z++) {
-            out.addSlice(imp.getStack().getSliceLabel(z),
-                         new ij.process.ByteProcessor(imp.getWidth(), imp.getHeight()))
+        if (imp.getBitDepth() == 8) {
+            def src = imp.getStack()
+            for (int z = 1; z <= src.getSize(); z++) {
+                java.util.Arrays.fill((byte[]) src.getProcessor(z).getPixels(), (byte) 0)
+            }
+            return
         }
-        imp.setStack(out)
+        replaceWith8Bit(imp) { int v -> false }
     }
 
     /**
@@ -327,20 +371,49 @@ class RoiDetect {
      * Any non-zero pixel is "on". A 16-bit threshold result is 0/65535, and
      * everything downstream -- detect()'s setThreshold(128, 255), Fill Holes,
      * Watershed -- assumes the 8-bit form.
+     *
+     * The 8-bit early return is deliberate and is NOT the same as running the
+     * mapping: it leaves an already-8-bit stack exactly as it arrived, values
+     * and all, rather than forcing every non-zero pixel to 255.
      */
     static void to8BitMask(ImagePlus imp) {
         if (imp.getBitDepth() == 8) { return }
+        replaceWith8Bit(imp) { int v -> v != 0 }
+    }
+
+    /**
+     * Rebuild a non-8-bit stack as an 8-bit 0/255 mask, one plane at a time,
+     * releasing each source plane as soon as it has been read.
+     *
+     * ⚠️ ImageStack.setProcessor() CANNOT be used to swap a ByteProcessor into a
+     * 16-bit stack. It accepts the call without complaint and then CONVERTS:
+     * measured on IJ 1.54p, the stored array is still short[], is not the array
+     * that was handed in, and the stack still reports 16-bit. A plane-swap
+     * written that way allocates a short plane per slice -- no saving at all --
+     * and yields a 16-bit mask whose "on" value is 255, which detect() would
+     * still turn into plausible-looking ROIs. That is why this releases through
+     * setPixels(null, z) instead, which stores what it is given.
+     *
+     * The release is what keeps the peak down: the source shrinks by one plane
+     * for every plane the output grows by, so the two together never exceed the
+     * source stack's original size. The old form held both stacks whole.
+     */
+    private static void replaceWith8Bit(ImagePlus imp, Closure<Boolean> isOn) {
+        int w = imp.getWidth(), h = imp.getHeight()
         def src = imp.getStack()
-        def out = new ij.ImageStack(imp.getWidth(), imp.getHeight())
+        def out = new ij.ImageStack(w, h)
         for (int z = 1; z <= src.getSize(); z++) {
             def ip = src.getProcessor(z)
-            def bp = new ij.process.ByteProcessor(imp.getWidth(), imp.getHeight())
-            for (int y = 0; y < imp.getHeight(); y++) {
-                for (int x = 0; x < imp.getWidth(); x++) {
-                    if (ip.get(x, y) != 0) bp.set(x, y, 255)
+            def bp = new ij.process.ByteProcessor(w, h)
+            byte[] px = (byte[]) bp.getPixels()
+            int i = 0
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++, i++) {
+                    if (isOn(ip.get(x, y))) px[i] = (byte) 255
                 }
             }
             out.addSlice(src.getSliceLabel(z), bp)
+            src.setPixels(null, z)   // this plane is garbage from here on
         }
         imp.setStack(out)
     }

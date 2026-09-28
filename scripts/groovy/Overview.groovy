@@ -416,7 +416,7 @@ class Overview {
                 throw new IOException("could not write ${file}")
             }
         } finally {
-            flat.close()
+            flat.close(); flat.flush()   // close() alone frees nothing headless
         }
         return file
     }
