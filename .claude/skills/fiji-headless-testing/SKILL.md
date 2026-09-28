@@ -401,6 +401,82 @@ ps -eo pid,command | grep "[I]mageJ-macosx --headless" \
   not be killed.** Check what survived before moving on:
   `ps -eo pid,etime,command | grep "[I]mageJ-macosx" | grep -v headless`
 
+## Memory on large images
+
+A tile merge is not a bigger version of a test image; it is a different problem.
+One 11344 x 9590 x 25 x 2 uint8 series is 5187 MB of pixels, and every
+intermediate is another whole copy. The launcher's default heap here is
+`-Xmx10000m` on a 16 GB machine, and `maxMemory()` reports **less** than that
+and *grows during the run* (ParallelGC excludes a survivor space), so treat the
+usable ceiling as ~8.9-9.6 GB and never as 10.
+
+Two habits carry most of it, both in `references/imagej-api-gotchas.md`:
+
+- **Pair `close()` with `flush()`.** `close()` releases nothing while the
+  variable is in scope, which is every method-local intermediate.
+- **Do not build a replacement stack while holding the original.** Mutate in
+  place when the type is unchanged, and when it must change, release each source
+  plane as you consume it.
+
+Prefer a source-level assertion to remembering either one — a set difference
+fails, a checklist is something a person has to read:
+
+```groovy
+// no bare close() on an image, in any library file
+code =~ /\.close\(\)/ && !(code =~ /\.flush\(\)/)
+```
+
+### Measuring it
+
+Inline the steps you suspect into a standalone script and print
+`totalMemory() - freeMemory()` after each, so each allocation is visible as its
+own step. Run it against the real series — synthetic images of this size cost
+more to build than to measure.
+
+```groovy
+def rt = Runtime.getRuntime()
+def MB = { long b -> String.format("%.0f", b / 1048576.0d) }
+def mem = { String t -> println "MEM  " + t.padRight(34) + " used=" +
+    MB(rt.totalMemory() - rt.freeMemory()) + "MB  max=" + MB(rt.maxMemory()) + "MB" }
+```
+
+⚠️ **A SciJava `--run` script has no `args`** — `MissingPropertyException: No
+such property: args`. Pass inputs as `-D` system properties *before* `--run`:
+
+```bash
+ImageJ-macosx --headless --console -Dlif="$lif" -Dseries=14 --run Diag_Mem.groovy
+```
+
+⚠️ **Keep alive whatever the real pipeline keeps alive.** Dropping the source
+image at the end of a diagnostic lets GC collect gigabytes the real run cannot,
+the failure disappears, and you have measured a lighter run than the one that
+failed. End the script with a line that forces it to stay reachable:
+
+```groovy
+println "REPORT imp_live=" + imp.getStackSize()
+```
+
+⚠️ **A margin that depends on GC timing is not a margin.** Transient
+collectible garbage — a parallel filter's per-thread float planes — can put the
+high-water mark above the ceiling and still pass, repeatedly, until the run that
+matters. Judge a step by what it *demands*, not by whether it survived.
+
+### Proving a memory fix
+
+The failure mode is silent, so the reference diff is not enough on its own:
+
+1. **Pixels unchanged**, against the pre-change implementation kept inline as an
+   oracle — and print the differing pixel *count*, never a boolean.
+2. **The new branch actually ran.** In place means the stack instance survives:
+   `assert imp.getStack().is(before)`. Without this, an early `return` on a
+   mistyped bit-depth check passes (1) perfectly.
+3. **It fits where it did not.** Re-run the failing series at the **default**
+   heap. The control is the original failure at that same heap; one row is
+   enough. Raising `--mem` proves nothing about the fix.
+4. **Do not assume the peak is where the OOM was.** Fixing the reported step
+   moves the failure to the next one. The only evidence that a pipeline fits is
+   a whole run finishing.
+
 ## Verifying a change against a reference run
 
 The way bugs actually get found here: run the old and new paths on the same input

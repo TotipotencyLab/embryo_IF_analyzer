@@ -433,6 +433,43 @@ check("...so the rerun from that config writes one too",
 // config above carried no save_overview, fromConfig() supplied false, and this
 // file was absent while everything else about the rerun looked identical.
 
+
+println ""
+println "=== every ImagePlus close() is paired with flush() ==="
+
+// ImagePlus.close() does NOT release pixels while a reference is still in
+// scope: it detaches a window, and headless there is no window. Measured on a
+// 768 MB stack -- close() with the variable still live freed 0 MB, flush()
+// freed 730 MB. Every intermediate in this pipeline is a full copy of the
+// image, so one unflushed "closed" image is gigabytes carried through every
+// later stage. That is what still exhausted the heap on an 11344 x 9590 x 25
+// tile merge after RoiDetect.buildMask() had been fixed: the nucleus mask was
+// closed, 2594 MB, and alive right through the overview projection.
+//
+// A source assertion rather than a checklist, for the reason CLAUDE.md gives:
+// a checklist is something a person has to remember to read.
+def bareCloses = { String path ->
+    def bad = []
+    new File(path).readLines().eachWithIndex { String line, int i ->
+        String code = line.replaceFirst(/\/\/.*$/, "")
+        if (code =~ /\.close\(\)/ && !(code =~ /\.flush\(\)/)) {
+            // Readers and streams have no flush() of this kind and are not images.
+            if (!(code =~ /(?i)(reader|stream|writer|scanner)\s*\.close\(\)/)) {
+                bad << ((path.split("/")[-1]) + ":" + (i + 1) + " " + code.trim())
+            }
+        }
+    }
+    return bad
+}
+
+def unpaired = []
+["scripts/groovy/NucleusPipeline.groovy",
+ "scripts/groovy/Overview.groovy",
+ "scripts/groovy/RoiDetect.groovy",
+ "scripts/groovy/NucleolusDetect.groovy",
+ "scripts/groovy/BatchRunner.groovy"].each { unpaired.addAll(bareCloses(it)) }
+check("no close() without flush() in the library", unpaired, [])
+
 // Once everything has been read back, not partway through: sections added after
 // this line used to run against a directory that had already been deleted.
 tmp.deleteDir()

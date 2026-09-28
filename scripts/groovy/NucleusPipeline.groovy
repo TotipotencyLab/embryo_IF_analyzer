@@ -296,7 +296,14 @@ class NucleusPipeline {
         //     the Label column, which is how read_fiji_result.r joins
         //     measurements to outlines.
         nucRois.eachWithIndex { r, i -> r.setName(nucNames[i]) }
-        dna.close()
+        // close() then flush(). close() alone frees NOTHING while a reference
+        // is still in scope -- measured headless, 0 MB of 768 MB released --
+        // because it only detaches a window, and there is no window. `dna` stays
+        // in scope to the end of the method, so without flush() this mask
+        // survives every later stage. It is why s0014 still ran out of heap in
+        // the overview after buildMask was fixed: the mask was nominally closed
+        // and still occupying 2594 MB.
+        dna.close(); dna.flush()
         writeFeature("nucleus", nucRois, nucNames, nucSlices)
 
         // --- Nucleolus -------------------------------------------------------
@@ -309,13 +316,13 @@ class NucleusPipeline {
                                              p.nucleolus_blur_sigma as double,
                                              p.nucleolus_threshold as String,
                                              p.nucleolus_rel_fraction as double)
-            dna2.close()
+            dna2.close(); dna2.flush()   // close() alone frees nothing; see above
             nuclRois   = RD.detect(mask, p.nucleolus_particle_size as String,
                                    p.nucleolus_circularity as String, slices, true, false)
             nuclNames  = RD.autoLabels(nuclRois).collect { "nucleolus_" + it }
             nuclSlices = nuclRois.collect { it.getPosition() }
             nuclRois.eachWithIndex { r, i -> r.setName(nuclNames[i]) }
-            mask.close()
+            mask.close(); mask.flush()   // close() alone frees nothing; see above
             writeFeature("nucleolus", nuclRois, nuclNames, nuclSlices)
         }
 
@@ -356,7 +363,7 @@ class NucleusPipeline {
                 IJ.log("  overview ch" + c + ": display " + IJ.d2s(view.lo, 1) + "-" + IJ.d2s(view.hi, 1) +
                        " -> " + raw.getName() + ", " + ovl.getName())
             }
-            proj.close()
+            proj.close(); proj.flush()   // close() alone frees nothing; see above
         }
 
         // --- Run configuration -----------------------------------------------

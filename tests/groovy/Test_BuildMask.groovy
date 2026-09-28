@@ -319,6 +319,178 @@ check("per-slice differs from the pooled default",
       perS.threshold == pooled.threshold, false)
 perS.mask.close(); pooled.mask.close(); praw.close()
 
+
+println ""
+println "=== memory: in-place applyRange / to8BitMask / blank ==="
+
+// These three used to build a whole replacement stack while still holding the
+// original, so both were live at once. On an 11344 x 9590 x 25 tile merge that
+// third copy is what ran the heap out. The risk
+// in fixing it is silent: "identical output" can mean "correctly unchanged" or
+// "the new code never ran", so each case below asserts BOTH the pixels and
+// that the intended branch was taken.
+
+// The pre-change implementations, kept as oracles -- the same trick the Auto
+// Threshold macro call gets above. If these and the library ever disagree, the
+// library changed behaviour, not just allocation.
+def oldApplyRange = { ImagePlus im, int lo, int hi ->
+    def s = im.getStack()
+    def o = new ImageStack(im.getWidth(), im.getHeight())
+    for (int z = 1; z <= s.getSize(); z++) {
+        def ip = s.getProcessor(z)
+        def bp = new ByteProcessor(im.getWidth(), im.getHeight())
+        for (int y = 0; y < im.getHeight(); y++) {
+            for (int x = 0; x < im.getWidth(); x++) {
+                int v = ip.get(x, y)
+                if (v >= lo && v <= hi) bp.set(x, y, 255)
+            }
+        }
+        o.addSlice(s.getSliceLabel(z), bp)
+    }
+    im.setStack(o)
+    return im
+}
+def oldTo8Bit = { ImagePlus im ->
+    if (im.getBitDepth() == 8) { return im }
+    def s = im.getStack()
+    def o = new ImageStack(im.getWidth(), im.getHeight())
+    for (int z = 1; z <= s.getSize(); z++) {
+        def ip = s.getProcessor(z)
+        def bp = new ByteProcessor(im.getWidth(), im.getHeight())
+        for (int y = 0; y < im.getHeight(); y++) {
+            for (int x = 0; x < im.getWidth(); x++) {
+                if (ip.get(x, y) != 0) bp.set(x, y, 255)
+            }
+        }
+        o.addSlice(s.getSliceLabel(z), bp)
+    }
+    im.setStack(o)
+    return im
+}
+
+// Pixels that differ between two stacks, as a count -- never a boolean, so a
+// failure says how wrong it is.
+def diffPx = { ImagePlus a, ImagePlus b ->
+    if (a.getStackSize() != b.getStackSize()) { return -1 }
+    int n = 0
+    for (int z = 1; z <= a.getStackSize(); z++) {
+        def pa = a.getStack().getProcessor(z), pb = b.getStack().getProcessor(z)
+        for (int y = 0; y < a.getHeight(); y++) {
+            for (int x = 0; x < a.getWidth(); x++) if (pa.get(x, y) != pb.get(x, y)) n++
+        }
+    }
+    return n
+}
+
+// A stack with real structure AND mid-grey background, so a pixel left
+// unwritten by a missing else branch is visibly not zero.
+def noisy = { int depth, int nz ->
+    def st = new ImageStack(60, 40)
+    def rnd = new java.util.Random(11)
+    int top = (depth == 8) ? 255 : 65535
+    for (int z = 1; z <= nz; z++) {
+        def ip = (depth == 8) ? new ByteProcessor(60, 40) : new ShortProcessor(60, 40)
+        for (int y = 0; y < 40; y++) {
+            for (int x = 0; x < 60; x++) ip.set(x, y, 1 + rnd.nextInt(top))
+        }
+        ip.setColor(top); ip.fillOval(10 + z, 8, 20, 20)
+        st.addSlice("z" + z, ip)
+    }
+    return new ImagePlus("n" + depth, st)
+}
+
+[8, 16].each { int depth ->
+    int lo = (depth == 8) ? 200 : 50000
+    int hi = (depth == 8) ? 255 : 65535
+
+    def mine = noisy(depth, 3)
+    def oracle = noisy(depth, 3)
+    def keptStack = mine.getStack()
+    RD.applyRange(mine, lo, hi)
+    oldApplyRange(oracle, lo, hi)
+
+    check("applyRange ${depth}-bit: same pixels as before", diffPx(mine, oracle), 0)
+    check("applyRange ${depth}-bit: result is 8-bit",        mine.getBitDepth(), 8)
+    check("applyRange ${depth}-bit: slices kept",            mine.getStackSize(), 3)
+
+    // THE assertion that tells "unchanged" from "never ran". In place means the
+    // stack instance survives; the old code always replaced it. Without this, an
+    // early return on a mistyped bit-depth check would pass everything above.
+    check("applyRange ${depth}-bit: in place iff 8-bit",
+          mine.getStack().is(keptStack), depth == 8)
+
+    // Only 0 and 255 may survive. This is the else-branch guard: drop the `: 0`
+    // and the background keeps its original grey, which detect() would happily
+    // threshold at 128-255 into plausible-looking ROIs.
+    def seen = new HashSet<Integer>()
+    for (int z = 1; z <= mine.getStackSize(); z++) {
+        def ip = mine.getStack().getProcessor(z)
+        for (int y = 0; y < 40; y++) for (int x = 0; x < 60; x++) seen << ip.get(x, y)
+    }
+    check("applyRange ${depth}-bit: only 0 and 255 remain", seen.sort(), [0, 255])
+    mine.close(); oracle.close()
+}
+
+// to8BitMask: the 16-bit path must match the old one, and the 8-bit early
+// return must still leave the stack untouched rather than forcing 255.
+def wide16 = noisy(16, 2)
+def wide16o = noisy(16, 2)
+def wideKept = wide16.getStack()
+RD.to8BitMask(wide16)
+oldTo8Bit(wide16o)
+check("to8BitMask 16-bit: same pixels as before",  diffPx(wide16, wide16o), 0)
+check("to8BitMask 16-bit: now 8-bit",              wide16.getBitDepth(), 8)
+check("to8BitMask 16-bit: stack replaced",         wide16.getStack().is(wideKept), false)
+wide16.close(); wide16o.close()
+
+def eight = noisy(8, 2)
+def eightKept = eight.getStack()
+int greyBefore = eight.getStack().getProcessor(1).get(0, 0)
+RD.to8BitMask(eight)
+check("to8BitMask 8-bit: returns early, untouched",
+      eight.getStack().getProcessor(1).get(0, 0), greyBefore)
+check("to8BitMask 8-bit: same stack instance",     eight.getStack().is(eightKept), true)
+eight.close()
+
+// blank(): 8-bit zeroes in place, 16-bit becomes an 8-bit empty mask.
+[8, 16].each { int depth ->
+    def bl = noisy(depth, 2)
+    def blKept = bl.getStack()
+    RD.blank(bl)
+    long nonZero = 0
+    for (int z = 1; z <= bl.getStackSize(); z++) {
+        def ip = bl.getStack().getProcessor(z)
+        for (int y = 0; y < 40; y++) for (int x = 0; x < 60; x++) if (ip.get(x, y) != 0) nonZero++
+    }
+    check("blank ${depth}-bit: nothing left on",     nonZero, 0L)
+    check("blank ${depth}-bit: 8-bit result",        bl.getBitDepth(), 8)
+    check("blank ${depth}-bit: slices kept",         bl.getStackSize(), 2)
+    check("blank ${depth}-bit: in place iff 8-bit",  bl.getStack().is(blKept), depth == 8)
+    bl.close()
+}
+
+println ""
+println "=== memory: per-slice Gaussian blur ==="
+
+// buildMask blurs one plane at a time rather than with IJ.run(..., "stack"),
+// which parallelises over slices and holds one float plane per thread. "stack"
+// mode is this same 2D blur applied per plane, so the pixels must not move.
+double sg = 3.0d
+def braw = noisy(8, 4)
+def bref = noisy(8, 4)
+IJ.run(bref, "Gaussian Blur...", "sigma=${sg} stack")       // the old path, by hand
+def viaLib = RD.buildMask(braw, 1, sg,   "Manual", false, false, [range: "150-255"])
+def viaRun = RD.buildMask(bref, 1, 0.0d, "Manual", false, false, [range: "150-255"])
+check("per-slice blur == IJ.run stack blur", diffPx(viaLib.mask, viaRun.mask), 0)
+
+// ...and the blur is not quietly skipped: with sigma off the mask must differ.
+def bnone = noisy(8, 4)
+def viaNone = RD.buildMask(bnone, 1, 0.0d, "Manual", false, false, [range: "150-255"])
+check("sigma=0 gives a different mask",
+      diffPx(viaLib.mask, viaNone.mask) > 0, true)
+viaLib.mask.close(); viaRun.mask.close(); viaNone.mask.close()
+braw.close(); bref.close(); bnone.close()
+
 println ""
 println "passed: ${passed}   FAILED: ${failed}"
 if (failed > 0) throw new AssertionError("${failed} buildMask check(s) failed")

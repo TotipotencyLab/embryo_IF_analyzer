@@ -154,3 +154,71 @@ string as part of the output contract. For example:
 ```
 area mean standard min centroid shape integrated median stack display
 ```
+
+## ImagePlus.close() frees nothing while a reference is in scope
+
+`close()` detaches a **window**. Headless there is no window, so on an image a
+variable still points at it releases no pixels at all. `flush()` is what drops
+them. Measured on a 768 MB stack:
+
+| call | released |
+|---|---|
+| `close()`, variable out of scope and nulled | 763 MB |
+| `close()`, variable still live | **0 MB** |
+| `flush()` | 730 MB |
+
+The middle row is the one that bites, because it is what every method-local
+intermediate looks like: the variable stays in scope to the end of the method
+however early you "closed" it.
+
+```groovy
+def mask = new Duplicator().run(imp, ...)
+...
+mask.close()                 // frees nothing -- `mask` is still in scope
+mask.close(); mask.flush()   // this is the pair to write
+```
+
+On full-size intermediates this is gigabytes carried through every later stage,
+and it is invisible until something else needs the heap. Pair the two calls
+everywhere, and prefer a source-level assertion over remembering to.
+
+## ImageStack.setProcessor() converts instead of swapping
+
+It cannot be used to put a `ByteProcessor` into a 16-bit stack. It accepts the
+call without complaint, allocates a new `short[]`, and converts:
+
+```
+before: pixels class = short[]
+after setProcessor: pixels class = short[]      <- not byte[]
+after setProcessor: is our array  = false       <- not the array handed in
+stack bitDepth = 16
+```
+
+So a per-plane swap written that way saves nothing (it allocates a short plane
+per slice) **and** leaves a 16-bit mask whose "on" value is 255 — which
+`setThreshold(128, 255)` downstream still turns into plausible-looking ROIs.
+Silent in both directions.
+
+`setPixels(Object, int)` stores what it is given, including `null` and a
+mismatched type, and `getProcessor()` then reads the type back off the array. To
+rebuild a stack at a smaller type without holding two whole copies, write the new
+plane into a new stack and release the source plane as you pass it:
+
+```groovy
+out.addSlice(src.getSliceLabel(z), bp)
+src.setPixels(null, z)      // this plane is garbage from here on
+```
+
+Call `imp.setStack(out)` at the end: `ImagePlus` caches its bit depth.
+
+## Gaussian Blur "stack" mode is per-plane, and parallel
+
+`IJ.run(imp, "Gaussian Blur...", "sigma=S stack")` parallelises over slices
+(`PARALLELIZE_STACKS`), and each worker converts its plane to float — on a
+108 MP plane that is 415 MB per thread, eight at once. `blurGaussian(ip, sigma)`
+in a loop holds one.
+
+The pixels are identical, so this is a free swap when memory is tight: measured
+on synthetic 8- and 16-bit stacks, **0 of 16384 pixels differ**. Worth pinning
+with a test, since "stack" mode being per-plane is the assumption the swap rests
+on.
