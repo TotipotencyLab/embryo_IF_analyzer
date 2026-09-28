@@ -348,6 +348,8 @@ Provenance, read long after the run. Fields that other code depends on:
 | `source_file`, `series_index`, `series_name` | which series of which file produced this directory. Written by the batch, **blank in the interactive runner** where the image was already open and nothing told it. Identity comes from content, not from the filename, so the prefix should not have to be parsed apart to answer this |
 | `open_method` | which reader opened the image: `importer` (Bio-Formats' own) or `reader` (one held open across the file). **Blank when the image was already open**, i.e. the interactive runner, where the operator opened it however they liked. The two are asserted to produce byte-identical output, but two runs that used different ones must not be indistinguishable afterwards |
 | `overview_channels`, `overview_overlay_suffix` | which overview PNGs exist, so a results folder can be read later without guessing. Blank when none were written |
+| `nucleus_threshold_used` | the pixel range the threshold **selected**, as `lo-hi`; `per-slice <lo>..<hi>` (note the `..`) when `nucleus_stack_histogram` is off, since there were as many thresholds as slices and none of them is the answer. Not the algorithm's bare number: for bright objects that number is the *bottom* of the range and the top is the type's maximum, so the pair is what can be copied into a manual threshold without working out which end it was. The literal **`none`** when the frame had nothing to separate (see below) — a word, not a range, so it cannot be pasted anywhere by mistake |
+| `nucleus_mask_pct` | percent of pixels the threshold selected, **before** fill holes and watershed, because the question it answers is what the threshold chose. The cheap signal that one went wrong in either direction: `0.00` selected nothing (a blank field), a number in the tens selected the frame rather than the objects in it. Neither shows up in an ROI count — the size filter turns both into "no nuclei" |
 | `nucleus_circ_rejected` | how many ROIs `nucleus_circularity` deleted. **Blank when the filter was off** — a `0` would claim a filter ran and found nothing to remove. Unlike the R side's `--min_circularity`, which marks a row and leaves it in the table, this filter drops ROIs before anything is written, so this number is the only surviving evidence that they existed |
 
 Everything else is a record of the run's parameters. A key that is absent must
@@ -362,7 +364,13 @@ converter. Three rules make that safe:
 - an **unknown** key is an error — silently ignoring `nucleus_sigma` when the
   parameter is `nucleus_blur_sigma` is how a typo becomes a default nobody sees;
 - the **provenance** fields above (`timestamp`, `image_*`, `nucleus_count`, …)
-  are ignored on purpose, so a whole `_config.txt` can go back in unedited;
+  are ignored on purpose, so a whole `_config.txt` can go back in unedited.
+  `nucleus_threshold_used` is one of them, deliberately: `nucleus_threshold` is
+  the *request* and reads back in, while the value it produced is a fact about
+  one image. A config fed forward re-derives the threshold for the image it is
+  given rather than freezing the one it came from — **pinning a threshold is a
+  deliberate act**, copying the range into a manual setting, never a side
+  effect of reusing a config;
 - a value that will not coerce is an error naming the key. Booleans especially:
   in Groovy a non-empty string is truthy, so `"false"` read from a file would
   otherwise *enable* what it guards.
@@ -389,12 +397,65 @@ is a complete record of what the run did rather than of what succeeded:
 | `path`, `series_index` | which image it came from |
 | `status` | `ok`, `failed`, or `excluded` |
 | `open_method` | `importer` or `reader`, whichever actually opened it; blank for `excluded` rows |
+| `threshold` | the pixel range the nucleus threshold **selected**, `lo-hi`, same syntax the manual threshold takes; `none` when the frame had nothing to separate. Blank when the row did not run |
+| `mask_pct` | percent of pixels inside that range, measured **before** fill holes and watershed. Blank when the row did not run |
 | `n_nucleus`, `n_nucleolus` | counts, blank when the row did not run |
 | `seconds` | wall time for that image |
 | `message` | for `failed`, the exception, flattened to one line |
 
 A row failing does not stop the batch. On a long run this file, not the log, is
 what says which images need attention.
+
+### How the nucleus threshold is chosen
+
+`nucleus_threshold` names a method from the Auto Threshold plugin — the full
+list, `Huang2` (the default) through `Yen` — **or the literal `Manual`**.
+
+| parameter | |
+|---|---|
+| `nucleus_threshold` | the method, or `Manual` |
+| `nucleus_threshold_range` | `lo-hi` in **raw pixel values**, read *only* when the method is `Manual`, exactly as `nucleolus_rel_fraction` is read only for `Relative`. `Infinity` as the top end means the type's maximum |
+| `nucleus_stack_histogram` | `true` (default): one threshold from the pooled histogram of every slice. `false`: one per slice |
+
+Both ends of the manual range are applied: a pixel is object when
+`lo ≤ v ≤ hi`, so an upper bound excludes saturated pixels. An auto method
+supplies only the bottom end and pins the top at the type's maximum, which is
+why `nucleus_threshold_used` is reported as a pair — the pair is what pastes
+back into `nucleus_threshold_range` without anyone working out which end the
+algorithm's number was.
+
+⚠️ **A manual threshold is a raw pixel value, and does not travel.** It is
+meaningless on a different bit depth, a different exposure, or — in a batch —
+on a `.lif` whose series were acquired differently. `nucleus_mask_pct` is what
+catches that: a manual value above everything present reads `0.00`.
+
+⚠️ **`nucleus_stack_histogram = false` lets an empty slice's noise become
+objects.** With nothing bimodal on that slice, the method still returns a
+threshold and finds "objects" in the noise. The pooled default is the safe one;
+turn it off for a stack with strong z-dependent illumination falloff, where one
+threshold under-segments the deep slices.
+
+`nucleus_threshold_range` and `nucleus_stack_histogram` are **not remembered
+between runs of the interactive dialog** (`persist=false`) although every other
+field is, including the method itself. The method is safe to remember precisely
+because the range is not: leaving it on `Manual` means the next run starts with
+a blank range and is refused before the image opens, rather than silently
+reusing a pixel value from a different image. All three are still written to
+`_config.txt`, so GUI-tune-then-batch is unaffected. See `CLAUDE.md`.
+
+⚠️ **A uniform frame has no threshold, and says so.** `ignore_black` and
+`ignore_white` zero the two end bins before the algorithm runs, so a frame whose
+pixels are *all* pure black or all saturated leaves an empty histogram and the
+Auto Threshold plugin throws. A field of blank mounting medium in a tile scan is
+exactly this. It is now caught: the mask is empty, `threshold` reads `none` and
+`mask_pct` reads `0.00`.
+
+Before that it was **silent and wrong**. `IJ.run()` routes through ImageJ's
+`Executer`, which catches the plugin's exception, logs it and returns — leaving
+the image *unthresholded*, after which the mask step handed back the raw pixels
+as if they were a mask. Measured on an all-255 frame: 1600 of 1600 pixels "on",
+looking exactly like a successful run. **Results written by v0.3.0 and earlier**
+from sections that include uniform fields are suspect for that reason.
 
 The batch chooses between two ways of opening an image, and `open_method`
 records which one ran. `importer` is Bio-Formats' own `BF.openImagePlus` — the

@@ -283,13 +283,41 @@ fourth fork.** A new assay should be a new configuration of the shared library.
   reasoning as forcing Set Measurements and `blackBackground` — a persistent
   user preference must never decide what a run does. `Run_NucleusSelector.groovy`
   keeps persistence deliberately: it is the tuning entry point and a human is
-  looking at the dialog.
+  looking at the dialog. **Two fields there are the exception** and reset
+  every run: `nucleus_threshold_range`, a raw pixel value that is meaningless on
+  a different bit depth or exposure, and `nucleus_stack_histogram`, the riskier
+  of the two histogram modes. Neither should be inherited by the next image
+  because it was tried once on this one.
+
+  `nucleus_threshold` itself **does** persist, like every other tuning field —
+  and it is safe precisely because the range does not. Leaving the method on
+  `Manual` means the next run starts with a blank range, which
+  `validateThreshold()` refuses before the image is opened. A loud failure, not
+  a stale number silently reused.
+
+  All three are still written to `_config.txt`, so GUI-tune-then-batch is
+  unaffected: `persist=false` means "do not remember into the next *dialog*",
+  not "do not record".
 - **Watershed forces `Prefs.blackBackground = true`.** It reads that preference
   to decide which phase is object; left to the operator's setting it erodes the
   background instead of splitting objects, and produces a plausible-looking mask
   while doing it. Same reasoning as forcing Set Measurements — and it likewise
   persists. Holes are filled before splitting, or watershed cuts through an
   unfilled hole and shatters one object into a ring of fragments.
+- **One threshold vocabulary, two histograms.** Both features take their
+  algorithms from Fiji's Auto Threshold plugin (`fiji.threshold.Auto_Threshold`).
+  The nucleus calls its `exec()`, which is the same code the macro string ran
+  **and returns the threshold it chose**; the nucleolus calls the per-algorithm
+  statics on a histogram it builds itself. Before this the nucleolus used
+  ImageJ's own `ij.process.AutoThresholder` enum, which has no `Huang2` — the
+  nucleus default — so the same word meant something in one field and threw in
+  the other. The two implementations were measured as identical on every method
+  the dialog offered before the switch, and `Test_NucleolusDetect` keeps the
+  enum as the oracle.
+  The **histograms stay different on purpose**: the nucleus pools one over the
+  stack and drops its end bins (`ignore_black`/`ignore_white`), while the
+  nucleolus builds one per nucleus per slice and drops nothing — inside a single
+  nucleus the darkest pixels are the thing being looked for.
 - **Nucleolus thresholding:** `Default` and `Relative` work on real embryo DAPI.
   `Otsu` and `Triangle` mask essentially the whole nucleus — once the histogram is
   restricted to a single nucleus it is no longer strongly bimodal.
@@ -349,7 +377,10 @@ condition — `conditionMessage()` on the result fails. Assert warning text
 through the `regexp` argument.
 
 On the Fiji side, `tests/groovy/` synthesises its images, so those tests need no
-data: `Test_BuildMask` (watershed), `Test_Overview` (projection, contrast,
+data: `Test_BuildMask` (thresholding — including the Auto Threshold macro call kept
+as an oracle — watershed, manual ranges, per-slice histograms),
+`Test_NucleolusDetect` (the nucleolus threshold, with `ij.process.AutoThresholder`
+as its oracle), `Test_Overview` (projection, contrast,
 resize, outlines, PNG), `Test_RoiExport` (ROI zip round trip) and
 `Test_RunConfig` (the run config, including that `Run_NucleusSelector.groovy`
 still compiles — it is parsed with its `#@` lines stripped, since those are

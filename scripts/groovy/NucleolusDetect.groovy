@@ -24,13 +24,15 @@ import ij.*
 import ij.gui.*
 import ij.process.*
 import ij.measure.Measurements
+import fiji.threshold.Auto_Threshold
+import java.lang.reflect.Modifier
 
 class NucleolusDetect {
 
 /**
  * Threshold for one nucleus, from that nucleus's own pixels on its own slice.
  *
- * method: an AutoThresholder method name ("Default", "Triangle", "Otsu", ...)
+ * method: an Auto Threshold method name ("Default", "Huang2", "Otsu", ...)
  *         or "Relative" to use mean * relFraction instead.
  *
  * Observed on real embryo DAPI (2026-09-14): "Default" and "Relative" both give
@@ -50,22 +52,62 @@ static double nucleolusThreshold(ImageProcessor ip, Roi roi, String method, doub
     }
 
     // ImageStatistics gives a 256-bin histogram scaled between histMin/histMax.
-    // AutoThresholder returns a BIN INDEX, which must be mapped back to a real
+    // The algorithm returns a BIN INDEX, which must be mapped back to a real
     // pixel value -- for 16-bit data those are not the same number.
-    // NB: ImageStatistics.getHistogram() returns long[] for 16-bit data, but
-    //     AutoThresholder.getThreshold() only accepts int[]. Convert, clamping
-    //     defensively -- a bin count cannot realistically overflow int here, but
-    //     an unchecked cast would wrap silently if it did.
+    // NB: ImageStatistics.getHistogram() returns long[] for 16-bit data, and the
+    //     algorithms take int[]. Convert, clamping defensively -- a bin count
+    //     cannot realistically overflow int here, but an unchecked cast would
+    //     wrap silently if it did.
     long[] lh = stats.getHistogram()
     int[] hist = new int[lh.length]
     for (int i = 0; i < lh.length; i++) {
         hist[i] = (int) Math.min(lh[i], (long) Integer.MAX_VALUE)
     }
 
-    def at = new AutoThresholder()
-    int bin = at.getThreshold(AutoThresholder.Method.valueOf(method), hist)
+    int bin = landiniBin(method, hist)
     double binSize = (stats.histMax - stats.histMin) / 256.0
     return (binSize > 0) ? stats.histMin + (bin + 1) * binSize : stats.histMin
+}
+
+/**
+ * A threshold bin from Landini's Auto Threshold, by method name.
+ *
+ * WHY NOT ij.process.AutoThresholder, WHICH THIS USED TO CALL
+ *
+ * The nucleus path goes through the Auto Threshold PLUGIN and the nucleolus
+ * path went through ImageJ's own enum. Two vocabularies: the plugin has Huang2
+ * -- which is the nucleus default -- and the enum does not, so putting the
+ * nucleus's own default into nucleolus_threshold threw IllegalArgumentException
+ * from valueOf(). One threshold vocabulary is one fewer thing to be wrong about.
+ *
+ * The two implementations were measured against each other on the same
+ * histograms before this changed, for every method the dialog offers
+ * (Default, Otsu, Triangle, Huang, IsoData) across a bimodal, a weakly bimodal
+ * and a flat histogram: identical in all fifteen. So nothing a previous run
+ * chose is altered by this. Test_NucleolusDetect keeps ij.process as the oracle.
+ *
+ * Only the HISTOGRAM stays different, on purpose. The nucleus pools one over
+ * the whole stack and drops its end bins (ignore_black / ignore_white); this
+ * builds one per nucleus per slice and drops nothing, because inside a single
+ * nucleus the darkest pixels are the nucleolus -- the thing being looked for --
+ * and the brightest are the nucleoplasm. Zeroing either end would discard the
+ * signal.
+ */
+static int landiniBin(String method, int[] hist) {
+    // The plugin's menu spells two methods differently from its statics, and
+    // the menu spelling is what a config file carries.
+    String name = (method == "Default") ? "IJDefault"
+                : (method == "MinError(I)") ? "MinErrorI" : method
+    def m = Auto_Threshold.class.getMethods().find {
+        Modifier.isStatic(it.getModifiers()) && it.getName() == name &&
+        it.getParameterTypes().length == 1 && it.getParameterTypes()[0] == int[].class
+    }
+    if (m == null) {
+        throw new IllegalArgumentException(
+            "unknown nucleolus threshold method '" + method + "'; use Relative or one " +
+            "of the Auto Threshold plugin's own names")
+    }
+    return (int) m.invoke(null, [hist] as Object[])
 }
 
 /**

@@ -61,6 +61,8 @@ class NucleusPipeline {
         channels_measured      : "string",
         nucleus_blur_sigma     : "double",
         nucleus_threshold      : "string",
+        nucleus_threshold_range: "string",
+        nucleus_stack_histogram: "boolean",
         nucleus_particle_size  : "string",
         nucleus_circularity    : "string",
         nucleus_watershed      : "boolean",
@@ -96,6 +98,13 @@ class NucleusPipeline {
         channels_measured      : "1,2,3",
         nucleus_blur_sigma     : 8.0d,
         nucleus_threshold      : "Huang2",
+        // Only read when nucleus_threshold is "Manual", exactly as
+        // nucleolus_rel_fraction is only read for "Relative".
+        nucleus_threshold_range: "",
+        // One threshold from the pooled histogram of every slice. Off means one
+        // per slice, which lets an empty slice's noise become objects -- see
+        // RoiDetect.buildMask.
+        nucleus_stack_histogram: true,
         nucleus_particle_size  : "80-Infinity",
         // 0.00-1.00 is every shape, i.e. no filter -- the behaviour before this
         // existed. See the detection block for why turning it on is not free.
@@ -207,6 +216,12 @@ class NucleusPipeline {
             OV.validateSettings(p.overview_method as String, p.overview_contrast,
                                 p.overview_saturated, p.overview_width, p.overview_height)
         }
+        // Same reasoning for the threshold: "Manual" with no range, or a method
+        // name that does not exist, should not be discovered after the blur has
+        // run. buildMask checks it again at the point of use -- this is the
+        // early copy, not the only one.
+        RD.validateThreshold(p.nucleus_threshold as String,
+                             (p.nucleus_threshold_range ?: "") as String)
 
         def writeFeature = { String feature, List rois, List names, List sls ->
             IJ.log("  " + feature + ": " + rois.size() + " ROIs")
@@ -218,9 +233,27 @@ class NucleusPipeline {
         }
 
         // --- Nucleus ---------------------------------------------------------
-        def dna = RD.buildMask(imp, dnaCh, p.nucleus_blur_sigma as double,
-                               p.nucleus_threshold as String, true,
-                               p.nucleus_watershed as boolean)
+        def built = RD.buildMask(imp, dnaCh, p.nucleus_blur_sigma as double,
+                                 p.nucleus_threshold as String, true,
+                                 p.nucleus_watershed as boolean,
+                                 [range         : (p.nucleus_threshold_range ?: ""),
+                                  stackHistogram: (p.nucleus_stack_histogram == null)
+                                                  ? true : (p.nucleus_stack_histogram as boolean)])
+        def dna = built.mask
+        // The threshold is reported as the RANGE it selected, and the coverage
+        // beside it. Both were previously thrown away, which left a run unable
+        // to say what it had thresholded at: no way to tell a sensible
+        // threshold from a disastrous one afterwards, and no way to read a
+        // value off in order to pin it.
+        //
+        // Coverage is the cheap signal that catches both failures an ROI count
+        // hides. 0.00% is a blank field; a number in the tens is the frame
+        // being selected rather than the objects in it. The size filter turns
+        // both into "no nuclei", which look identical.
+        def thresholdUsed = built.threshold
+        def maskPct       = String.format("%.2f", built.coverage)
+        IJ.log("  threshold: " + p.nucleus_threshold + " -> " + thresholdUsed +
+               "  (mask " + maskPct + "% of pixels)")
         // Circularity is a SECOND line of defence after size, for imaging
         // artefacts -- a reflection off the section edge thresholds like an
         // object and is often the wrong shape for one.
@@ -371,6 +404,8 @@ class NucleusPipeline {
                 measurements           : MEASUREMENTS,
                 nucleus_blur_sigma     : p.nucleus_blur_sigma,
                 nucleus_threshold      : p.nucleus_threshold,
+                nucleus_threshold_range: p.nucleus_threshold_range,
+                nucleus_stack_histogram: p.nucleus_stack_histogram,
                 nucleus_particle_size  : p.nucleus_particle_size,
                 nucleus_circularity    : p.nucleus_circularity,
                 nucleus_watershed      : p.nucleus_watershed,
@@ -396,6 +431,13 @@ class NucleusPipeline {
                 // side's --min_circularity, which marks a row and leaves it in
                 // the table, this one drops them before anything is written, so
                 // this number is the only surviving evidence.
+                // What the threshold actually did, as opposed to what was
+                // asked for. nucleus_threshold is the REQUEST and reads back in
+                // as a parameter; these two are the RESULT and are ignored on
+                // the way in -- a config fed forward must re-derive the
+                // threshold for the image it is given, never freeze this one.
+                nucleus_threshold_used : thresholdUsed,
+                nucleus_mask_pct       : maskPct,
                 nucleus_circ_rejected  : circRejected,
                 nucleus_count          : nucRois.size(),
                 nucleoli_enabled       : p.nucleoli_enabled,
@@ -413,6 +455,11 @@ class NucleusPipeline {
         return [basename  : basename,
                 outDirPath: outDirPath,
                 slices    : slices,
+                // For batch_summary.tsv: per row, what the threshold chose. The
+                // alternative is opening a thousand _config.txt files to find
+                // the rows where it went wrong.
+                threshold : thresholdUsed,
+                maskPct   : maskPct,
                 nucRois   : nucRois,  nucNames : nucNames,  nucSlices : nucSlices,
                 nuclRois  : nuclRois, nuclNames: nuclNames, nuclSlices: nuclSlices]
     }

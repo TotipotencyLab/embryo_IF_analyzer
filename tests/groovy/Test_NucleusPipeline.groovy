@@ -97,6 +97,8 @@ def baseParams = [
     channels_measured      : "1",
     nucleus_blur_sigma     : 0.0d,       // the discs are already binary-clean
     nucleus_threshold      : "Otsu",
+    nucleus_threshold_range: "",
+    nucleus_stack_histogram: true,
     nucleus_particle_size  : "200-Infinity",
     nucleus_watershed      : false,
     nucleoli_enabled       : false,
@@ -119,7 +121,11 @@ def baseParams = [
     overview_saturated     : 0.35d,
 ]
 
-def NP = new GroovyClassLoader().parseClass(new File(LIBDIR, "NucleusPipeline.groovy"))
+def GCL = new GroovyClassLoader()
+def NP = GCL.parseClass(new File(LIBDIR, "NucleusPipeline.groovy"))
+// RunConfig, to read a written config back the way a RERUN would -- which is
+// the only way to tell a parameter from a provenance field.
+def RC = GCL.parseClass(new File(LIBDIR, "RunConfig.groovy"))
 
 println "=== load() ==="
 def pipe = NP.load(LIBDIR)
@@ -176,6 +182,26 @@ new File(outB, "sheetAlias_Series001_config.txt").eachLine { line ->
 check("script names the entry point",          cfg["script"]?.startsWith("Test_NucleusPipeline.groovy"), true)
 check("output_basename matches the override",  cfg["output_basename"], "sheetAlias_Series001")
 check("nucleus_count is recorded",             cfg["nucleus_count"], "8")
+// The threshold the run actually used, as the RANGE it selected rather than
+// the algorithm's bare number -- so it can be copied into a manual threshold
+// later without anyone working out which end it was. And the coverage beside
+// it, which is the cheap signal that a threshold went wrong in either
+// direction: 0.00 selected nothing, a number in the tens selected the frame.
+check("the threshold used is recorded as a range",
+      cfg["nucleus_threshold_used"] ==~ /\d+-\d+/, true)
+check("...with the type maximum as its top",
+      cfg["nucleus_threshold_used"].endsWith("-255"), true)
+check("mask coverage is recorded, 2 dp",
+      cfg["nucleus_mask_pct"] ==~ /\d+\.\d\d/, true)
+check("...and the two discs are a few percent of the frame",
+      (cfg["nucleus_mask_pct"] as double) > 1.0d && (cfg["nucleus_mask_pct"] as double) < 30.0d, true)
+// Provenance, not a parameter: feeding this config forward must re-derive the
+// threshold for the image it is given rather than freezing this one.
+def asParams = RC.readParams(new File(outB, "sheetAlias_Series001_config.txt"), NP.PARAM_TYPES)
+check("threshold_used does NOT read back as a parameter",
+      asParams.containsKey("nucleus_threshold_used"), false)
+check("...nor does mask_pct",                  asParams.containsKey("nucleus_mask_pct"), false)
+check("...while the REQUEST does",             asParams["nucleus_threshold"], "Otsu")
 
 println ""
 println "=== pixel_depth: recorded for a stack, BLANK for a single plane ==="
@@ -313,6 +339,35 @@ check("...and no outline was written first",
       new File(outK, "ov_bad_nucleus_outline.txt").exists(), false)
 check("...nor a config",
       new File(outK, "ov_bad_config.txt").exists(), false)
+
+println ""
+println "=== Manual travels through the config, which is the point of it ==="
+// The workflow the range format exists for: run auto, read the range off,
+// paste it into Manual. It only works if the manual setting survives the
+// round trip -- a parameter missing from the written config silently becomes
+// the default on the next run.
+def outM = new File(tmp, "m"); outM.mkdirs()
+def resM = pipe.run(makeImp("probeimage"), outM,
+                    baseParams + [basename: "manual", nucleus_threshold: "Manual",
+                                  nucleus_threshold_range: "200-255"])
+def cfgM = readCfg(new File(outM, "manual_config.txt"))
+check("the manual range is recorded",          cfgM["nucleus_threshold_range"], "200-255")
+check("...and reads back as a parameter",
+      RC.readParams(new File(outM, "manual_config.txt"), NP.PARAM_TYPES)["nucleus_threshold_range"],
+      "200-255")
+check("...with threshold_used echoing it",     cfgM["nucleus_threshold_used"], "200-255")
+// The discs are drawn at 255, so a 200-255 window finds them exactly as Otsu did.
+check("...and it found the same 8 ROIs",       resM.nucRois.size(), 8)
+
+// The guard, at the pipeline level rather than the library level.
+def outBadM = new File(tmp, "mbad"); outBadM.mkdirs()
+String errM = null
+try {
+    pipe.run(makeImp("probeimage"), outBadM,
+             baseParams + [basename: "bad", nucleus_threshold: "Manual"])
+} catch (Throwable t) { errM = t.getMessage() }
+check("Manual with no range fails the run",    errM?.contains("needs nucleus_threshold_range"), true)
+check("...before anything was written",        (outBadM.exists() ? outBadM.listFiles().size() : 0), 0)
 
 println ""
 println "passed: ${passed}   FAILED: ${failed}"

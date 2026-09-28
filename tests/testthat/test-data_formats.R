@@ -225,6 +225,106 @@ test_that("the overview settings are parameters and survive the config round tri
   expect_true(any(grepl("stretches each picture to full range", doc, fixed = TRUE)))
 })
 
+test_that("the threshold a run used is recorded, and is provenance not a parameter", {
+  # The number the auto method chose was thrown away until now, so a run could
+  # not say what it had thresholded at -- no way to tell a sensible threshold
+  # from a disastrous one afterwards, and no way to read a value off in order to
+  # pin it. Recorded as the RANGE it selected, so pinning is copy-paste.
+  np <- file.path(repo_root(), "scripts", "groovy", "NucleusPipeline.groovy")
+  rd <- file.path(repo_root(), "scripts", "groovy", "RoiDetect.groovy")
+  rc <- file.path(repo_root(), "scripts", "groovy", "RunConfig.groovy")
+  br <- file.path(repo_root(), "scripts", "groovy", "BatchRunner.groovy")
+  skip_if_not(all(file.exists(np, rd, rc, br)), "Groovy library not found")
+
+  np_src <- paste(readLines(np, warn = FALSE), collapse = "\n")
+  expect_match(np_src, "nucleus_threshold_used", fixed = TRUE)
+  expect_match(np_src, "nucleus_mask_pct", fixed = TRUE)
+
+  # Provenance, so a run's own config still reads back in -- and so that feeding
+  # a config forward RE-DERIVES the threshold instead of freezing one image's.
+  rc_src <- paste(readLines(rc, warn = FALSE), collapse = "\n")
+  expect_match(rc_src, '"nucleus_threshold_used"', fixed = TRUE)
+  expect_match(rc_src, '"nucleus_mask_pct"', fixed = TRUE)
+
+  # The batch columns, so finding the rows where it went wrong does not mean
+  # opening a thousand _config.txt files.
+  br_src <- paste(readLines(br, warn = FALSE), collapse = "\n")
+  expect_match(br_src, '"threshold", "mask_pct"', fixed = TRUE)
+
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  # A ROW in each of the two field tables, not a passing mention.
+  expect_length(grep("^\\|\\s*`nucleus_threshold_used`\\s*\\|", doc), 1L)
+  expect_length(grep("^\\|\\s*`nucleus_mask_pct`\\s*\\|", doc), 1L)
+  expect_length(grep("^\\|\\s*`threshold`\\s*\\|", doc), 1L)
+  expect_length(grep("^\\|\\s*`mask_pct`\\s*\\|", doc), 1L)
+  # The rule that makes it safe to feed a config forward.
+  expect_true(any(grepl("pinning a threshold is a", doc, fixed = TRUE)))
+
+  # A uniform frame has no threshold and says so, rather than the pre-v0.3.0
+  # behaviour of silently handing back an unthresholded image as the mask.
+  expect_match(paste(readLines(rd, warn = FALSE), collapse = "\n"),
+               "NO_THRESHOLD", fixed = TRUE)
+  expect_true(any(grepl("A uniform frame has no threshold", doc, fixed = TRUE)))
+  expect_true(any(grepl("v0.3.0 and earlier", doc, fixed = TRUE)))
+})
+
+test_that("Manual thresholding and the per-slice option are parameters, and documented", {
+  # nucleus_threshold_range is only read when the method is Manual, the same
+  # shape as nucleolus_rel_fraction. A parameter missing from the written config
+  # silently becomes the default on the next run, which is the whole hazard the
+  # round-trip format exists to prevent -- so it must be in NucleusPipeline
+  # twice: declared, and written.
+  np <- file.path(repo_root(), "scripts", "groovy", "NucleusPipeline.groovy")
+  rd <- file.path(repo_root(), "scripts", "groovy", "RoiDetect.groovy")
+  nd <- file.path(repo_root(), "scripts", "groovy", "NucleolusDetect.groovy")
+  tmpl <- file.path(repo_root(), "config", "nucleus_config_template.txt")
+  skip_if_not(all(file.exists(np, rd, nd, tmpl)), "Groovy library not found")
+
+  np_src <- paste(readLines(np, warn = FALSE), collapse = "\n")
+  for (k in c("nucleus_threshold_range", "nucleus_stack_histogram")) {
+    expect_gte(lengths(regmatches(np_src, gregexpr(k, np_src, fixed = TRUE))), 2L)
+  }
+  cfg <- read.delim(tmpl, comment.char = "#", stringsAsFactors = FALSE)
+  expect_true(all(c("nucleus_threshold_range", "nucleus_stack_histogram") %in% cfg$parameter))
+  # Off is not a sensible default for the risky one.
+  expect_equal(cfg$value[cfg$parameter == "nucleus_stack_histogram"], "true")
+
+  # Both features now take their algorithms from the same plugin. The nucleolus
+  # used ImageJ's own enum, which has no Huang2 -- the nucleus default -- so the
+  # same word meant something in one field and threw in the other.
+  nd_src <- paste(readLines(nd, warn = FALSE), collapse = "\n")
+  expect_match(nd_src, "fiji.threshold.Auto_Threshold", fixed = TRUE)
+  expect_false(grepl("AutoThresholder.Method.valueOf", nd_src, fixed = TRUE))
+
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  expect_length(grep("^\\|\\s*`nucleus_threshold_range`\\s*\\|", doc), 1L)
+  expect_length(grep("^\\|\\s*`nucleus_stack_histogram`\\s*\\|", doc), 1L)
+  # The two hazards, stated where the parameters are described.
+  expect_true(any(grepl("raw pixel value, and does not travel", doc, fixed = TRUE)))
+  expect_true(any(grepl("empty slice's noise become", doc, fixed = TRUE)))
+  # And the per-slice reporting shape, which is not a pasteable range.
+  expect_true(any(grepl("per-slice", doc, fixed = TRUE)))
+
+  # CLAUDE.md's persist=false decision said the tuning dialog remembers
+  # everything; two fields are now the exception, so that claim had to move.
+  # The METHOD is not one of them -- it persists, and is safe to because the
+  # range does not, so a stale "Manual" is refused rather than silently reusing
+  # a pixel value from another image.
+  cl <- readLines(file.path(repo_root(), "CLAUDE.md"), warn = FALSE)
+  expect_true(any(grepl("Two fields there are the exception", cl, fixed = TRUE)))
+  rns <- readLines(file.path(repo_root(), "scripts", "groovy",
+                             "Run_NucleusSelector.groovy"), warn = FALSE)
+  np_line <- grep("nucRange$", rns, value = TRUE)
+  expect_length(np_line, 1L)
+  expect_match(np_line, "persist=false", fixed = TRUE)
+  sh_line <- grep("nucStackHist$", rns, value = TRUE)
+  expect_match(sh_line, "persist=false", fixed = TRUE)
+  # ...and the method line deliberately does NOT carry it.
+  m_line <- grep("nucMethod$", rns, value = TRUE)
+  expect_length(m_line, 1L)
+  expect_false(grepl("persist=false", m_line, fixed = TRUE))
+})
+
 test_that("the sample prefix carries the series index, and the doc says so", {
   # Series names repeat -- a tile scan is many series under one name -- so the
   # index is what makes the prefix unique WITHIN a file, as the alias does
