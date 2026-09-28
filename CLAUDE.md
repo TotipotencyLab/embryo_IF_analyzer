@@ -283,14 +283,21 @@ fourth fork.** A new assay should be a new configuration of the shared library.
   reasoning as forcing Set Measurements and `blackBackground` — a persistent
   user preference must never decide what a run does. `Run_NucleusSelector.groovy`
   keeps persistence deliberately: it is the tuning entry point and a human is
-  looking at the dialog. **Three fields there are the exception** and reset
-  every run — `nucleus_threshold`, `nucleus_threshold_range` and
-  `nucleus_stack_histogram`. A manual threshold is a raw pixel value, which is
-  meaningless on a different bit depth or exposure, and a per-slice histogram is
-  the risky one of the two; neither should be inherited by the next image
-  because it was tried once on this one. They are still written to
-  `_config.txt`, so GUI-tune-then-batch is unaffected: `persist=false` means
-  "do not remember into the next *dialog*", not "do not record".
+  looking at the dialog. **Two fields there are the exception** and reset
+  every run: `nucleus_threshold_range`, a raw pixel value that is meaningless on
+  a different bit depth or exposure, and `nucleus_stack_histogram`, the riskier
+  of the two histogram modes. Neither should be inherited by the next image
+  because it was tried once on this one.
+
+  `nucleus_threshold` itself **does** persist, like every other tuning field —
+  and it is safe precisely because the range does not. Leaving the method on
+  `Manual` means the next run starts with a blank range, which
+  `validateThreshold()` refuses before the image is opened. A loud failure, not
+  a stale number silently reused.
+
+  All three are still written to `_config.txt`, so GUI-tune-then-batch is
+  unaffected: `persist=false` means "do not remember into the next *dialog*",
+  not "do not record".
 - **Watershed forces `Prefs.blackBackground = true`.** It reads that preference
   to decide which phase is object; left to the operator's setting it erodes the
   background instead of splitting objects, and produces a plausible-looking mask

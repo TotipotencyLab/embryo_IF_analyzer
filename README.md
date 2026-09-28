@@ -196,9 +196,12 @@ work with and its noise becomes objects. The reported threshold then reads
 `per-slice 88..142`, a spread rather than a range, because there were as many
 thresholds as slices.
 
-Neither of those two settings, nor the method, is remembered between runs of the
-dialog, although every other field is: a raw pixel value leaking into the next
-image is the worst kind of stale setting. They are still recorded in
+The manual range and the stack-histogram switch are not remembered between runs
+of the dialog, although every other field is — including the threshold method. A
+raw pixel value leaking into the next image is the worst kind of stale setting,
+and forgetting it is what makes remembering the method safe: leave the method on
+`Manual` and the next run stops immediately, asking for a range, instead of
+reusing a number from a different image. All of them are still recorded in
 `_config.txt`, so tuning here and feeding that config to the batch works as
 before.
 

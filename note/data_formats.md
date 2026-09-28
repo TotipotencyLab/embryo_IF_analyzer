@@ -435,9 +435,13 @@ threshold and finds "objects" in the noise. The pooled default is the safe one;
 turn it off for a stack with strong z-dependent illumination falloff, where one
 threshold under-segments the deep slices.
 
-These three are **not remembered between runs of the interactive dialog**
-(`persist=false`) although every other field is, and they are still written to
-`_config.txt` — so GUI-tune-then-batch is unaffected. See `CLAUDE.md`.
+`nucleus_threshold_range` and `nucleus_stack_histogram` are **not remembered
+between runs of the interactive dialog** (`persist=false`) although every other
+field is, including the method itself. The method is safe to remember precisely
+because the range is not: leaving it on `Manual` means the next run starts with
+a blank range and is refused before the image opens, rather than silently
+reusing a pixel value from a different image. All three are still written to
+`_config.txt`, so GUI-tune-then-batch is unaffected. See `CLAUDE.md`.
 
 ⚠️ **A uniform frame has no threshold, and says so.** `ignore_black` and
 `ignore_white` zero the two end bins before the algorithm runs, so a frame whose

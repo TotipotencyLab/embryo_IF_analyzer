@@ -306,9 +306,23 @@ test_that("Manual thresholding and the per-slice option are parameters, and docu
   expect_true(any(grepl("per-slice", doc, fixed = TRUE)))
 
   # CLAUDE.md's persist=false decision said the tuning dialog remembers
-  # everything; three fields are now the exception, so that claim had to move.
+  # everything; two fields are now the exception, so that claim had to move.
+  # The METHOD is not one of them -- it persists, and is safe to because the
+  # range does not, so a stale "Manual" is refused rather than silently reusing
+  # a pixel value from another image.
   cl <- readLines(file.path(repo_root(), "CLAUDE.md"), warn = FALSE)
-  expect_true(any(grepl("Three fields there are the exception", cl, fixed = TRUE)))
+  expect_true(any(grepl("Two fields there are the exception", cl, fixed = TRUE)))
+  rns <- readLines(file.path(repo_root(), "scripts", "groovy",
+                             "Run_NucleusSelector.groovy"), warn = FALSE)
+  np_line <- grep("nucRange$", rns, value = TRUE)
+  expect_length(np_line, 1L)
+  expect_match(np_line, "persist=false", fixed = TRUE)
+  sh_line <- grep("nucStackHist$", rns, value = TRUE)
+  expect_match(sh_line, "persist=false", fixed = TRUE)
+  # ...and the method line deliberately does NOT carry it.
+  m_line <- grep("nucMethod$", rns, value = TRUE)
+  expect_length(m_line, 1L)
+  expect_false(grepl("persist=false", m_line, fixed = TRUE))
 })
 
 test_that("the sample prefix carries the series index, and the doc says so", {
