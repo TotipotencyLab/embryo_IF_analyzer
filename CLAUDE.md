@@ -83,6 +83,38 @@ z step that does not exist must not arrive as a usable-looking number. The file
 is also **readable back in** as a run's parameters (`RunConfig.groovy`), which
 is why an unknown key there is an error rather than a shrug.
 
+**Every `PARAM_TYPES` key must be written back, and a test says so.** An absent
+key is *not* an error — `readParams` rejects unknown keys, not missing ones — so
+a parameter the run forgot to write silently becomes its DEFAULT on the next
+run. That is the round trip failing while looking like it worked, and it
+happened three times: the `overview_*` keys, `nucleus_circularity`, and the five
+`save_*` switches.
+
+Four things must agree whenever a parameter is added. Three already had a
+set-difference assertion and have never drifted; the fourth is the one that kept
+breaking, and now has one too:
+
+| must agree | asserted in |
+|---|---|
+| `PARAM_TYPES` ↔ the `#@` dialog variables | `Test_RunConfig` |
+| the dialog's literal `value=` ↔ `DEFAULTS` | `Test_RunConfig` |
+| `PARAM_TYPES` ↔ `config/nucleus_config_template.txt` | `Test_RunConfig` |
+| `PARAM_TYPES` ↔ what `saveRunConfig()` actually writes | `Test_NucleusPipeline` |
+
+Do not replace these with a checklist. A checklist is something a person has to
+remember to read; a set difference is something that fails. `output_prefix` is
+the one deliberate exclusion — it names the output rather than deciding the
+analysis, the same category as `outdir` — and the test names it, so its absence
+reads as a decision rather than as the next oversight.
+
+**The sample sheet does not need any of this, and the difference is the point.**
+`schema/sheet_columns.tsv` is read at *run time* by `SheetSchema.groovy` and by
+`cli_helpers.r`, so there is one source of truth and nothing to keep in sync.
+The run config has no equivalent: its schema is `PARAM_TYPES`, a Groovy map the
+R side cannot read, and the template is a generated duplicate of it. That is why
+one needs tests where the other does not — and why making the sheet look more
+like the config would be a step backwards.
+
 - `scripts/R/read_fiji_result.r` identifies the roi column by matching
   `\d{4}-\d{4}-\d{4}$` and joins measurements to outlines through the roi id
   **embedded in the `Label` column**. The measurement numbers can be perfectly
@@ -279,7 +311,11 @@ fourth fork.** A new assay should be a new configuration of the shared library.
   script parameter was last set to and reuses it when a run does not supply one,
   so values typed into a GUI dialog leak into later headless runs. Observed: a
   batch given neither `outPrefix` nor `saveOverview` ran with `outPrefix=test_`
-  and wrote overview PNGs, both left over from an interactive session. Same
+  and wrote overview PNGs, both left over from an interactive session. (The
+  batch's `outPrefix` field has since been removed — it could never take effect,
+  because `BatchRunner` passes the sheet's `prefix` as `basename` and that wins
+  over `output_prefix` outright. The observation is kept: it is the evidence for
+  the rule, not a description of today's dialog.) Same
   reasoning as forcing Set Measurements and `blackBackground` — a persistent
   user preference must never decide what a run does. `Run_NucleusSelector.groovy`
   keeps persistence deliberately: it is the tuning entry point and a human is

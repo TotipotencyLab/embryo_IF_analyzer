@@ -2,8 +2,7 @@
 #@ File    (persist=false, label="Output directory", style="directory") outdir
 #@ String  (persist=false, label="Image root (blank = paths as given)", value="") imageRoot
 #@ File    (persist=false, label="Run config (blank = defaults)", style="file", required=false) configFile
-#@ String  (persist=false, label="Output prefix, prepended to every sample", value="") outPrefix
-#@ Boolean (persist=false, label="Save overview PNGs", value=false) saveOverview
+#@ String  (persist=false, label="Save overview PNGs", value="(from config)", choices={"(from config)","yes","no"}) saveOverview
 #@ String  (persist=false, label="Image opening method", value="auto", choices={"auto","importer","reader"}) openMode
 
 // Run_NucleusSelector_Batch.groovy
@@ -23,8 +22,17 @@
 //   ImageJ-macosx --headless --console --mem=6000m \
 //     --run scripts/groovy/Run_NucleusSelector_Batch.groovy \
 //     "sheetFile='/p/samples.tsv',outdir='/p/out',imageRoot='/p/raw',configFile='/p/nucleus_config.txt'"
+//
+// There is no output-prefix parameter. The sample sheet's `prefix` column names
+// every sample's output and is authoritative -- BatchRunner passes it as
+// `basename`, which wins over `output_prefix` outright. A dialog field for it
+// existed and could never take effect; it was removed rather than left to look
+// as though it did.
 
 import ij.IJ
+
+// The dialog value that means "whatever the config says".
+final String OVERVIEW_FROM_CONFIG = "(from config)"
 
 def resolveLibDir = {
     def cands = []
@@ -54,12 +62,21 @@ def fromFile = (configFile != null && configFile.isFile())
     : [:]
 def params = NP.fromConfig(fromFile)
 params.script_name = "Run_NucleusSelector_Batch.groovy"
-params.save_overview = saveOverview
+// An OVERRIDE, not a setting. save_overview is a real parameter and a config
+// now carries it, so a Boolean here would be two sources of truth with the
+// dialog always winning and the config's value unreachable -- which is what a
+// Boolean forces, since it has no third state for "leave it alone".
+//
+// Same convention the output prefix used to use: a neutral value means "do not
+// override". Useful on a long batch, where a quick no-PNG pass should not mean
+// editing the config and then editing it back.
+if (saveOverview != OVERVIEW_FROM_CONFIG) {
+    params.save_overview = (saveOverview == "yes")
+}
 // A request, not a decision: BatchRunner turns "auto" into importer or reader
 // per file and records which one ran. See BatchRunner's opening section for why
 // the two exist.
 params.open_mode = openMode
-if (outPrefix?.trim()) params.output_prefix = outPrefix.trim()
 
 if (configFile != null && configFile.isFile()) {
     IJ.log("config: " + configFile.getName() + " set " + fromFile.size() + " parameter(s)")

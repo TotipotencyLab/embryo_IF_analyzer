@@ -245,7 +245,6 @@ check("pixel_depth is BLANK for one plane",    cfgD["pixel_depth"], "")
 check("...the key is still present",           cfgD.containsKey("pixel_depth"), true)
 check("2 ROIs found on the single plane",      cfgD["nucleus_count"], "2")
 
-tmp.deleteDir()
 println ""
 println "=== nucleus circularity: off is the old behaviour, on drops the bar ==="
 // The bar exists to be the artefact the SIZE filter cannot catch. Proving the
@@ -368,6 +367,75 @@ try {
 } catch (Throwable t) { errM = t.getMessage() }
 check("Manual with no range fails the run",    errM?.contains("needs nucleus_threshold_range"), true)
 check("...before anything was written",        (outBadM.exists() ? outBadM.listFiles().size() : 0), 0)
+
+println ""
+println "=== every parameter is written back, or the round trip is a lie ==="
+// THE GUARD THAT WAS MISSING.
+//
+// _config.txt is a round trip: a run writes it, and RunConfig reads it back as
+// the parameters of another run. A key that is DECLARED in PARAM_TYPES but
+// never written does not fail -- readParams rejects unknown keys, not absent
+// ones -- so the next run silently takes the DEFAULT instead of what ran.
+//
+// Three of the four couplings around this file already have a set-difference
+// assertion in Test_RunConfig (PARAM_TYPES vs the dialog vars, the dialog
+// defaults vs DEFAULTS, PARAM_TYPES vs the shipped template) and none of them
+// has ever drifted. This one had no assertion and drifted three times: the
+// overview_* keys, nucleus_circularity, and the five save_* switches, the last
+// found by reading a diff rather than by a test.
+//
+// Asserted against a config that was actually WRITTEN, not against a regex
+// over the source -- scraping the source for key names is how a test of this
+// shape comes to agree with itself and with nothing else.
+def writtenKeys = readCfg(new File(outA, "TEST_probeimage_config.txt")).keySet()
+
+// The one deliberate exclusion, with its reason, so that its absence reads as a
+// decision rather than as the oversight the save_* keys were. output_prefix
+// decides what the output is CALLED, not what work happens -- the same category
+// as outdir, which is likewise not in the config. Writing it would make a
+// re-run reproduce the previous run's filenames and overwrite it instead of
+// landing beside it. What the names were is already recorded, as
+// output_basename.
+def NOT_WRITTEN = ["output_prefix"]
+
+check("every parameter is written back",
+      (NP.PARAM_TYPES.keySet() - writtenKeys - NOT_WRITTEN).toList().sort(), [])
+// The exclusion has to stay real: if output_prefix ever starts being written,
+// this fails and the decision gets revisited rather than quietly reversed.
+check("...and the exclusion is still excluded",
+      writtenKeys.contains("output_prefix"), false)
+// Not vacuous -- the exclusion list must not grow to swallow a real miss.
+check("...with exactly one exclusion",         NOT_WRITTEN.size(), 1)
+
+// The five that were missing, by name, so a regression names itself.
+["save_roi_zips", "save_outlines", "save_measurements",
+ "save_config", "save_overview"].each { String k ->
+    check("  " + k + " survives the round trip", writtenKeys.contains(k), true)
+}
+
+// And the round trip end to end, on the switch whose default makes the loss
+// silent in the dangerous direction: save_overview defaults FALSE, so a run
+// that had overviews on and fed its own config forward would write none.
+def outRT = new File(tmp, "rt"); outRT.mkdirs()
+pipe.run(makeImpZVarying("zv"), outRT,
+         baseParams + [basename: "rt", save_overview: true, nucleus_threshold: "Otsu",
+                       overview_width: 40])
+def rtParams = NP.fromConfig(RC.readParams(new File(outRT, "rt_config.txt"), NP.PARAM_TYPES))
+check("a config from an overview run says so",  rtParams.save_overview, true)
+check("...and the PNG really was written",
+      new File(outRT, "rt_overview_ch1.png").isFile(), true)
+
+def outRT2 = new File(tmp, "rt2"); outRT2.mkdirs()
+pipe.run(makeImpZVarying("zv"), outRT2, rtParams + [basename: "rt2", script_name: "rerun"])
+check("...so the rerun from that config writes one too",
+      new File(outRT2, "rt2_overview_ch1.png").isFile(), true)
+// The failure this replaces, stated: before the save_* keys were written, the
+// config above carried no save_overview, fromConfig() supplied false, and this
+// file was absent while everything else about the rerun looked identical.
+
+// Once everything has been read back, not partway through: sections added after
+// this line used to run against a directory that had already been deleted.
+tmp.deleteDir()
 
 println ""
 println "passed: ${passed}   FAILED: ${failed}"
