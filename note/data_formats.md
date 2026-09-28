@@ -262,6 +262,26 @@ exist is recorded in `_config.txt` as `overview_channels` and
 `overview_overlay_suffix`. `Run_Overview` derives its suffix from whether it
 actually drew anything, and takes an override.
 
+**The projection, the output size and the contrast are parameters**, since
+0.3.0 — `overview_method`, `overview_width`, `overview_height`,
+`overview_contrast` and `overview_saturated`, all recorded in `_config.txt`
+whether or not a PNG was written. They were fixed at `max` and 500 px, with
+`Run_Overview.groovy` as the way to vary them; that is no good for a merged
+tile scan, where 500 px of a 20000 px mosaic diagnoses nothing and re-running a
+second script over a whole batch is not a quick visual check.
+
+`overview_width`/`overview_height` take **0 for "the original size"**, and one
+given makes the other follow the aspect ratio, so one number handles any tile
+geometry. ⚠️ On a large batch that is a lot of disk: six PNGs per series, at
+the full frame.
+
+⚠️ `overview_contrast = auto` **stretches each picture to full range on its
+own**, so two projections of genuinely different data can render to identical
+bytes. Measured on a synthetic stack: a flat disc at 220 (`max`) and the same
+disc at 100 (`min`) both save as 0–255 and the files are byte-identical. The
+display range each PNG settled on is logged for exactly this reason. Use
+`contrast = none` when the pictures are meant to be compared to each other.
+
 ⚠️ Outlines are drawn in `merged` mode: ROIs are unioned **in the 2D
 projection**, so two objects overlapping in x-y share one outline however far
 apart they are in z. It is a picture, not a count — that is the whole reason
@@ -328,6 +348,7 @@ Provenance, read long after the run. Fields that other code depends on:
 | `source_file`, `series_index`, `series_name` | which series of which file produced this directory. Written by the batch, **blank in the interactive runner** where the image was already open and nothing told it. Identity comes from content, not from the filename, so the prefix should not have to be parsed apart to answer this |
 | `open_method` | which reader opened the image: `importer` (Bio-Formats' own) or `reader` (one held open across the file). **Blank when the image was already open**, i.e. the interactive runner, where the operator opened it however they liked. The two are asserted to produce byte-identical output, but two runs that used different ones must not be indistinguishable afterwards |
 | `overview_channels`, `overview_overlay_suffix` | which overview PNGs exist, so a results folder can be read later without guessing. Blank when none were written |
+| `nucleus_circ_rejected` | how many ROIs `nucleus_circularity` deleted. **Blank when the filter was off** — a `0` would claim a filter ran and found nothing to remove. Unlike the R side's `--min_circularity`, which marks a row and leaves it in the table, this filter drops ROIs before anything is written, so this number is the only surviving evidence that they existed |
 
 Everything else is a record of the run's parameters. A key that is absent must
 be handled, not assumed: configs written before a field existed are still valid
@@ -839,6 +860,15 @@ opens a z-gap that `--max_z_dist` cannot span and **one object is counted as
 two**. Observed on real oocyte data: a circularity cut removed an oocyte's
 widest cross-sections, because the equator of a large object is the least
 circular part of it.
+
+⚠️ **Fiji's `nucleus_circularity` carries the same hazard and no cure.** It
+runs inside `Analyze Particles`, so a rejected ROI is never written to
+`_outline.txt` at all — there is no row for `--bridge_roi` to promote, and no
+record beyond the count in `nucleus_circ_rejected`. It defaults to
+`0.00-1.00`, which filters nothing. Turn it on to remove imaging artefacts that
+the size filter cannot catch (a reflection off a section edge thresholds like
+an object and is the wrong shape for one), and prefer the R-side filter when
+the run is feeding a full analysis, because that one is reversible.
 
 `--bridge_roi circularity roi_area` (or `all`) keeps those rejects in the graph
 as **edge-formers only**. A bridge ROI:

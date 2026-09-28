@@ -204,7 +204,11 @@ loop, including how to diff.
   interior slices opens a z-gap that `max_z_dist` cannot bridge. Observed on real
   data: a circularity cut removed an oocyte's widest cross-sections and one
   object was counted as two. `--feature_area` acts after grouping and cannot do
-  this — prefer it. Any statistic computed after such a filter is also a
+  this — prefer it. Fiji's own `nucleus_circularity` (0.3.0, default
+  `0.00-1.00` = off) is the same hazard with **no cure**: it filters inside
+  `Analyze Particles`, so the rejects never reach `_outline.txt` and
+  `--bridge_roi` has nothing to promote. Only the count survives, as
+  `nucleus_circ_rejected`. Any statistic computed after such a filter is also a
   *truncated* one, so thresholds tuned against it are not portable to a run with
   a different cut.
 

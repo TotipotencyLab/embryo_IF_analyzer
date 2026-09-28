@@ -39,10 +39,11 @@ class NucleusPipeline {
     // preferences. Set Measurements is a PERSISTENT user preference.
     static final String MEASUREMENTS =
         "area mean standard min centroid shape integrated median stack display"
-    // Overview settings, fixed for the pipeline; use Run_Overview.groovy to vary
-    // them.
-    static final int OVERVIEW_WIDTH = 500
-    static final String OVERVIEW_METHOD = "max"
+    // Overview settings used to be fixed here, with Run_Overview.groovy as the
+    // way to vary them. That is no good for a merged tile scan: 500 px of a
+    // 20000 px mosaic diagnoses nothing, and re-running a second script over a
+    // whole batch to get a readable picture is not a quick visual check. They
+    // are parameters now; the defaults below are the constants they replaced.
 
     // The parameters run() reads, and their types. This is the vocabulary a
     // config file may use -- RunConfig.params() rejects anything else rather
@@ -61,6 +62,7 @@ class NucleusPipeline {
         nucleus_blur_sigma     : "double",
         nucleus_threshold      : "string",
         nucleus_particle_size  : "string",
+        nucleus_circularity    : "string",
         nucleus_watershed      : "boolean",
         nucleoli_enabled       : "boolean",
         nucleolus_blur_sigma   : "double",
@@ -74,6 +76,11 @@ class NucleusPipeline {
         save_measurements      : "boolean",
         save_config            : "boolean",
         save_overview          : "boolean",
+        overview_method        : "string",
+        overview_width         : "int",
+        overview_height        : "int",
+        overview_contrast      : "string",
+        overview_saturated     : "double",
     ]
 
     // Defaults, so a config need only state what it changes. These MUST match
@@ -90,6 +97,9 @@ class NucleusPipeline {
         nucleus_blur_sigma     : 8.0d,
         nucleus_threshold      : "Huang2",
         nucleus_particle_size  : "80-Infinity",
+        // 0.00-1.00 is every shape, i.e. no filter -- the behaviour before this
+        // existed. See the detection block for why turning it on is not free.
+        nucleus_circularity    : "0.00-1.00",
         nucleus_watershed      : false,
         nucleoli_enabled       : true,
         nucleolus_blur_sigma   : 3.0d,
@@ -103,6 +113,11 @@ class NucleusPipeline {
         save_measurements      : true,
         save_config            : true,
         save_overview          : false,
+        overview_method        : "max",
+        overview_width         : 500,
+        overview_height        : 0,
+        overview_contrast      : "auto",
+        overview_saturated     : 0.35d,
     ]
 
     /**
@@ -181,6 +196,18 @@ class NucleusPipeline {
         IJ.log("=== " + basename + " ===")
         IJ.log("  analysing " + slices.size() + " of " + imp.getNSlices() + " slices")
 
+        // Overview settings are checked HERE, not where they are used. The
+        // overview is the last thing the pipeline does, so an unknown
+        // projection name would otherwise be found only after detection,
+        // export and measurement had run -- per image, 1261 times over a tile
+        // scan. Overview.validateSettings() throws exactly what project() and
+        // prepare() throw, from the same code, so passing here cannot mean
+        // failing there.
+        if (p.save_overview) {
+            OV.validateSettings(p.overview_method as String, p.overview_contrast,
+                                p.overview_saturated, p.overview_width, p.overview_height)
+        }
+
         def writeFeature = { String feature, List rois, List names, List sls ->
             IJ.log("  " + feature + ": " + rois.size() + " ROIs")
             if (rois.isEmpty()) return
@@ -194,7 +221,31 @@ class NucleusPipeline {
         def dna = RD.buildMask(imp, dnaCh, p.nucleus_blur_sigma as double,
                                p.nucleus_threshold as String, true,
                                p.nucleus_watershed as boolean)
-        def nucRois   = RD.detect(dna, p.nucleus_particle_size as String, "", slices, true, true)
+        // Circularity is a SECOND line of defence after size, for imaging
+        // artefacts -- a reflection off the section edge thresholds like an
+        // object and is often the wrong shape for one.
+        //
+        // It is a pre-grouping filter, so it carries the hazard CLAUDE.md
+        // records for --min_circularity on the R side: dropping an ROI from the
+        // middle of an object opens a z-gap, and one object gets counted as two.
+        // Worse here than there, because the R filter marks the ROI and leaves
+        // it in the table for --bridge_roi to use, while this one deletes it
+        // before anything downstream can see that it existed.
+        //
+        // Hence the count: a filter that removes things silently is this repo's
+        // signature failure. The unfiltered pass runs ONLY when the filter is
+        // on, so the default costs nothing.
+        def nucCirc     = (p.nucleus_circularity ?: "") as String
+        def circRange   = RD.parseRange(nucCirc, 0d, 1d)
+        boolean circOn  = (circRange[0] > 0d || circRange[1] < 1d)
+        def nucRois   = RD.detect(dna, p.nucleus_particle_size as String, nucCirc, slices, true, true)
+        def circRejected = ""
+        if (circOn) {
+            int before = RD.detect(dna, p.nucleus_particle_size as String, "", slices, true, true).size()
+            circRejected = before - nucRois.size()
+            IJ.log("  nucleus: circularity " + nucCirc + " rejected " + circRejected +
+                   " of " + before + " ROI(s)")
+        }
         def nucNames  = RD.autoLabels(nucRois).collect { "nucleus_" + it }
         def nucSlices = nucRois.collect { it.getPosition() }
         // NB: set the name ON the Roi, not just in the parallel names list. The
@@ -237,9 +288,16 @@ class NucleusPipeline {
         // the view untouched, so the raw copy can go out before the outlines
         // are added.
         if (p.save_overview) {
-            def proj = OV.project(imp, slices, OVERVIEW_METHOD, ovChannels)
+            def proj = OV.project(imp, slices, p.overview_method as String, ovChannels)
             ovChannels.each { int c ->
-                def view = OV.prepare(proj, c, [width: OVERVIEW_WIDTH, contrast: "auto"])
+                // width/height 0 means "the original size", and one given makes
+                // the other follow the aspect ratio -- so one number handles any
+                // tile geometry. Overview.prepare() owns that rule; do not
+                // second-guess it here.
+                def view = OV.prepare(proj, c, [width    : p.overview_width,
+                                                height   : p.overview_height,
+                                                contrast : p.overview_contrast,
+                                                saturated: p.overview_saturated])
                 def raw  = OV.savePng(view, OV.overviewPath(outDirPath, basename, c, ""))
                 // NB: "merged" unions the outlines in the PROJECTION, so touching
                 //     or z-overlapping objects share one outline. It is a
@@ -314,12 +372,31 @@ class NucleusPipeline {
                 nucleus_blur_sigma     : p.nucleus_blur_sigma,
                 nucleus_threshold      : p.nucleus_threshold,
                 nucleus_particle_size  : p.nucleus_particle_size,
+                nucleus_circularity    : p.nucleus_circularity,
                 nucleus_watershed      : p.nucleus_watershed,
+                // The overview REQUEST, written whether or not it was honoured.
+                // These are parameters, so they have to survive the round trip:
+                // a config from a GUI run that is fed to the batch must carry
+                // the settings that run used, or the batch quietly falls back
+                // to the defaults and produces different pictures from the one
+                // that was tuned.
+                overview_method        : p.overview_method,
+                overview_width         : p.overview_width,
+                overview_height        : p.overview_height,
+                overview_contrast      : p.overview_contrast,
+                overview_saturated     : p.overview_saturated,
                 overview_saved         : p.save_overview,
                 // Which overview files exist, so a results folder can be read
                 // later without guessing. Blank when none were written.
                 overview_channels      : (p.save_overview ? ovChannels.join(",") : ""),
                 overview_overlay_suffix: (p.save_overview ? OV.OVERLAY_SUFFIX : ""),
+                // How many ROIs the circularity filter deleted, and BLANK
+                // when it was off -- "0" would claim a filter ran and found
+                // nothing to remove. The ROIs themselves are gone: unlike the R
+                // side's --min_circularity, which marks a row and leaves it in
+                // the table, this one drops them before anything is written, so
+                // this number is the only surviving evidence.
+                nucleus_circ_rejected  : circRejected,
                 nucleus_count          : nucRois.size(),
                 nucleoli_enabled       : p.nucleoli_enabled,
                 nucleolus_blur_sigma   : p.nucleolus_blur_sigma,

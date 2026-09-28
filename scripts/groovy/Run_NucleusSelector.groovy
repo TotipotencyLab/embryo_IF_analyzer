@@ -1,27 +1,40 @@
 #@ ImagePlus imp
+#@ String  (visibility=MESSAGE, value="Output specification", required=false) msg0
 #@ File    (label="Output directory", style="directory") outdir
 #@ String  (label="Output prefix", value="") outPrefix
+#@ String  (visibility=MESSAGE, value="Image information", required=false) msg1
 #@ String  (label="Position token in slice label (blank = use title)", value="Position") positionPattern
 #@ String  (label="Z-slices to analyse (blank = all; e.g. 1-20,35-40)", value="") zSpec
 #@ Integer (label="DNA/DAPI channel", value=1) dnaCh
 #@ String  (label="Channels to measure (comma separated)", value="1,2,3") channelsCsv
-#@ Double  (label="Nucleus: blur sigma", value=8.0) nucSigma
-#@ String  (label="Nucleus: threshold method", value="Huang2", choices={"Huang2","Huang","Default","Otsu","Triangle","IsoData"}) nucMethod
-#@ String  (label="Nucleus: particle size (calibrated units^2)", value="80-Infinity") nucSize
-#@ Boolean (label="Nucleus: split touching nuclei (watershed)", value=false) nucWatershed
+#@ String  (visibility=MESSAGE, value="Nucleus detection", required=false) msg2
+#@ Double  (label="Blur sigma", value=8.0) nucSigma
+#@ String  (label="Threshold method", value="Huang2", choices={"Huang2","Huang","Default","Otsu","Triangle","IsoData"}) nucMethod
+#@ String  (label="Particle size (calibrated units^2)", value="80-Infinity") nucSize
+#@ String  (label="Circularity (0.00-1.00 = no filter)", value="0.00-1.00") nucCircularity
+#@ Boolean (label="Split touching nuclei (watershed)", value=false) nucWatershed
+// todo: manual threshold
+#@ String  (visibility=MESSAGE, value="Nucleolus detection", required=false) msg3
 #@ Boolean (label="Detect nucleoli", value=true) doNucleoli
-#@ Double  (label="Nucleolus: blur sigma", value=3.0) nucleolusSigma
-#@ String  (label="Nucleolus: threshold method", value="Relative", choices={"Relative","Default","Otsu","Triangle","Huang","IsoData"}) nucleolusMethod
-#@ Double  (label="Nucleolus: relative fraction (if Relative)", value=0.6) relFraction
-#@ Integer (label="Nucleolus: shrink nucleus ROI (px)", value=0) erodePx
-#@ String  (label="Nucleolus: particle size (calibrated units^2)", value="3-150") nucleolusSize
-#@ String  (label="Nucleolus: circularity", value="0.50-1.00") nucleolusCirc
+#@ Double  (label="Blur sigma", value=3.0) nucleolusSigma
+#@ String  (label="Threshold method", value="Relative", choices={"Relative","Default","Otsu","Triangle","Huang","IsoData"}) nucleolusMethod
+#@ Double  (label="Relative fraction (if Relative)", value=0.6) relFraction
+#@ Integer (label="Shrink nucleus ROI (px)", value=0) erodePx
+#@ String  (label="Particle size (calibrated units^2)", value="3-150") nucleolusSize
+#@ String  (label="Circularity", value="0.50-1.00") nucleolusCirc
+#@ String  (visibility=MESSAGE, value="Behavior control", required=false) msg4
 #@ Boolean (label="Add ROIs to ROI Manager (needs GUI)", value=true) addToRoiManager
 #@ Boolean (label="Save ROI zips", value=true) saveRoiZips
 #@ Boolean (label="Save outline coordinates", value=true) saveOutlines
 #@ Boolean (label="Save measurements", value=true) saveMeasurements
 #@ Boolean (label="Save run configuration", value=true) saveConfig
+#@ String  (visibility=MESSAGE, value="Image overview", required=false) msg5
 #@ Boolean (label="Save overview PNG (quick visual check)", value=false) saveOverview
+#@ String  (label="Projection", value="max", choices={"max","mean","median","sum","sd","min"}) ovMethod
+#@ Integer (label="Width in px (0 = original)", value=500) ovWidth
+#@ Integer (label="Height in px (0 = follow width)", value=0) ovHeight
+#@ String  (label="Contrast", value="auto", choices={"auto","none"}) ovContrast
+#@ Double  (label="Contrast: percent saturated (if auto)", value=0.35) ovSaturated
 
 // Run_NucleusSelector.groovy
 //
@@ -68,6 +81,7 @@ def res = NP.load(LIBDIR).run(imp, outdir, [
     nucleus_blur_sigma     : nucSigma,
     nucleus_threshold      : nucMethod,
     nucleus_particle_size  : nucSize,
+    nucleus_circularity    : nucCircularity,
     nucleus_watershed      : nucWatershed,
     nucleoli_enabled       : doNucleoli,
     nucleolus_blur_sigma   : nucleolusSigma,
@@ -81,6 +95,11 @@ def res = NP.load(LIBDIR).run(imp, outdir, [
     save_measurements      : saveMeasurements,
     save_config            : saveConfig,
     save_overview          : saveOverview,
+    overview_method        : ovMethod,
+    overview_width         : ovWidth,
+    overview_height        : ovHeight,
+    overview_contrast      : ovContrast,
+    overview_saturated     : ovSaturated,
 ])
 
 // --- Display, which is this entry point's own business -------------------

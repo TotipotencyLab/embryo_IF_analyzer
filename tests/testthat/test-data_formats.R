@@ -173,6 +173,58 @@ test_that("open_method is written, readable back, and documented", {
   expect_true(any(grepl("reader", rows, fixed = TRUE)))
 })
 
+test_that("the Fiji circularity filter records what it deleted, and is documented", {
+  # This filter runs inside Analyze Particles, so a rejected ROI never reaches
+  # _outline.txt -- there is no row for --bridge_roi to promote and no record
+  # beyond the count. That makes the count part of the format, not a log line.
+  np <- file.path(repo_root(), "scripts", "groovy", "NucleusPipeline.groovy")
+  rc <- file.path(repo_root(), "scripts", "groovy", "RunConfig.groovy")
+  skip_if_not(all(file.exists(np, rc)), "Groovy library not found")
+
+  np_src <- paste(readLines(np, warn = FALSE), collapse = "\n")
+  expect_match(np_src, "nucleus_circularity", fixed = TRUE)
+  expect_match(np_src, "nucleus_circ_rejected", fixed = TRUE)
+  # Registered as provenance, or a run's own _config.txt stops being readable
+  # back in as the config of the next run.
+  expect_match(paste(readLines(rc, warn = FALSE), collapse = "\n"),
+               '"nucleus_circ_rejected"', fixed = TRUE)
+
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  # The ROW in the _config.txt field table, not a passing mention elsewhere.
+  row <- grep("^\\|\\s*`nucleus_circ_rejected`\\s*\\|", doc, value = TRUE)
+  expect_length(row, 1L)
+  # Blank, not 0: "0" would claim a filter ran and removed nothing.
+  expect_match(row, "Blank when the filter was off", fixed = TRUE)
+})
+
+test_that("the overview settings are parameters and survive the config round trip", {
+  # They were constants. A config from a GUI run that is fed to the batch has to
+  # carry them, or the batch silently falls back to the defaults and produces
+  # different pictures from the ones that were tuned.
+  np <- file.path(repo_root(), "scripts", "groovy", "NucleusPipeline.groovy")
+  tmpl <- file.path(repo_root(), "config", "nucleus_config_template.txt")
+  skip_if_not(all(file.exists(np, tmpl)), "Groovy library not found")
+
+  keys <- c("overview_method", "overview_width", "overview_height",
+            "overview_contrast", "overview_saturated")
+  np_src <- paste(readLines(np, warn = FALSE), collapse = "\n")
+  for (k in keys) {
+    # Declared as a parameter, AND written into the config -- two occurrences.
+    expect_gte(lengths(regmatches(np_src, gregexpr(k, np_src, fixed = TRUE))), 2L)
+  }
+  # The shipped template is what a user copies; a parameter missing from it is
+  # a parameter nobody knows exists.
+  cfg <- read.delim(tmpl, comment.char = "#", stringsAsFactors = FALSE)
+  expect_true(all(keys %in% cfg$parameter))
+  expect_true("nucleus_circularity" %in% cfg$parameter)
+
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  expect_true(any(grepl("`overview_width`", doc, fixed = TRUE)))
+  # The trap that cost a test: auto contrast normalises two different
+  # projections into identical bytes.
+  expect_true(any(grepl("stretches each picture to full range", doc, fixed = TRUE)))
+})
+
 test_that("the sample prefix carries the series index, and the doc says so", {
   # Series names repeat -- a tile scan is many series under one name -- so the
   # index is what makes the prefix unique WITHIN a file, as the alias does
