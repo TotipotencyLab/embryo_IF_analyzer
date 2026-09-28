@@ -154,6 +154,28 @@ genuinely different projections can come out looking identical.
 ROIs come from — and can take its outlines from saved `*_outline_ROIs.zip`
 files, so overviews can be regenerated later without re-running detection.
 
+Every run records **the threshold it actually used**, as the pixel range it
+selected (`nucleus_threshold_used`, e.g. `90-255`), and **how much of the frame
+that selected** (`nucleus_mask_pct`). Both go into `_config.txt` and, for a
+batch, into columns of `batch_summary.tsv`.
+
+The coverage is the cheap check that a threshold went wrong, and it catches both
+directions: `0.00` means it selected nothing — a near-empty field of slide — and
+a number in the tens means it selected the frame rather than the objects in it.
+Neither shows up in an ROI count, because the size filter turns both into "no
+nuclei found".
+
+A frame with **nothing to separate** — every pixel pure black, or every pixel
+saturated — has no threshold at all, and reports `none` with an empty mask
+rather than guessing. A field of blank mounting medium in a tile scan is exactly
+this case.
+
+The range is reported rather than the algorithm's bare number so that it can be
+copied straight into a manual threshold later, with no arithmetic and no
+guessing which end it was. Feeding a `_config.txt` forward does **not** pin it:
+the threshold is re-derived for each new image, which is what you want across a
+slide with varying exposure.
+
 Touching nuclei can be split with **watershed** (off by default). Turn it on for
 objects that threshold into one blob but are two things — a zygote's two
 pronuclei, or oocytes packed together in a section.

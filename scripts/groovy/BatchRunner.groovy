@@ -395,7 +395,8 @@ class BatchRunner {
             def prefix = (row.prefix ?: "").toString()
             if (!isIncluded(row.include)) {
                 summary << [prefix: prefix, path: row.path, series_index: row.series_index,
-                            status: "excluded", open_method: "", n_nucleus: "",
+                            status: "excluded", open_method: "", threshold: "",
+                            mask_pct: "", n_nucleus: "",
                             n_nucleolus: "", seconds: "", message: ""]
                 return
             }
@@ -439,6 +440,12 @@ class BatchRunner {
                                                 series_name : (row.series_name ?: "")])
                 summary << [prefix: prefix, path: row.path, series_index: row.series_index,
                             status: "ok", open_method: method,
+                            // What the threshold chose, per row. Every _config.txt
+                            // carries it too, but finding the handful of rows where
+                            // it went wrong should not mean opening a thousand files
+                            // -- and on a slide that scans across empty sections,
+                            // "went wrong" is the common case, not the rare one.
+                            threshold: res.threshold, mask_pct: res.maskPct,
                             n_nucleus: res.nucRois.size(), n_nucleolus: res.nuclRois.size(),
                             seconds: fmtSeconds(System.currentTimeMillis() - t0), message: ""]
                 ok++
@@ -447,7 +454,8 @@ class BatchRunner {
                 def msg = t.getClass().getSimpleName() + ": " + (t.getMessage() ?: "(no message)")
                 say("FAILED " + prefix + ": " + msg)
                 summary << [prefix: prefix, path: row.path, series_index: row.series_index,
-                            status: "failed", open_method: method, n_nucleus: "", n_nucleolus: "",
+                            status: "failed", open_method: method, threshold: "",
+                            mask_pct: "", n_nucleus: "", n_nucleolus: "",
                             seconds: fmtSeconds(System.currentTimeMillis() - t0),
                             message: oneLine(msg)]
                 failed++
@@ -464,6 +472,7 @@ class BatchRunner {
         }
 
         def cols = ["prefix", "path", "series_index", "status", "open_method",
+                    "threshold", "mask_pct",
                     "n_nucleus", "n_nucleolus", "seconds", "message"]
         TSV.write(summary, new File(outdir, "batch_summary.tsv"), cols)
 

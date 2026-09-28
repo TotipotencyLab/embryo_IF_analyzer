@@ -225,6 +225,49 @@ test_that("the overview settings are parameters and survive the config round tri
   expect_true(any(grepl("stretches each picture to full range", doc, fixed = TRUE)))
 })
 
+test_that("the threshold a run used is recorded, and is provenance not a parameter", {
+  # The number the auto method chose was thrown away until now, so a run could
+  # not say what it had thresholded at -- no way to tell a sensible threshold
+  # from a disastrous one afterwards, and no way to read a value off in order to
+  # pin it. Recorded as the RANGE it selected, so pinning is copy-paste.
+  np <- file.path(repo_root(), "scripts", "groovy", "NucleusPipeline.groovy")
+  rd <- file.path(repo_root(), "scripts", "groovy", "RoiDetect.groovy")
+  rc <- file.path(repo_root(), "scripts", "groovy", "RunConfig.groovy")
+  br <- file.path(repo_root(), "scripts", "groovy", "BatchRunner.groovy")
+  skip_if_not(all(file.exists(np, rd, rc, br)), "Groovy library not found")
+
+  np_src <- paste(readLines(np, warn = FALSE), collapse = "\n")
+  expect_match(np_src, "nucleus_threshold_used", fixed = TRUE)
+  expect_match(np_src, "nucleus_mask_pct", fixed = TRUE)
+
+  # Provenance, so a run's own config still reads back in -- and so that feeding
+  # a config forward RE-DERIVES the threshold instead of freezing one image's.
+  rc_src <- paste(readLines(rc, warn = FALSE), collapse = "\n")
+  expect_match(rc_src, '"nucleus_threshold_used"', fixed = TRUE)
+  expect_match(rc_src, '"nucleus_mask_pct"', fixed = TRUE)
+
+  # The batch columns, so finding the rows where it went wrong does not mean
+  # opening a thousand _config.txt files.
+  br_src <- paste(readLines(br, warn = FALSE), collapse = "\n")
+  expect_match(br_src, '"threshold", "mask_pct"', fixed = TRUE)
+
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  # A ROW in each of the two field tables, not a passing mention.
+  expect_length(grep("^\\|\\s*`nucleus_threshold_used`\\s*\\|", doc), 1L)
+  expect_length(grep("^\\|\\s*`nucleus_mask_pct`\\s*\\|", doc), 1L)
+  expect_length(grep("^\\|\\s*`threshold`\\s*\\|", doc), 1L)
+  expect_length(grep("^\\|\\s*`mask_pct`\\s*\\|", doc), 1L)
+  # The rule that makes it safe to feed a config forward.
+  expect_true(any(grepl("pinning a threshold is a", doc, fixed = TRUE)))
+
+  # A uniform frame has no threshold and says so, rather than the pre-v0.3.0
+  # behaviour of silently handing back an unthresholded image as the mask.
+  expect_match(paste(readLines(rd, warn = FALSE), collapse = "\n"),
+               "NO_THRESHOLD", fixed = TRUE)
+  expect_true(any(grepl("A uniform frame has no threshold", doc, fixed = TRUE)))
+  expect_true(any(grepl("v0.3.0 and earlier", doc, fixed = TRUE)))
+})
+
 test_that("the sample prefix carries the series index, and the doc says so", {
   # Series names repeat -- a tile scan is many series under one name -- so the
   # index is what makes the prefix unique WITHIN a file, as the alias does

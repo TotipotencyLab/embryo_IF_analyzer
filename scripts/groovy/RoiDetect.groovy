@@ -15,6 +15,7 @@ import ij.process.ImageProcessor
 import ij.process.ImageStatistics
 import ij.plugin.Duplicator
 import ij.plugin.filter.ParticleAnalyzer
+import fiji.threshold.Auto_Threshold
 
 class RoiDetect {
 
@@ -34,32 +35,119 @@ class RoiDetect {
         }
     }
 
-    /**
-     * Detect particles in a thresholded/binary stack.
-     *
-     * sizeRange: "80-Infinity" -- in CALIBRATED units (um^2) when the image is
-     *            calibrated, matching the Analyze Particles dialog.
-     * circRange: "0.50-1.00"
-     * slices:    which z-slices to analyse; null means all.
-     */
+    /** Histogram bins excluded before the algorithm sees them. Both are ON, and
+     *  were ON as literals in the option string before they had names: a frame
+     *  padded with zeros or clipped to saturation would otherwise decide the
+     *  threshold by sheer bin count. */
+    static final boolean IGNORE_BLACK = true
+    static final boolean IGNORE_WHITE = true
+
+    /** Reported as the threshold when a frame has nothing to separate. A word,
+     *  not a range, so it cannot be mistaken for one or pasted into a manual
+     *  setting. See buildMask() for when it happens and why it is not blank --
+     *  blank already means "this row never ran". */
+    static final String NO_THRESHOLD = "none"
+
     /**
      * Build a binary mask from one channel: blur, auto-threshold, optionally fill
      * holes, and optionally split touching objects by watershed.
      *
-     * Returns a NEW ImagePlus that the caller must close. The source is untouched.
+     * Returns a Map -- the mask is a NEW ImagePlus the caller must close, and
+     * the source is untouched:
+     *
+     *   mask      the 8-bit 0/255 binary stack
+     *   lo, hi    the pixel range the threshold SELECTED, as applied
+     *   coverage  percent of pixels inside that range, measured on the raw
+     *             threshold result BEFORE fill holes and watershed, because the
+     *             question it answers is "what did the threshold choose"
      *
      * Watershed splits objects that threshold into a single blob but are two
      * things -- a zygote's two pronuclei, oocytes packed together in a section.
      * It is off by default: with watershed=false this reproduces the previous
      * inline mask step exactly, so turning it on is the only thing that can
      * change existing results.
+     *
+     * WHY exec() RATHER THAN IJ.run("Auto Threshold", ...)
+     *
+     * It is the same plugin, reached through its API instead of its macro
+     * recorder string, and it RETURNS THE THRESHOLD IT CHOSE. That number was
+     * previously thrown away, which meant a run could not say what it had
+     * thresholded at -- no way to tell a sensible threshold from a disastrous
+     * one after the fact, and no way to read off a value in order to pin it.
+     *
+     * Measured against the old call on synthesised 8- and 16-bit stacks, four
+     * methods each (Test_BuildMask keeps the old call as the oracle):
+     *
+     *   8-bit    byte-identical
+     *   16-bit   the same pixels selected, but exec() leaves a 16-bit 0/65535
+     *            mask where the macro path converts to 8-bit 0/255
+     *
+     * Hence to8BitMask(). Without it a 16-bit run would produce a mask whose
+     * "on" value is 65535, and detect() sets a threshold of 128-255 on it --
+     * the ROIs would be right, by luck, and the mask would be wrong.
+     *
+     * ⚠️ exec() thresholds only the CURRENT SLICE unless the stack histogram is
+     * used; the slice loop lives in the plugin's run(), not in exec(). This
+     * passes true, as the option string did.
      */
-    static ImagePlus buildMask(ImagePlus imp, int channel, double sigma, String method,
-                               boolean fillHoles, boolean watershed) {
+    static Map buildMask(ImagePlus imp, int channel, double sigma, String method,
+                         boolean fillHoles, boolean watershed) {
         def mask = new Duplicator().run(imp, channel, channel, 1, imp.getNSlices(), 1, 1)
         if (sigma > 0) IJ.run(mask, "Gaussian Blur...", "sigma=${sigma} stack")
-        IJ.run(mask, "Auto Threshold",
-               "method=${method} ignore_black ignore_white white stack use_stack_histogram")
+
+        // exec(imp, method, noWhite, noBlack, doIwhite, doIset, doIlog, doIstackHistogram)
+        def out = null
+        boolean degenerate = false
+        try {
+            out = new Auto_Threshold().exec(mask, method, IGNORE_WHITE, IGNORE_BLACK,
+                                            true, false, false, true)
+        } catch (ArrayIndexOutOfBoundsException e) {
+            // NOTHING TO SEPARATE. ignore_black and ignore_white zero the two
+            // end bins before the algorithm runs, so a frame whose pixels are
+            // ALL pure black or all saturated leaves an empty histogram and the
+            // plugin's min/max bin search returns -1.
+            //
+            // This is not hypothetical on a slide that scans across sections --
+            // a field of blank mounting medium is exactly this -- and it is the
+            // reason the exception is caught rather than left to fail the row.
+            //
+            // ⚠️ THIS IS A BEHAVIOUR CHANGE, and the old behaviour was the
+            //    dangerous one. IJ.run() routes through ImageJ's Executer,
+            //    which CATCHES the plugin's exception, logs it, and returns --
+            //    leaving the image UNTHRESHOLDED, after which buildMask handed
+            //    back the raw pixels as if they were a mask. Measured on an
+            //    all-255 frame: IJ.run left 1600/1600 pixels "on"; on an
+            //    all-black frame, 0/1600. Both looked like a successful run.
+            //
+            // The honest answer is that no threshold separates a uniform frame,
+            // so nothing is selected and the caller is told so by name.
+            degenerate = true
+        }
+        if (!degenerate && (out == null || out[0] == null)) {
+            throw new IllegalArgumentException(
+                "Auto Threshold returned nothing for method '${method}'; " +
+                "it must be one of the Auto Threshold plugin's own names")
+        }
+
+        Integer lo = null, hi = null
+        String thresholdUsed = NO_THRESHOLD
+        if (degenerate) {
+            blank(mask)
+        } else {
+            int t = (out[0] as Number).intValue()
+            to8BitMask(mask)
+            // The range as APPLIED, not the bare number: "white" objects are the
+            // pixels ABOVE the threshold, so the algorithm's t is the bottom of
+            // the selected range and the top is whatever the type can hold.
+            // Recording the pair is what makes the value copy-pasteable into a
+            // manual threshold later without anyone having to work out which end
+            // it was.
+            lo = t + 1
+            hi = (imp.getBitDepth() == 16) ? 65535 : 255
+            thresholdUsed = lo + "-" + hi
+        }
+        double coverage = coveragePct(mask)
+
         if (fillHoles) IJ.run(mask, "Fill Holes", "stack")
 
         if (watershed) {
@@ -74,9 +162,75 @@ class RoiDetect {
             // hole and shatters one object into a ring of fragments.
             IJ.run(mask, "Watershed", "stack")
         }
-        return mask
+        return [mask: mask, threshold: thresholdUsed, lo: lo, hi: hi, coverage: coverage]
     }
 
+    /** Replace a stack with an empty 8-bit mask of the same shape. */
+    static void blank(ImagePlus imp) {
+        def out = new ij.ImageStack(imp.getWidth(), imp.getHeight())
+        for (int z = 1; z <= imp.getStackSize(); z++) {
+            out.addSlice(imp.getStack().getSliceLabel(z),
+                         new ij.process.ByteProcessor(imp.getWidth(), imp.getHeight()))
+        }
+        imp.setStack(out)
+    }
+
+    /**
+     * Force a thresholded stack to 8-bit 0/255, whatever it arrived as.
+     *
+     * Any non-zero pixel is "on". A 16-bit threshold result is 0/65535, and
+     * everything downstream -- detect()'s setThreshold(128, 255), Fill Holes,
+     * Watershed -- assumes the 8-bit form.
+     */
+    static void to8BitMask(ImagePlus imp) {
+        if (imp.getBitDepth() == 8) { return }
+        def src = imp.getStack()
+        def out = new ij.ImageStack(imp.getWidth(), imp.getHeight())
+        for (int z = 1; z <= src.getSize(); z++) {
+            def ip = src.getProcessor(z)
+            def bp = new ij.process.ByteProcessor(imp.getWidth(), imp.getHeight())
+            for (int y = 0; y < imp.getHeight(); y++) {
+                for (int x = 0; x < imp.getWidth(); x++) {
+                    if (ip.get(x, y) != 0) bp.set(x, y, 255)
+                }
+            }
+            out.addSlice(src.getSliceLabel(z), bp)
+        }
+        imp.setStack(out)
+    }
+
+    /**
+     * Percent of pixels that are "on" across the whole stack.
+     *
+     * The cheapest signal there is that a threshold went wrong, and it catches
+     * both directions: 0.00 means it selected nothing (a blank field, or a
+     * manual value above everything present), and a number in the tens means it
+     * selected the frame rather than the objects in it. Neither shows up in an
+     * ROI count, because the size filter turns both into "no nuclei".
+     */
+    static double coveragePct(ImagePlus imp) {
+        long on = 0L, total = 0L
+        def st = imp.getStack()
+        for (int z = 1; z <= st.getSize(); z++) {
+            def ip = st.getProcessor(z)
+            for (int y = 0; y < imp.getHeight(); y++) {
+                for (int x = 0; x < imp.getWidth(); x++) {
+                    if (ip.get(x, y) != 0) on++
+                    total++
+                }
+            }
+        }
+        return (total == 0L) ? 0.0d : (100.0d * on / total)
+    }
+
+    /**
+     * Detect particles in a thresholded/binary stack.
+     *
+     * sizeRange: "80-Infinity" -- in CALIBRATED units (um^2) when the image is
+     *            calibrated, matching the Analyze Particles dialog.
+     * circRange: "0.50-1.00"
+     * slices:    which z-slices to analyse; null means all.
+     */
     static List<Roi> detect(ImagePlus binary, String sizeRange, String circRange,
                             Set<Integer> slices, boolean excludeEdges, boolean includeHoles) {
         def (double minSize, double maxSize) = parseRange(sizeRange, 0d, Double.MAX_VALUE)

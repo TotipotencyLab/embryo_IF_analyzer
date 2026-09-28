@@ -162,7 +162,8 @@ println "=== batch_summary.tsv is the deliverable ==="
 def sum = TSV.read(new File(out1, "batch_summary.tsv"))
 check("one row per sheet row, excluded too",   sum.size(), 4)
 check("columns",                               sum[0].keySet().toList(),
-      ["prefix", "path", "series_index", "status", "open_method", "n_nucleus",
+      ["prefix", "path", "series_index", "status", "open_method",
+       "threshold", "mask_pct", "n_nucleus",
        "n_nucleolus", "seconds", "message"])
 check("A is ok",                               sum.find { it.prefix == "A" }.status, "ok")
 check("A counted its nuclei",                  sum.find { it.prefix == "A" }.n_nucleus, "6")
@@ -170,6 +171,22 @@ check("B is failed",                           sum.find { it.prefix == "B" }.sta
 check("B says what went wrong",                sum.find { it.prefix == "B" }.message.contains("missing.ome.tif"), true)
 check("D is excluded",                         sum.find { it.prefix == "D" }.status, "excluded")
 check("a failed row has no counts",            sum.find { it.prefix == "B" }.n_nucleus, "")
+
+// The threshold and the coverage, per row. Every _config.txt carries them too;
+// the columns exist so that finding the handful of rows where the threshold
+// went wrong does not mean opening a thousand files. On a slide that scans
+// across empty sections that is the common case, not the rare one.
+def rowA = sum.find { it.prefix == "A" }
+check("A records the range it thresholded at",
+      rowA.threshold ==~ /\d+-\d+/, true)
+check("...and the percent of pixels it selected",
+      rowA.mask_pct ==~ /\d+\.\d\d/, true)
+check("...which is neither nothing nor everything",
+      (rowA.mask_pct as double) > 0.0d && (rowA.mask_pct as double) < 50.0d, true)
+// Blank, not stale: a row that never ran must not show the previous row's
+// numbers, which is exactly what a carried-over variable would do.
+check("a failed row has no threshold",         sum.find { it.prefix == "B" }.threshold, "")
+check("an excluded row has no coverage",       sum.find { it.prefix == "D" }.mask_pct, "")
 
 println ""
 println "=== the parameters used are written back, re-readable ==="

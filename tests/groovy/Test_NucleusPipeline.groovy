@@ -119,7 +119,11 @@ def baseParams = [
     overview_saturated     : 0.35d,
 ]
 
-def NP = new GroovyClassLoader().parseClass(new File(LIBDIR, "NucleusPipeline.groovy"))
+def GCL = new GroovyClassLoader()
+def NP = GCL.parseClass(new File(LIBDIR, "NucleusPipeline.groovy"))
+// RunConfig, to read a written config back the way a RERUN would -- which is
+// the only way to tell a parameter from a provenance field.
+def RC = GCL.parseClass(new File(LIBDIR, "RunConfig.groovy"))
 
 println "=== load() ==="
 def pipe = NP.load(LIBDIR)
@@ -176,6 +180,26 @@ new File(outB, "sheetAlias_Series001_config.txt").eachLine { line ->
 check("script names the entry point",          cfg["script"]?.startsWith("Test_NucleusPipeline.groovy"), true)
 check("output_basename matches the override",  cfg["output_basename"], "sheetAlias_Series001")
 check("nucleus_count is recorded",             cfg["nucleus_count"], "8")
+// The threshold the run actually used, as the RANGE it selected rather than
+// the algorithm's bare number -- so it can be copied into a manual threshold
+// later without anyone working out which end it was. And the coverage beside
+// it, which is the cheap signal that a threshold went wrong in either
+// direction: 0.00 selected nothing, a number in the tens selected the frame.
+check("the threshold used is recorded as a range",
+      cfg["nucleus_threshold_used"] ==~ /\d+-\d+/, true)
+check("...with the type maximum as its top",
+      cfg["nucleus_threshold_used"].endsWith("-255"), true)
+check("mask coverage is recorded, 2 dp",
+      cfg["nucleus_mask_pct"] ==~ /\d+\.\d\d/, true)
+check("...and the two discs are a few percent of the frame",
+      (cfg["nucleus_mask_pct"] as double) > 1.0d && (cfg["nucleus_mask_pct"] as double) < 30.0d, true)
+// Provenance, not a parameter: feeding this config forward must re-derive the
+// threshold for the image it is given rather than freezing this one.
+def asParams = RC.readParams(new File(outB, "sheetAlias_Series001_config.txt"), NP.PARAM_TYPES)
+check("threshold_used does NOT read back as a parameter",
+      asParams.containsKey("nucleus_threshold_used"), false)
+check("...nor does mask_pct",                  asParams.containsKey("nucleus_mask_pct"), false)
+check("...while the REQUEST does",             asParams["nucleus_threshold"], "Otsu")
 
 println ""
 println "=== pixel_depth: recorded for a stack, BLANK for a single plane ==="

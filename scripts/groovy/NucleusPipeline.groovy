@@ -218,9 +218,24 @@ class NucleusPipeline {
         }
 
         // --- Nucleus ---------------------------------------------------------
-        def dna = RD.buildMask(imp, dnaCh, p.nucleus_blur_sigma as double,
-                               p.nucleus_threshold as String, true,
-                               p.nucleus_watershed as boolean)
+        def built = RD.buildMask(imp, dnaCh, p.nucleus_blur_sigma as double,
+                                 p.nucleus_threshold as String, true,
+                                 p.nucleus_watershed as boolean)
+        def dna = built.mask
+        // The threshold is reported as the RANGE it selected, and the coverage
+        // beside it. Both were previously thrown away, which left a run unable
+        // to say what it had thresholded at: no way to tell a sensible
+        // threshold from a disastrous one afterwards, and no way to read a
+        // value off in order to pin it.
+        //
+        // Coverage is the cheap signal that catches both failures an ROI count
+        // hides. 0.00% is a blank field; a number in the tens is the frame
+        // being selected rather than the objects in it. The size filter turns
+        // both into "no nuclei", which look identical.
+        def thresholdUsed = built.threshold
+        def maskPct       = String.format("%.2f", built.coverage)
+        IJ.log("  threshold: " + p.nucleus_threshold + " -> " + thresholdUsed +
+               "  (mask " + maskPct + "% of pixels)")
         // Circularity is a SECOND line of defence after size, for imaging
         // artefacts -- a reflection off the section edge thresholds like an
         // object and is often the wrong shape for one.
@@ -396,6 +411,13 @@ class NucleusPipeline {
                 // side's --min_circularity, which marks a row and leaves it in
                 // the table, this one drops them before anything is written, so
                 // this number is the only surviving evidence.
+                // What the threshold actually did, as opposed to what was
+                // asked for. nucleus_threshold is the REQUEST and reads back in
+                // as a parameter; these two are the RESULT and are ignored on
+                // the way in -- a config fed forward must re-derive the
+                // threshold for the image it is given, never freeze this one.
+                nucleus_threshold_used : thresholdUsed,
+                nucleus_mask_pct       : maskPct,
                 nucleus_circ_rejected  : circRejected,
                 nucleus_count          : nucRois.size(),
                 nucleoli_enabled       : p.nucleoli_enabled,
@@ -413,6 +435,11 @@ class NucleusPipeline {
         return [basename  : basename,
                 outDirPath: outDirPath,
                 slices    : slices,
+                // For batch_summary.tsv: per row, what the threshold chose. The
+                // alternative is opening a thousand _config.txt files to find
+                // the rows where it went wrong.
+                threshold : thresholdUsed,
+                maskPct   : maskPct,
                 nucRois   : nucRois,  nucNames : nucNames,  nucSlices : nucSlices,
                 nuclRois  : nuclRois, nuclNames: nuclNames, nuclSlices: nuclSlices]
     }
