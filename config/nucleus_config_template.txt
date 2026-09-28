@@ -15,6 +15,7 @@ channels_measured	1,2,3
 nucleus_blur_sigma	8.0
 nucleus_threshold	Huang2
 nucleus_particle_size	80-Infinity
+nucleus_circularity	0.00-1.00
 nucleus_watershed	false
 nucleoli_enabled	true
 nucleolus_blur_sigma	3.0
@@ -28,3 +29,8 @@ save_outlines	true
 save_measurements	true
 save_config	true
 save_overview	false
+overview_method	max
+overview_width	500
+overview_height	0
+overview_contrast	auto
+overview_saturated	0.35

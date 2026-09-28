@@ -103,11 +103,7 @@ class Overview {
      */
     static ImagePlus project(ImagePlus imp, Set<Integer> zSlices, String method,
                              List<Integer> channels) {
-        String zpMethod = METHODS[method?.toLowerCase()]
-        if (zpMethod == null) {
-            throw new IllegalArgumentException(
-                "unknown projection '${method}'; use one of ${METHODS.keySet().join(', ')}")
-        }
+        String zpMethod = projectionMethod(method)
 
         int nC = imp.getNChannels(), nZ = imp.getNSlices()
         // NB: `(1..nZ)` is a Range -- a List, but a READ-ONLY one, so sort() on it
@@ -194,14 +190,8 @@ class Overview {
         if (idx < 0) {
             throw new IllegalArgumentException("channel ${channel} is not in the projection (has ${chans})")
         }
-        String contrast = (opts.contrast ?: "auto").toString().toLowerCase()
-        if (!(contrast in CONTRAST)) {
-            throw new IllegalArgumentException("unknown contrast '${opts.contrast}'; use one of ${CONTRAST.join(', ')}")
-        }
-        double saturated = opt(opts, "saturated", 0.35d) as double
-        if (saturated < 0 || saturated >= 100) {
-            throw new IllegalArgumentException("saturated must be 0 to <100 percent, got ${saturated}")
-        }
+        String contrast = contrastMode(opts.contrast)
+        double saturated = saturatedPercent(opts.saturated)
 
         // Copy: the projection may be prepared again for another channel.
         ImageProcessor ip = proj.getStack().getProcessor(idx + 1).duplicate()
@@ -273,6 +263,57 @@ class Overview {
     //     left side is FALSE, and 0 is false -- so `saturated: 0`, which means
     //     "clip nothing", silently became 0.35, and `lineWidth: 0` silently became
     //     1 instead of being rejected. Only null and blank mean "not given".
+    /**
+     * The three settings validators, pulled out of project()/prepare() so that
+     * they can be run BEFORE an image is opened.
+     *
+     * project() and prepare() run at the END of the pipeline, after detection,
+     * export and measurement. A typo in the projection name would therefore
+     * cost a full detection pass before it was noticed -- once interactively,
+     * and 1261 times over a tile-scan batch. Each returns the normalised value
+     * so there is one definition of "what that setting means", not two.
+     */
+    static String projectionMethod(String method) {
+        String zp = METHODS[method?.toLowerCase()]
+        if (zp == null) {
+            throw new IllegalArgumentException(
+                "unknown projection '${method}'; use one of ${METHODS.keySet().join(', ')}")
+        }
+        return zp
+    }
+
+    static String contrastMode(Object contrast) {
+        String c = (contrast == null || contrast.toString().trim().isEmpty())
+                   ? "auto" : contrast.toString().toLowerCase()
+        if (!(c in CONTRAST)) {
+            throw new IllegalArgumentException("unknown contrast '${contrast}'; use one of ${CONTRAST.join(', ')}")
+        }
+        return c
+    }
+
+    static double saturatedPercent(Object v) {
+        double s = (v == null || v.toString().trim().isEmpty()) ? 0.35d : (v as double)
+        if (s < 0 || s >= 100) {
+            throw new IllegalArgumentException("saturated must be 0 to <100 percent, got ${s}")
+        }
+        return s
+    }
+
+    /**
+     * Check a whole set of overview settings without an image.
+     *
+     * Throws exactly what project()/prepare() would throw, from the same code,
+     * so "it validated" and "it will run" cannot come apart.
+     */
+    static void validateSettings(String method, Object contrast, Object saturated,
+                                 Object width, Object height) {
+        projectionMethod(method)
+        contrastMode(contrast)
+        saturatedPercent(saturated)
+        sizeOpt(width, "width")
+        sizeOpt(height, "height")
+    }
+
     private static Object opt(Map opts, String key, Object dflt) {
         def v = opts[key]
         return (v == null || v.toString().trim().isEmpty()) ? dflt : v

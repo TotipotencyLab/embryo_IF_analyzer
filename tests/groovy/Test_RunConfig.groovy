@@ -272,13 +272,17 @@ def VAR_TO_PARAM = [
     outPrefix: "output_prefix", positionPattern: "position_pattern", zSpec: "z_spec",
     dnaCh: "dna_channel", channelsCsv: "channels_measured",
     nucSigma: "nucleus_blur_sigma", nucMethod: "nucleus_threshold",
-    nucSize: "nucleus_particle_size", nucWatershed: "nucleus_watershed",
+    nucSize: "nucleus_particle_size", nucCircularity: "nucleus_circularity",
+    nucWatershed: "nucleus_watershed",
     doNucleoli: "nucleoli_enabled", nucleolusSigma: "nucleolus_blur_sigma",
     nucleolusMethod: "nucleolus_threshold", relFraction: "nucleolus_rel_fraction",
     erodePx: "nucleolus_erode_px", nucleolusSize: "nucleolus_particle_size",
     nucleolusCirc: "nucleolus_circularity", saveRoiZips: "save_roi_zips",
     saveOutlines: "save_outlines", saveMeasurements: "save_measurements",
     saveConfig: "save_config", saveOverview: "save_overview",
+    ovMethod: "overview_method", ovWidth: "overview_width",
+    ovHeight: "overview_height", ovContrast: "overview_contrast",
+    ovSaturated: "overview_saturated",
 ]
 check("the mapping covers every parameter",
       (NP.PARAM_TYPES.keySet() - VAR_TO_PARAM.values().toSet()).toList(), [])

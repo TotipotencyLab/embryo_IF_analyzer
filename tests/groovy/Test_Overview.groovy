@@ -510,5 +510,44 @@ both.close()
 tmp.deleteDir()
 
 println ""
+println "=== the settings validators, which run without an image ==="
+// project() and prepare() are the LAST thing the nucleus pipeline does, so
+// settings checked only where they are used cost a whole detection pass before
+// a typo is noticed. These are the same checks, callable up front. They must
+// stay the same checks: two definitions of "a valid projection name" is how
+// "it validated" and "it will run" come apart.
+def threw = { Closure c ->
+    try { c(); return null } catch (Throwable t) { return t.getClass().getSimpleName() }
+}
+check("projectionMethod maps max -> max",      OV.projectionMethod("max"), "max")
+check("...mean -> ZProjector's avg",           OV.projectionMethod("mean"), "avg")
+check("...and is case-insensitive",            OV.projectionMethod("MAX"), "max")
+check("an unknown projection throws",          threw { OV.projectionMethod("banana") },
+                                               "IllegalArgumentException")
+check("contrastMode defaults blank to auto",   OV.contrastMode(""), "auto")
+check("...and null to auto",                   OV.contrastMode(null), "auto")
+check("...passes none through",                OV.contrastMode("none"), "none")
+check("an unknown contrast throws",            threw { OV.contrastMode("vivid") },
+                                               "IllegalArgumentException")
+check("saturatedPercent defaults to 0.35",     OV.saturatedPercent(""), 0.35d)
+check("...takes a given value",                OV.saturatedPercent(2.5d), 2.5d)
+check("negative saturation throws",            threw { OV.saturatedPercent(-1d) },
+                                               "IllegalArgumentException")
+check("100 percent saturation throws",         threw { OV.saturatedPercent(100d) },
+                                               "IllegalArgumentException")
+check("validateSettings accepts a good set",
+      threw { OV.validateSettings("median", "none", 1.0d, 0, 0) }, null)
+check("...and rejects a bad size",
+      threw { OV.validateSettings("max", "auto", 0.35d, -5, 0) }, "IllegalArgumentException")
+
+// The point of extracting them: what validateSettings accepts, project() and
+// prepare() must actually run. Asserted rather than assumed.
+def okProj = OV.project(img, null, "median", [1])
+check("a validated projection really runs",    okProj.getStackSize(), 1)
+check("...and a validated prepare really runs",
+      OV.prepare(okProj, 1, [contrast: "none", saturated: 1.0d, width: 0]) != null, true)
+okProj.close()
+
+println ""
 println "passed: ${passed}   FAILED: ${failed}"
 if (failed > 0) throw new AssertionError("${failed} Overview check(s) failed")

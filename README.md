@@ -137,18 +137,36 @@ the outlines come from DNA and drawing them over the other channels is how you
 check a signal against the compartment it should be in. Both are wanted at once
 by `montage_qc_cli.r`, which is why they are separate files.
 
-The log records the display range used per channel (`display 2.0-207.0`).
-Contrast is automatic, so a channel holding only noise has that noise stretched
-to full brightness and saves a convincing picture of nothing — a narrow range is
-the warning.
+The **projection, output size and contrast** are settings: `max` and 500 px
+wide by default, and a width of `0` means the image's own size (give one of
+width/height and the other follows the aspect ratio). 500 px of a merged tile
+scan diagnoses nothing, which is what these are for — but at full size it is six
+PNGs per series, so mind the disk on a large batch.
 
-`Run_Overview.groovy` does the same with every setting exposed, and can take its
-outlines from saved `*_outline_ROIs.zip` files — so overviews can be regenerated
-later without re-running detection.
+The log records the display range used per channel (`display 2.0-207.0`).
+Contrast is automatic by default, so a channel holding only noise has that noise
+stretched to full brightness and saves a convincing picture of nothing — a
+narrow range is the warning. Set contrast to `none` when the pictures are meant
+to be compared with each other; `auto` stretches each one separately, so two
+genuinely different projections can come out looking identical.
+
+`Run_Overview.groovy` exposes the rest — outline colours, line width, where the
+ROIs come from — and can take its outlines from saved `*_outline_ROIs.zip`
+files, so overviews can be regenerated later without re-running detection.
 
 Touching nuclei can be split with **watershed** (off by default). Turn it on for
 objects that threshold into one blob but are two things — a zygote's two
 pronuclei, or oocytes packed together in a section.
+
+Nuclei can also be filtered by **circularity** (`0.00-1.00` by default, which
+filters nothing), as a second line of defence after particle size against
+imaging artefacts — a reflection off a section edge thresholds like an object
+and is usually the wrong shape for one. How many ROIs it removed is recorded in
+`_config.txt` as `nucleus_circ_rejected`. ⚠️ It drops them before anything is
+written, so there is no record of them beyond that count, and removing an
+object's middle slices can split it into two. If the run feeds the R side,
+prefer `annotate_features_cli.r --min_circularity`, which marks the ROIs
+instead of deleting them and can put them back with `--bridge_roi`.
 
 Detection uses `ParticleAnalyzer` directly rather than the ROI Manager, so the
 whole pipeline also runs headless:
