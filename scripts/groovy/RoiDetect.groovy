@@ -320,7 +320,7 @@ class RoiDetect {
      *   built -- and it was where the run died with OutOfMemoryError. On 8-bit
      *   input the copy bought nothing whatsoever: 8-bit in, 8-bit out.
      *   Measured peak for that series: 10375 MB required against ~9607 MB
-     *   available; in place it is 7781 MB. See note/large_series_memory.md.
+     *   available; in place it is 7781 MB.
      */
     static void applyRange(ImagePlus imp, int lo, int hi) {
         if (imp.getBitDepth() == 8) {

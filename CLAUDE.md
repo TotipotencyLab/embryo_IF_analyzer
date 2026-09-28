@@ -334,6 +334,30 @@ fourth fork.** A new assay should be a new configuration of the shared library.
   All three are still written to `_config.txt`, so GUI-tune-then-batch is
   unaffected: `persist=false` means "do not remember into the next *dialog*",
   not "do not record".
+- **Nothing holds two whole copies of the image, and `close()` does not help.**
+  A tile merge is 5 GB of pixels and every intermediate is another copy, against
+  a usable heap of ~8.9-9.6 GB — so `buildMask`'s helpers (`applyRange`,
+  `to8BitMask`, `blank`) **mutate the stack they are given** rather than building
+  a replacement beside it. That is safe only because the caller is always
+  `buildMask` and the stack is always its own `Duplicator` copy; do not call them
+  on an image you did not just duplicate. Where the type must change, each source
+  plane is released as it is read (`setPixels(null, z)`) — `ImageStack`'s own
+  `setProcessor()` cannot be used, it silently *converts* rather than swapping.
+  The blur runs per slice for the same reason: `IJ.run(..., "stack")` holds one
+  float plane per thread.
+
+  And **`close()` must always be followed by `flush()`**. `close()` detaches a
+  window; headless there is none, so while the variable is in scope it releases
+  nothing — measured, 0 MB of 768 MB. Four intermediates in `NucleusPipeline`
+  were closed and not flushed, and the nucleus mask stayed live through the
+  overview projection, which is what exhausted the heap *after* the mask helpers
+  were fixed. `Test_NucleusPipeline` asserts no library file has a bare
+  `close()`, because this is exactly the kind of thing a person stops noticing.
+
+  None of it changes a pixel: the mask helpers are checked against the previous
+  implementations kept inline as oracles, and the per-slice blur against
+  `IJ.run`. The test that separates "correctly unchanged" from "never ran" is the
+  stack-identity assertion — in place means the instance survives.
 - **Watershed forces `Prefs.blackBackground = true`.** It reads that preference
   to decide which phase is object; left to the operator's setting it erodes the
   background instead of splitting objects, and produces a plausible-looking mask
@@ -414,7 +438,9 @@ through the `regexp` argument.
 
 On the Fiji side, `tests/groovy/` synthesises its images, so those tests need no
 data: `Test_BuildMask` (thresholding — including the Auto Threshold macro call kept
-as an oracle — watershed, manual ranges, per-slice histograms),
+as an oracle — watershed, manual ranges, per-slice histograms, and the
+in-place mask helpers against the stacks-beside-stacks versions they
+replaced),
 `Test_NucleolusDetect` (the nucleolus threshold, with `ij.process.AutoThresholder`
 as its oracle), `Test_Overview` (projection, contrast,
 resize, outlines, PNG), `Test_RoiExport` (ROI zip round trip) and

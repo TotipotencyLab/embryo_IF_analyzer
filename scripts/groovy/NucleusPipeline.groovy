@@ -302,7 +302,7 @@ class NucleusPipeline {
         // in scope to the end of the method, so without flush() this mask
         // survives every later stage. It is why s0014 still ran out of heap in
         // the overview after buildMask was fixed: the mask was nominally closed
-        // and still occupying 2594 MB. See note/large_series_memory.md.
+        // and still occupying 2594 MB.
         dna.close(); dna.flush()
         writeFeature("nucleus", nucRois, nucNames, nucSlices)
 

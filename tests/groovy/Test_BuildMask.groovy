@@ -325,7 +325,7 @@ println "=== memory: in-place applyRange / to8BitMask / blank ==="
 
 // These three used to build a whole replacement stack while still holding the
 // original, so both were live at once. On an 11344 x 9590 x 25 tile merge that
-// third copy is what ran the heap out (note/large_series_memory.md). The risk
+// third copy is what ran the heap out. The risk
 // in fixing it is silent: "identical output" can mean "correctly unchanged" or
 // "the new code never ran", so each case below asserts BOTH the pixels and
 // that the intended branch was taken.
