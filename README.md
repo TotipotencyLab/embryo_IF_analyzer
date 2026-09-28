@@ -176,6 +176,32 @@ guessing which end it was. Feeding a `_config.txt` forward does **not** pin it:
 the threshold is re-derived for each new image, which is what you want across a
 slide with varying exposure.
 
+**To pin one**, set the threshold method to `Manual` and paste the range in:
+
+```
+nucleus_threshold        Manual
+nucleus_threshold_range  90-255
+```
+
+Both ends apply (`lo ≤ v ≤ hi`), so an upper bound excludes saturated pixels;
+`Infinity` as the top end means the type's maximum. ⚠️ A manual threshold is a
+raw pixel value — meaningless on a different bit depth or exposure. Watch
+`nucleus_mask_pct`: a value above everything present reads `0.00`.
+
+**`nucleus_stack_histogram`** (on by default) computes one threshold from the
+pooled histogram of every slice. Turn it off for a stack with strong
+illumination falloff through z, where one threshold under-segments the deep
+slices — but ⚠️ with a per-slice threshold an empty slice has nothing bimodal to
+work with and its noise becomes objects. The reported threshold then reads
+`per-slice 88..142`, a spread rather than a range, because there were as many
+thresholds as slices.
+
+Neither of those two settings, nor the method, is remembered between runs of the
+dialog, although every other field is: a raw pixel value leaking into the next
+image is the worst kind of stale setting. They are still recorded in
+`_config.txt`, so tuning here and feeding that config to the batch works as
+before.
+
 Touching nuclei can be split with **watershed** (off by default). Turn it on for
 objects that threshold into one blob but are two things — a zygote's two
 pronuclei, or oocytes packed together in a section.

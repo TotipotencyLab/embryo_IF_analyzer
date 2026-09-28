@@ -268,6 +268,49 @@ test_that("the threshold a run used is recorded, and is provenance not a paramet
   expect_true(any(grepl("v0.3.0 and earlier", doc, fixed = TRUE)))
 })
 
+test_that("Manual thresholding and the per-slice option are parameters, and documented", {
+  # nucleus_threshold_range is only read when the method is Manual, the same
+  # shape as nucleolus_rel_fraction. A parameter missing from the written config
+  # silently becomes the default on the next run, which is the whole hazard the
+  # round-trip format exists to prevent -- so it must be in NucleusPipeline
+  # twice: declared, and written.
+  np <- file.path(repo_root(), "scripts", "groovy", "NucleusPipeline.groovy")
+  rd <- file.path(repo_root(), "scripts", "groovy", "RoiDetect.groovy")
+  nd <- file.path(repo_root(), "scripts", "groovy", "NucleolusDetect.groovy")
+  tmpl <- file.path(repo_root(), "config", "nucleus_config_template.txt")
+  skip_if_not(all(file.exists(np, rd, nd, tmpl)), "Groovy library not found")
+
+  np_src <- paste(readLines(np, warn = FALSE), collapse = "\n")
+  for (k in c("nucleus_threshold_range", "nucleus_stack_histogram")) {
+    expect_gte(lengths(regmatches(np_src, gregexpr(k, np_src, fixed = TRUE))), 2L)
+  }
+  cfg <- read.delim(tmpl, comment.char = "#", stringsAsFactors = FALSE)
+  expect_true(all(c("nucleus_threshold_range", "nucleus_stack_histogram") %in% cfg$parameter))
+  # Off is not a sensible default for the risky one.
+  expect_equal(cfg$value[cfg$parameter == "nucleus_stack_histogram"], "true")
+
+  # Both features now take their algorithms from the same plugin. The nucleolus
+  # used ImageJ's own enum, which has no Huang2 -- the nucleus default -- so the
+  # same word meant something in one field and threw in the other.
+  nd_src <- paste(readLines(nd, warn = FALSE), collapse = "\n")
+  expect_match(nd_src, "fiji.threshold.Auto_Threshold", fixed = TRUE)
+  expect_false(grepl("AutoThresholder.Method.valueOf", nd_src, fixed = TRUE))
+
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  expect_length(grep("^\\|\\s*`nucleus_threshold_range`\\s*\\|", doc), 1L)
+  expect_length(grep("^\\|\\s*`nucleus_stack_histogram`\\s*\\|", doc), 1L)
+  # The two hazards, stated where the parameters are described.
+  expect_true(any(grepl("raw pixel value, and does not travel", doc, fixed = TRUE)))
+  expect_true(any(grepl("empty slice's noise become", doc, fixed = TRUE)))
+  # And the per-slice reporting shape, which is not a pasteable range.
+  expect_true(any(grepl("per-slice", doc, fixed = TRUE)))
+
+  # CLAUDE.md's persist=false decision said the tuning dialog remembers
+  # everything; three fields are now the exception, so that claim had to move.
+  cl <- readLines(file.path(repo_root(), "CLAUDE.md"), warn = FALSE)
+  expect_true(any(grepl("Three fields there are the exception", cl, fixed = TRUE)))
+})
+
 test_that("the sample prefix carries the series index, and the doc says so", {
   # Series names repeat -- a tile scan is many series under one name -- so the
   # index is what makes the prefix unique WITHIN a file, as the alias does

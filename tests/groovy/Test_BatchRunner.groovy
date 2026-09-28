@@ -189,6 +189,26 @@ check("a failed row has no threshold",         sum.find { it.prefix == "B" }.thr
 check("an excluded row has no coverage",       sum.find { it.prefix == "D" }.mask_pct, "")
 
 println ""
+println "=== a bad threshold request costs ONE error, not one per row ==="
+// The batch checks the threshold before the loop. Without that, "Manual with
+// no range" would open a stack, blur it, and fail -- for every included row.
+// The assertion is therefore not that it threw, but that it threw having
+// written NOTHING: no summary, no per-image output, no directory content.
+def outBad = new File(tmp, "out_badthresh")
+String badErr = errOf {
+    runner.run(rows, raw, params + [nucleus_threshold: "Manual", nucleus_threshold_range: ""], outBad)
+}
+check("Manual with no range is refused",       badErr?.contains("needs nucleus_threshold_range"), true)
+check("...before any row ran",                 new File(outBad, "batch_summary.tsv").exists(), false)
+check("...and nothing was written at all",     (outBad.exists() ? outBad.listFiles().size() : 0), 0)
+
+def outBad2 = new File(tmp, "out_badmethod")
+check("an unknown method is refused too",
+      errOf { runner.run(rows, raw, params + [nucleus_threshold: "Banana"], outBad2) }
+          ?.contains("unknown threshold method"), true)
+check("...also before any row ran",            (outBad2.exists() ? outBad2.listFiles().size() : 0), 0)
+
+println ""
 println "=== the parameters used are written back, re-readable ==="
 def pf = new File(out1, "batch_params.txt")
 check("batch_params.txt written",              pf.isFile(), true)

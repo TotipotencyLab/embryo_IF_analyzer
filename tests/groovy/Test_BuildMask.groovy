@@ -233,5 +233,92 @@ check("...any non-zero value becomes 255",     [wide.getProcessor().get(0, 0), w
 check("...and zero stays zero",                wide.getProcessor().get(2, 2), 0)
 
 println ""
+println "=== the method vocabulary comes from the plugin, not from a list ==="
+def names = RD.methodNames()
+check("Huang2 is available",                   names.contains("Huang2"), true)
+check("...and the menu spelling Default",      names.contains("Default"), true)
+check("...and MinError(I)",                    names.contains("MinError(I)"), true)
+check("...and Manual, which is ours",          names.contains("Manual"), true)
+// bilevel sits among the statics and is not an algorithm; offering it would be
+// a method name that cannot work.
+check("bilevel is not offered",                names.contains("bilevel"), false)
+
+println ""
+println "=== validateThreshold: before an image is opened, not after ==="
+def threw2 = { Closure c -> try { c(); return null } catch (Throwable t) { return t.getMessage() } }
+check("a known method with no range is fine",  threw2 { RD.validateThreshold("Huang2", "") }, null)
+check("an unknown method is refused",
+      threw2 { RD.validateThreshold("Banana", "") }?.contains("unknown threshold method"), true)
+// The mistake the batch would otherwise make a thousand times.
+check("Manual with no range is refused",
+      threw2 { RD.validateThreshold("Manual", "") }?.contains("needs nucleus_threshold_range"), true)
+check("...and says why there is no default",
+      threw2 { RD.validateThreshold("Manual", "") }?.contains("raw"), true)
+check("an unreadable range is refused",
+      threw2 { RD.validateThreshold("Manual", "abc") }?.contains("must be lo-hi"), true)
+check("a backwards range is refused",
+      threw2 { RD.validateThreshold("Manual", "200-100") }?.contains("low end above"), true)
+check("a good manual range passes",            threw2 { RD.validateThreshold("Manual", "100-200") }, null)
+
+println ""
+println "=== Manual: the range is applied, both ends of it ==="
+// The upper bound is the half that has to be proved: a threshold that ignored
+// it would still select the discs and look right. probe(8) plants a saturated
+// pixel at (1,0) for exactly this.
+def mraw = probe(8)
+def man  = RD.buildMask(mraw, 1, 0.0d, "Manual", false, false, [range: "100-200"])
+check("Manual reports the range it was given", man.threshold, "100-200")
+check("...as lo and hi",                       [man.lo, man.hi], [100, 200])
+check("...the discs are selected",             man.mask.getStack().getProcessor(1).get(40, 40), 255)
+check("...the background is not",              man.mask.getStack().getProcessor(1).get(110, 10), 0)
+// The upper bound doing its job: 255 is outside [100, 200].
+check("...and the SATURATED pixel is excluded",
+      man.mask.getStack().getProcessor(1).get(1, 0), 0)
+// Contrast with an open top end, where the same pixel is kept. Without this the
+// check above could pass because the pixel was never selected by anything.
+def manOpen = RD.buildMask(mraw, 1, 0.0d, "Manual", false, false, [range: "100-Infinity"])
+check("...while an open top end keeps it",
+      manOpen.mask.getStack().getProcessor(1).get(1, 0), 255)
+check("...and Infinity is reported as the type maximum", manOpen.threshold, "100-255")
+man.mask.close(); manOpen.mask.close(); mraw.close()
+
+// A manual range no pixel falls in must say so through the coverage, not by
+// looking like a successful run.
+def mraw2 = probe(8)
+def manNone = RD.buildMask(mraw2, 1, 0.0d, "Manual", false, false, [range: "230-250"])
+check("a manual range that matches nothing reads 0%", manNone.coverage, 0.0d)
+check("...and still reports the range asked for",     manNone.threshold, "230-250")
+manNone.mask.close(); mraw2.close()
+
+println ""
+println "=== per-slice histograms: one threshold per slice, and it shows ==="
+// probe() ramps the disc brightness with z on purpose, so a per-slice threshold
+// MUST differ between slices. If it did not, this test would pass whether or
+// not the per-slice branch ran at all.
+def praw = probe(8)
+def perS = RD.buildMask(praw, 1, 0.0d, "Default", false, false, [stackHistogram: false])
+check("reported as a spread, not a range",     perS.threshold.startsWith("per-slice "), true)
+check("...with no lo/hi to paste anywhere",    [perS.lo, perS.hi], [null, null])
+def lohi = perS.threshold.replace("per-slice ", "").split("\\.\\.")
+check("...and the slices really disagreed",    lohi[0] != lohi[1], true)
+println "         (" + perS.threshold + ")"
+// Every slice must be a mask. exec() thresholds only the CURRENT slice, so a
+// missing setSlice() would leave slices 2..n as raw pixels -- which is exactly
+// the failure the whole-stack default hides.
+int rawSlices = 0
+for (int z = 1; z <= perS.mask.getStackSize(); z++) {
+    def ip = perS.mask.getStack().getProcessor(z)
+    def vals = new HashSet<Integer>()
+    for (int y = 0; y < 120; y++) for (int x = 0; x < 120; x++) vals << ip.get(x, y)
+    if (!(vals.size() <= 2 && vals.every { it == 0 || it == 255 })) rawSlices++
+}
+check("every slice is binary, not just the first", rawSlices, 0)
+// And it is a different answer from the pooled default, or the option is inert.
+def pooled = RD.buildMask(praw, 1, 0.0d, "Default", false, false)
+check("per-slice differs from the pooled default",
+      perS.threshold == pooled.threshold, false)
+perS.mask.close(); pooled.mask.close(); praw.close()
+
+println ""
 println "passed: ${passed}   FAILED: ${failed}"
 if (failed > 0) throw new AssertionError("${failed} buildMask check(s) failed")

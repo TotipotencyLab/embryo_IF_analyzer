@@ -33,7 +33,7 @@ import loci.plugins.util.ImageProcessorReader
 class BatchRunner {
 
     String libDir
-    Class TSV, NP, RC
+    Class TSV, NP, RC, RD
     Object pipeline
 
     static BatchRunner load(String libDir) {
@@ -44,6 +44,9 @@ class BatchRunner {
         b.TSV = gcl.parseClass(new File(dir, "Tsv.groovy"))
         b.NP = gcl.parseClass(new File(dir, "NucleusPipeline.groovy"))
         b.RC = gcl.parseClass(new File(dir, "RunConfig.groovy"))
+        // For the up-front threshold check only; the per-image work goes
+        // through NucleusPipeline, which parses its own copy.
+        b.RD = gcl.parseClass(new File(dir, "RoiDetect.groovy"))
         b.pipeline = b.NP.load(b.libDir)
         return b
     }
@@ -371,6 +374,17 @@ class BatchRunner {
                     k + " <- " + v.collect { it.path + "[" + it.series_index + "]" }.join(" AND ")
                 }.join("\n    ") +
                 "\n  Fix the prefix column, or set include=false on all but one.")
+        }
+
+        // Check the threshold request ONCE, here, before a single image opens.
+        // buildMask checks it too, at the point of use -- but by then a row has
+        // opened a stack and blurred it, and on a tile scan that cost is paid
+        // per row. "Manual with no range" typed into a config should cost one
+        // error message, not a thousand identical ones.
+        if (params.containsKey("nucleus_threshold")) {
+            RD.validateThreshold(
+                (params.nucleus_threshold ?: "") as String,
+                (params.nucleus_threshold_range ?: "") as String)
         }
 
         def sizes = pixelSizes(included)

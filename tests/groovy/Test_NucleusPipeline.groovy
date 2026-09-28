@@ -97,6 +97,8 @@ def baseParams = [
     channels_measured      : "1",
     nucleus_blur_sigma     : 0.0d,       // the discs are already binary-clean
     nucleus_threshold      : "Otsu",
+    nucleus_threshold_range: "",
+    nucleus_stack_histogram: true,
     nucleus_particle_size  : "200-Infinity",
     nucleus_watershed      : false,
     nucleoli_enabled       : false,
@@ -337,6 +339,35 @@ check("...and no outline was written first",
       new File(outK, "ov_bad_nucleus_outline.txt").exists(), false)
 check("...nor a config",
       new File(outK, "ov_bad_config.txt").exists(), false)
+
+println ""
+println "=== Manual travels through the config, which is the point of it ==="
+// The workflow the range format exists for: run auto, read the range off,
+// paste it into Manual. It only works if the manual setting survives the
+// round trip -- a parameter missing from the written config silently becomes
+// the default on the next run.
+def outM = new File(tmp, "m"); outM.mkdirs()
+def resM = pipe.run(makeImp("probeimage"), outM,
+                    baseParams + [basename: "manual", nucleus_threshold: "Manual",
+                                  nucleus_threshold_range: "200-255"])
+def cfgM = readCfg(new File(outM, "manual_config.txt"))
+check("the manual range is recorded",          cfgM["nucleus_threshold_range"], "200-255")
+check("...and reads back as a parameter",
+      RC.readParams(new File(outM, "manual_config.txt"), NP.PARAM_TYPES)["nucleus_threshold_range"],
+      "200-255")
+check("...with threshold_used echoing it",     cfgM["nucleus_threshold_used"], "200-255")
+// The discs are drawn at 255, so a 200-255 window finds them exactly as Otsu did.
+check("...and it found the same 8 ROIs",       resM.nucRois.size(), 8)
+
+// The guard, at the pipeline level rather than the library level.
+def outBadM = new File(tmp, "mbad"); outBadM.mkdirs()
+String errM = null
+try {
+    pipe.run(makeImp("probeimage"), outBadM,
+             baseParams + [basename: "bad", nucleus_threshold: "Manual"])
+} catch (Throwable t) { errM = t.getMessage() }
+check("Manual with no range fails the run",    errM?.contains("needs nucleus_threshold_range"), true)
+check("...before anything was written",        (outBadM.exists() ? outBadM.listFiles().size() : 0), 0)
 
 println ""
 println "passed: ${passed}   FAILED: ${failed}"

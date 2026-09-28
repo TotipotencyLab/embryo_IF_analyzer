@@ -9,7 +9,9 @@
 #@ String  (label="Channels to measure (comma separated)", value="1,2,3") channelsCsv
 #@ String  (visibility=MESSAGE, value="Nucleus detection", required=false) msg2
 #@ Double  (label="Blur sigma", value=8.0) nucSigma
-#@ String  (label="Threshold method", value="Huang2", choices={"Huang2","Huang","Default","Otsu","Triangle","IsoData"}) nucMethod
+#@ String  (persist=false, label="Threshold method", value="Huang2", choices={"Huang2","Huang","Default","Otsu","Triangle","IsoData","Li","Yen","Mean","Moments","Percentile","MaxEntropy","RenyiEntropy","Shanbhag","Intermodes","Minimum","IJ_IsoData","MinError(I)","Manual"}) nucMethod
+#@ String  (persist=false, label="  ...if Manual: threshold range lo-hi", value="") nucRange
+#@ Boolean (persist=false, label="One threshold from the whole stack (off = per slice)", value=true) nucStackHist
 #@ String  (label="Particle size (calibrated units^2)", value="80-Infinity") nucSize
 #@ String  (label="Circularity (0.00-1.00 = no filter)", value="0.00-1.00") nucCircularity
 #@ Boolean (label="Split touching nuclei (watershed)", value=false) nucWatershed
@@ -17,7 +19,7 @@
 #@ String  (visibility=MESSAGE, value="Nucleolus detection", required=false) msg3
 #@ Boolean (label="Detect nucleoli", value=true) doNucleoli
 #@ Double  (label="Blur sigma", value=3.0) nucleolusSigma
-#@ String  (label="Threshold method", value="Relative", choices={"Relative","Default","Otsu","Triangle","Huang","IsoData"}) nucleolusMethod
+#@ String  (label="Threshold method", value="Relative", choices={"Relative","Default","Otsu","Triangle","Huang","Huang2","IsoData","Li","Yen","Mean","Moments","Percentile","MaxEntropy","RenyiEntropy","Shanbhag","Intermodes","Minimum","IJ_IsoData","MinError(I)"}) nucleolusMethod
 #@ Double  (label="Relative fraction (if Relative)", value=0.6) relFraction
 #@ Integer (label="Shrink nucleus ROI (px)", value=0) erodePx
 #@ String  (label="Particle size (calibrated units^2)", value="3-150") nucleolusSize
@@ -39,6 +41,16 @@
 // Run_NucleusSelector.groovy
 //
 // Nucleus + nucleolus detection, export and measurement, for the ACTIVE image.
+//
+// This dialog REMEMBERS what you last set, deliberately -- it is the tuning
+// entry point and a human is looking at it. The three threshold fields are the
+// exception and reset every run. A manual threshold is a raw pixel value, which
+// is meaningless on a different bit depth or exposure, and a per-slice
+// histogram is the risky setting of the two; neither should be inherited by the
+// next image because it was tried once on this one. They are still written to
+// _config.txt, so tuning here and feeding that config to the batch is
+// unaffected -- persist=false means "do not remember into the next DIALOG", not
+// "do not record".
 //
 // This is the interactive entry point: a `#@` block, and one call. The work
 // itself lives in NucleusPipeline.groovy so that the batch runner -- which
@@ -80,6 +92,8 @@ def res = NP.load(LIBDIR).run(imp, outdir, [
     channels_measured      : channelsCsv,
     nucleus_blur_sigma     : nucSigma,
     nucleus_threshold      : nucMethod,
+    nucleus_threshold_range: nucRange,
+    nucleus_stack_histogram: nucStackHist,
     nucleus_particle_size  : nucSize,
     nucleus_circularity    : nucCircularity,
     nucleus_watershed      : nucWatershed,

@@ -348,7 +348,7 @@ Provenance, read long after the run. Fields that other code depends on:
 | `source_file`, `series_index`, `series_name` | which series of which file produced this directory. Written by the batch, **blank in the interactive runner** where the image was already open and nothing told it. Identity comes from content, not from the filename, so the prefix should not have to be parsed apart to answer this |
 | `open_method` | which reader opened the image: `importer` (Bio-Formats' own) or `reader` (one held open across the file). **Blank when the image was already open**, i.e. the interactive runner, where the operator opened it however they liked. The two are asserted to produce byte-identical output, but two runs that used different ones must not be indistinguishable afterwards |
 | `overview_channels`, `overview_overlay_suffix` | which overview PNGs exist, so a results folder can be read later without guessing. Blank when none were written |
-| `nucleus_threshold_used` | the pixel range the threshold **selected**, as `lo-hi`. Not the algorithm's bare number: for bright objects that number is the *bottom* of the range and the top is the type's maximum, so the pair is what can be copied into a manual threshold without working out which end it was. The literal **`none`** when the frame had nothing to separate (see below) — a word, not a range, so it cannot be pasted anywhere by mistake |
+| `nucleus_threshold_used` | the pixel range the threshold **selected**, as `lo-hi`; `per-slice <lo>..<hi>` (note the `..`) when `nucleus_stack_histogram` is off, since there were as many thresholds as slices and none of them is the answer. Not the algorithm's bare number: for bright objects that number is the *bottom* of the range and the top is the type's maximum, so the pair is what can be copied into a manual threshold without working out which end it was. The literal **`none`** when the frame had nothing to separate (see below) — a word, not a range, so it cannot be pasted anywhere by mistake |
 | `nucleus_mask_pct` | percent of pixels the threshold selected, **before** fill holes and watershed, because the question it answers is what the threshold chose. The cheap signal that one went wrong in either direction: `0.00` selected nothing (a blank field), a number in the tens selected the frame rather than the objects in it. Neither shows up in an ROI count — the size filter turns both into "no nuclei" |
 | `nucleus_circ_rejected` | how many ROIs `nucleus_circularity` deleted. **Blank when the filter was off** — a `0` would claim a filter ran and found nothing to remove. Unlike the R side's `--min_circularity`, which marks a row and leaves it in the table, this filter drops ROIs before anything is written, so this number is the only surviving evidence that they existed |
 
@@ -405,6 +405,39 @@ is a complete record of what the run did rather than of what succeeded:
 
 A row failing does not stop the batch. On a long run this file, not the log, is
 what says which images need attention.
+
+### How the nucleus threshold is chosen
+
+`nucleus_threshold` names a method from the Auto Threshold plugin — the full
+list, `Huang2` (the default) through `Yen` — **or the literal `Manual`**.
+
+| parameter | |
+|---|---|
+| `nucleus_threshold` | the method, or `Manual` |
+| `nucleus_threshold_range` | `lo-hi` in **raw pixel values**, read *only* when the method is `Manual`, exactly as `nucleolus_rel_fraction` is read only for `Relative`. `Infinity` as the top end means the type's maximum |
+| `nucleus_stack_histogram` | `true` (default): one threshold from the pooled histogram of every slice. `false`: one per slice |
+
+Both ends of the manual range are applied: a pixel is object when
+`lo ≤ v ≤ hi`, so an upper bound excludes saturated pixels. An auto method
+supplies only the bottom end and pins the top at the type's maximum, which is
+why `nucleus_threshold_used` is reported as a pair — the pair is what pastes
+back into `nucleus_threshold_range` without anyone working out which end the
+algorithm's number was.
+
+⚠️ **A manual threshold is a raw pixel value, and does not travel.** It is
+meaningless on a different bit depth, a different exposure, or — in a batch —
+on a `.lif` whose series were acquired differently. `nucleus_mask_pct` is what
+catches that: a manual value above everything present reads `0.00`.
+
+⚠️ **`nucleus_stack_histogram = false` lets an empty slice's noise become
+objects.** With nothing bimodal on that slice, the method still returns a
+threshold and finds "objects" in the noise. The pooled default is the safe one;
+turn it off for a stack with strong z-dependent illumination falloff, where one
+threshold under-segments the deep slices.
+
+These three are **not remembered between runs of the interactive dialog**
+(`persist=false`) although every other field is, and they are still written to
+`_config.txt` — so GUI-tune-then-batch is unaffected. See `CLAUDE.md`.
 
 ⚠️ **A uniform frame has no threshold, and says so.** `ignore_black` and
 `ignore_white` zero the two end bins before the algorithm runs, so a frame whose

@@ -61,6 +61,8 @@ class NucleusPipeline {
         channels_measured      : "string",
         nucleus_blur_sigma     : "double",
         nucleus_threshold      : "string",
+        nucleus_threshold_range: "string",
+        nucleus_stack_histogram: "boolean",
         nucleus_particle_size  : "string",
         nucleus_circularity    : "string",
         nucleus_watershed      : "boolean",
@@ -96,6 +98,13 @@ class NucleusPipeline {
         channels_measured      : "1,2,3",
         nucleus_blur_sigma     : 8.0d,
         nucleus_threshold      : "Huang2",
+        // Only read when nucleus_threshold is "Manual", exactly as
+        // nucleolus_rel_fraction is only read for "Relative".
+        nucleus_threshold_range: "",
+        // One threshold from the pooled histogram of every slice. Off means one
+        // per slice, which lets an empty slice's noise become objects -- see
+        // RoiDetect.buildMask.
+        nucleus_stack_histogram: true,
         nucleus_particle_size  : "80-Infinity",
         // 0.00-1.00 is every shape, i.e. no filter -- the behaviour before this
         // existed. See the detection block for why turning it on is not free.
@@ -207,6 +216,12 @@ class NucleusPipeline {
             OV.validateSettings(p.overview_method as String, p.overview_contrast,
                                 p.overview_saturated, p.overview_width, p.overview_height)
         }
+        // Same reasoning for the threshold: "Manual" with no range, or a method
+        // name that does not exist, should not be discovered after the blur has
+        // run. buildMask checks it again at the point of use -- this is the
+        // early copy, not the only one.
+        RD.validateThreshold(p.nucleus_threshold as String,
+                             (p.nucleus_threshold_range ?: "") as String)
 
         def writeFeature = { String feature, List rois, List names, List sls ->
             IJ.log("  " + feature + ": " + rois.size() + " ROIs")
@@ -220,7 +235,10 @@ class NucleusPipeline {
         // --- Nucleus ---------------------------------------------------------
         def built = RD.buildMask(imp, dnaCh, p.nucleus_blur_sigma as double,
                                  p.nucleus_threshold as String, true,
-                                 p.nucleus_watershed as boolean)
+                                 p.nucleus_watershed as boolean,
+                                 [range         : (p.nucleus_threshold_range ?: ""),
+                                  stackHistogram: (p.nucleus_stack_histogram == null)
+                                                  ? true : (p.nucleus_stack_histogram as boolean)])
         def dna = built.mask
         // The threshold is reported as the RANGE it selected, and the coverage
         // beside it. Both were previously thrown away, which left a run unable
@@ -386,6 +404,8 @@ class NucleusPipeline {
                 measurements           : MEASUREMENTS,
                 nucleus_blur_sigma     : p.nucleus_blur_sigma,
                 nucleus_threshold      : p.nucleus_threshold,
+                nucleus_threshold_range: p.nucleus_threshold_range,
+                nucleus_stack_histogram: p.nucleus_stack_histogram,
                 nucleus_particle_size  : p.nucleus_particle_size,
                 nucleus_circularity    : p.nucleus_circularity,
                 nucleus_watershed      : p.nucleus_watershed,

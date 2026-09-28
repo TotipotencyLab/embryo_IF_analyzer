@@ -48,6 +48,69 @@ class RoiDetect {
      *  blank already means "this row never ran". */
     static final String NO_THRESHOLD = "none"
 
+    /** The method name that means "do not compute one, use the range I gave". */
+    static final String MANUAL = "Manual"
+
+    /** Not a thresholding algorithm; Auto_Threshold exposes it alongside them. */
+    private static final String NOT_A_METHOD = "bilevel"
+
+    /**
+     * Every threshold method name this pipeline accepts.
+     *
+     * Derived from the plugin itself rather than listed, so it cannot drift
+     * when Auto_Threshold is next updated: its per-algorithm statics ARE the
+     * vocabulary. "Manual" is ours and is the one name the plugin never sees.
+     */
+    static List<String> methodNames() {
+        def names = Auto_Threshold.class.getMethods().findAll {
+            java.lang.reflect.Modifier.isStatic(it.getModifiers()) &&
+            it.getParameterTypes().length == 1 &&
+            it.getParameterTypes()[0] == int[].class &&
+            it.getName() != NOT_A_METHOD
+        }.collect { it.getName() } as Set
+        // The plugin's menu spells two of them differently from its statics,
+        // and the menu spelling is what a config file carries.
+        names << "Default"
+        names << "MinError(I)"
+        names << MANUAL
+        return names.toList().sort()
+    }
+
+    /**
+     * Check a threshold request without an image.
+     *
+     * Called before any work: the alternative is a typo costing a full
+     * detection, export and measurement pass before it is noticed -- once
+     * interactively, and once per row over a tile-scan batch.
+     */
+    static void validateThreshold(String method, String rangeSpec) {
+        def known = methodNames()
+        if (!method || !known.contains(method)) {
+            throw new IllegalArgumentException(
+                "unknown threshold method '${method}'; use one of " + known.join(", "))
+        }
+        if (MANUAL.equalsIgnoreCase(method)) {
+            if (!rangeSpec?.trim()) {
+                throw new IllegalArgumentException(
+                    "nucleus_threshold=Manual needs nucleus_threshold_range, " +
+                    "e.g. \"1200-65535\" -- there is no sensible default for a raw " +
+                    "pixel value")
+            }
+            // -1 as the sentinel: parseRange substitutes the default for any
+            // part it cannot read, so a default that is never valid is how an
+            // unparseable range is told apart from an omitted one.
+            def r = parseRange(rangeSpec, -1d, -1d)
+            if (r[0] < 0d || r[1] < 0d) {
+                throw new IllegalArgumentException(
+                    "nucleus_threshold_range must be lo-hi, got '${rangeSpec}'")
+            }
+            if (r[0] > r[1]) {
+                throw new IllegalArgumentException(
+                    "nucleus_threshold_range has its low end above its high end: '${rangeSpec}'")
+            }
+        }
+    }
+
     /**
      * Build a binary mask from one channel: blur, auto-threshold, optionally fill
      * holes, and optionally split touching objects by watershed.
@@ -91,9 +154,66 @@ class RoiDetect {
      * passes true, as the option string did.
      */
     static Map buildMask(ImagePlus imp, int channel, double sigma, String method,
-                         boolean fillHoles, boolean watershed) {
+                         boolean fillHoles, boolean watershed, Map opts = [:]) {
+        String rangeSpec      = (opts.range ?: "") as String
+        boolean stackHistogram = (opts.stackHistogram == null) ? true : (opts.stackHistogram as boolean)
+        validateThreshold(method, rangeSpec)
+
         def mask = new Duplicator().run(imp, channel, channel, 1, imp.getNSlices(), 1, 1)
         if (sigma > 0) IJ.run(mask, "Gaussian Blur...", "sigma=${sigma} stack")
+        int maxValue = (imp.getBitDepth() == 16) ? 65535 : 255
+
+        // --- Manual: no algorithm runs at all ------------------------------
+        if (MANUAL.equalsIgnoreCase(method)) {
+            def r  = parseRange(rangeSpec, 0d, (double) maxValue)
+            int lo0 = Math.max(0, Math.min(maxValue, (int) Math.round(r[0])))
+            int hi0 = Math.max(0, Math.min(maxValue, (int) Math.round(
+                          (r[1] >= Double.MAX_VALUE) ? (double) maxValue : r[1])))
+            // Applied by hand rather than through Convert to Mask, which reads
+            // Prefs.blackBackground to decide which phase is object and would
+            // produce an inverted mask under the wrong operator setting -- the
+            // same trap watershed has. This reads no preference at all.
+            applyRange(mask, lo0, hi0)
+            double cov0 = coveragePct(mask)
+            if (fillHoles) IJ.run(mask, "Fill Holes", "stack")
+            if (watershed) { Prefs.blackBackground = true; IJ.run(mask, "Watershed", "stack") }
+            return [mask: mask, threshold: lo0 + "-" + hi0, lo: lo0, hi: hi0, coverage: cov0]
+        }
+
+        // --- Per slice: exec() thresholds ONE slice, so the loop is ours ----
+        // The plugin's own run() does this loop; exec() does not. With a
+        // per-slice threshold an empty slice has nothing bimodal to work with
+        // and its noise becomes objects, which is why the stack histogram is
+        // the default.
+        if (!stackHistogram) {
+            def los = []
+            for (int z = 1; z <= mask.getStackSize(); z++) {
+                mask.setSlice(z)
+                try {
+                    def o = new Auto_Threshold().exec(mask, method, IGNORE_WHITE, IGNORE_BLACK,
+                                                      true, false, false, false)
+                    if (o == null || o[0] == null) {
+                        throw new IllegalArgumentException(
+                            "Auto Threshold returned nothing for method '${method}'")
+                    }
+                    los << ((o[0] as Number).intValue() + 1)
+                } catch (ArrayIndexOutOfBoundsException e) {
+                    // This slice alone had nothing to separate. Blank it rather
+                    // than leave the raw pixels standing in for a mask.
+                    blankSlice(mask, z)
+                }
+            }
+            to8BitMask(mask)
+            double covN = coveragePct(mask)
+            // A spread, not a range: there were as many thresholds as slices, so
+            // there is no single value to paste into a manual setting. The ".."
+            // says so at a glance.
+            String rep = los.isEmpty() ? NO_THRESHOLD
+                                       : ("per-slice " + los.min() + ".." + los.max())
+            if (fillHoles) IJ.run(mask, "Fill Holes", "stack")
+            if (watershed) { Prefs.blackBackground = true; IJ.run(mask, "Watershed", "stack") }
+            return [mask: mask, threshold: rep, lo: null, hi: null, coverage: covN]
+        }
 
         // exec(imp, method, noWhite, noBlack, doIwhite, doIset, doIlog, doIstackHistogram)
         def out = null
@@ -143,7 +263,7 @@ class RoiDetect {
             // manual threshold later without anyone having to work out which end
             // it was.
             lo = t + 1
-            hi = (imp.getBitDepth() == 16) ? 65535 : 255
+            hi = maxValue
             thresholdUsed = lo + "-" + hi
         }
         double coverage = coveragePct(mask)
@@ -163,6 +283,32 @@ class RoiDetect {
             IJ.run(mask, "Watershed", "stack")
         }
         return [mask: mask, threshold: thresholdUsed, lo: lo, hi: hi, coverage: coverage]
+    }
+
+    /** Mark pixels in [lo, hi] as 255 and everything else 0, as an 8-bit stack. */
+    static void applyRange(ImagePlus imp, int lo, int hi) {
+        def src = imp.getStack()
+        def out = new ij.ImageStack(imp.getWidth(), imp.getHeight())
+        for (int z = 1; z <= src.getSize(); z++) {
+            def ip = src.getProcessor(z)
+            def bp = new ij.process.ByteProcessor(imp.getWidth(), imp.getHeight())
+            for (int y = 0; y < imp.getHeight(); y++) {
+                for (int x = 0; x < imp.getWidth(); x++) {
+                    int v = ip.get(x, y)
+                    if (v >= lo && v <= hi) bp.set(x, y, 255)
+                }
+            }
+            out.addSlice(src.getSliceLabel(z), bp)
+        }
+        imp.setStack(out)
+    }
+
+    /** Zero one slice in place, leaving the rest of the stack alone. */
+    static void blankSlice(ImagePlus imp, int z) {
+        def ip = imp.getStack().getProcessor(z)
+        for (int y = 0; y < imp.getHeight(); y++) {
+            for (int x = 0; x < imp.getWidth(); x++) ip.set(x, y, 0)
+        }
     }
 
     /** Replace a stack with an empty 8-bit mask of the same shape. */
