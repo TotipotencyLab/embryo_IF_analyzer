@@ -26,7 +26,7 @@
 // `params` keys are the names saveRunConfig() already writes, not the `#@`
 // variable names, so that the config file a run produces can be fed straight
 // back in as the parameters of another run. That loop is the point of the
-// naming; see note/groovy_batch_plan.md.
+// naming.
 
 import ij.*
 import ij.gui.*

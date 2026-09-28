@@ -111,8 +111,7 @@ loop, including how to diff.
   (`scripts/R/` holds the work, `<name>_cli.r` holds the parsing), pushed
   further: a `#@` script can only be tested by stripping its parameter lines and
   injecting a `Binding`, so anything worth testing belongs in the class. A second
-  caller — the batch runner — is the reason it was split out; see
-  `note/groovy_batch_plan.md`.
+  caller — the batch runner — is the reason it was split out.
 - **`schema/` is internal, `config/` is yours.** `schema/sheet_columns.tsv` is
   read at run time by both languages and says what the columns of `files.tsv`
   and `samples.tsv` are and who owns each (`machine` overwritten on
