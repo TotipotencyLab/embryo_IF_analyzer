@@ -107,13 +107,60 @@ error. A 284-byte log holding nothing but the launcher's two *"Unable to locate
 a Java Runtime"* lines — which are normal stderr noise on this machine — and a
 JVM that never exits. The absence of output IS the symptom.
 
+⚠️ **`choices=` is NOT enforced on the command line.** It constrains the GUI
+dropdown and nothing else: headless, SciJava hands your script whatever string
+was passed. Measured on a probe declaring
+`choices={"(from config)","yes","no"}`:
+
+```
+pick=true    ->  "true"            accepted, and not in the list
+pick='yes'   ->  "yes"
+absent       ->  "(from config)"   the declared value=
+```
+
+So a `#@ String` with `choices=` is a **free-text parameter that happens to
+render as a dropdown**, and the script must validate it. Reading the declaration
+as though it were a contract is how a caller passing a stale value gets silently
+mishandled rather than refused.
+
+This bites hardest when a parameter **changes type between releases**. A
+`Boolean saveOverview` became a three-way `String`
+`{"(from config)","yes","no"}`, resolved as:
+
+```groovy
+if (saveOverview != "(from config)") params.save_overview = (saveOverview == "yes")
+```
+
+Every existing caller still passed `saveOverview=true`. That is not
+`"(from config)"`, so it took the override branch; `"true" == "yes"` is false;
+overviews were silently switched **off** — the opposite of what the caller
+said, with no error, on a long run nobody watches to the end.
+
+Validate against the same list the dropdown declares, and **refuse** rather than
+coerce: a value the interface no longer has means the caller believed something
+that is no longer true, and guessing at their intent is how the reversal stays
+invisible.
+
+```groovy
+static final List<String> CHOICES = ["(from config)", "yes", "no"]
+if (!CHOICES.contains(v)) throw new IllegalArgumentException(
+    "saveOverview must be one of " + CHOICES.join(", ") + "; got >>>" + v + "<<<")
+```
+
+Put that check in a **library class, not the `#@` script**. A front end is
+typically only ever compiled by a test suite, never run — so a check written
+there cannot be tested, which is exactly how the bug above shipped.
+
 ⚠️⚠️ **`#@` parameter values PERSIST between runs — including from the GUI into
 headless.** SciJava remembers what a parameter was last set to and reuses it when
 the value is not supplied, so a headless batch can silently run with a string
 somebody typed into a dialog weeks earlier. Observed here: a batch script that
 was never given `outPrefix` or `saveOverview` ran with `outPrefix=test_` and
 `saveOverview=true`, both left over from an interactive session — and wrote
-overview PNGs nobody asked for. It is the same trap as `Set Measurements` and
+overview PNGs nobody asked for. (Neither parameter still has that shape in this
+repo — `outPrefix` was removed and `saveOverview` became a three-way string.
+The observation is kept as the evidence for the rule, not as a description of
+today's dialog.) It is the same trap as `Set Measurements` and
 `Prefs.blackBackground`, which are also persistent user preferences.
 
 ```groovy
