@@ -522,3 +522,42 @@ test_that("no features at all draws an empty frame, given the image extent", {
       "--output", out2)))),
     "unknown size")
 })
+
+test_that("count_features_cli --feature_class_by survives its own narrow sourcing", {
+  # A SUBPROCESS on purpose, and it is the only shape that can fail.
+  #
+  # Every other test here pre-sources the whole of scripts/R/, so
+  # CLASS_UNCLASSIFIED is always bound and compose_feature_class() always
+  # works. The CLI sources deliberately less than that -- it reads finished
+  # tables and does no geometry, so it avoids the sf-dependent library -- and
+  # it used to source feature_join.r without classify_features.r, which owns
+  # that constant. Every --feature_class_by run then died with
+  # "object 'CLASS_UNCLASSIFIED' not found", after reading and joining the
+  # input, while the whole suite stayed green.
+  #
+  # So: run the file the way a user does, and assert on the artifact.
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2"))
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  rscript <- file.path(R.home("bin"), "Rscript")
+  skip_if_not(file.exists(rscript), "Rscript not found")
+
+  feat_dir <- annotated_fixture()
+  out <- withr::local_tempdir()
+  res <- suppressWarnings(system2(
+    rscript,
+    c(cli_path("count_features_cli.r"),
+      "--input", feat_dir, "--outdir", out,
+      "--feature_class_by", "feature_type"),
+    stdout = TRUE, stderr = TRUE))
+  txt <- paste(res, collapse = " ")
+
+  # Name the symbol, so a recurrence reads as itself rather than as "no file".
+  expect_false(grepl("CLASS_UNCLASSIFIED", txt, fixed = TRUE))
+  expect_false(grepl("not found", txt, fixed = TRUE))
+  expect_true(file.exists(file.path(out, "feature_counts.tsv")))
+
+  got <- utils::read.delim(file.path(out, "feature_counts.tsv"),
+                           stringsAsFactors = FALSE)
+  expect_true(nrow(got) > 0L)
+})
