@@ -121,6 +121,70 @@ test_that("a missing image still occupies a labelled cell", {
   expect_identical(sort(b$col), 1:3)
 })
 
+test_that("a group of one is drawn, and --ncol makes it the same width as the rest", {
+  # A section that yielded a single series still belongs beside its neighbours,
+  # so this must NOT be refused.
+  # gm_run() already fixes --ncol 3, which is the point of the width check.
+  fx <- gm_fixture()
+  s <- utils::read.delim(fx$sheet, stringsAsFactors = FALSE)
+  s$section_id[s$prefix == "A_s0001"] <- "SOLO"
+  utils::write.table(s, fx$sheet, sep = "\t", quote = FALSE, row.names = FALSE)
+
+  r2 <- gm_run(fx)
+  expect_true("SOLO" %in% r2$idx$group)
+  expect_identical(sum(r2$idx$group == "SOLO"), 1L)
+
+  files <- file.path(r2$out, unique(r2$idx$montage))
+  expect_true(all(file.exists(files)))
+  # An explicit --ncol fixes the width, so the one-panel montage lines up with
+  # the others instead of being a third of their size.
+  widths <- vapply(files, function(f) magick::image_info(magick::image_read(f))$width,
+                   numeric(1))
+  expect_length(unique(widths), 1L)
+})
+
+test_that("a grouping column that separates nothing is warned about", {
+  # Every group holding one sample means each montage is a single image under a
+  # new name -- and the run otherwise looks exactly like a successful one.
+  fx <- gm_fixture()
+  expect_warning(
+    suppressMessages(group_montage_cli(c(
+      "--sample_sheet", fx$sheet, "--group_by", "series_index",
+      "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
+      "--outdir", file.path(fx$dir, "degen"), "--cell_height", "150"))),
+    "every sample in its own group")
+
+  # ...and a MIXTURE is not warned about. This needs a fixture that ACTUALLY
+  # holds a singleton beside a real group -- the everyday case, a section that
+  # yielded one series. Asserting no-warning on a fixture with no singleton at
+  # all would pass even if the condition were `any(sizes == 1)`, which is the
+  # over-warning this is meant to rule out.
+  fx2 <- gm_fixture()
+  s2 <- utils::read.delim(fx2$sheet, stringsAsFactors = FALSE)
+  s2$section_id[s2$prefix == "A_s0001"] <- "SOLO"
+  utils::write.table(s2, fx2$sheet, sep = "\t", quote = FALSE, row.names = FALSE)
+  expect_identical(sum(s2$section_id == "SOLO"), 1L)
+
+  # Collected rather than expect_no_warning(), for two reasons: gm_run()
+  # suppresses warnings, so nothing would reach the expectation; and this
+  # fixture legitimately warns about B_s0003's missing image, so "no warnings
+  # at all" is the wrong assertion. What matters is that THIS warning is absent.
+  seen <- character(0)
+  withCallingHandlers(
+    suppressMessages(group_montage_cli(c(
+      "--sample_sheet", fx2$sheet, "--group_by", "section_id",
+      "--image_dir", fx2$img, "--image_suffix", "_overview_ch1.png",
+      "--outdir", file.path(fx2$dir, "mixed"), "--cell_height", "150"))),
+    warning = function(cond) {
+      seen <<- c(seen, conditionMessage(cond))
+      invokeRestart("muffleWarning")
+    })
+  expect_false(any(grepl("every sample in its own group", seen, fixed = TRUE)))
+  # ...and the fixture did warn about something, so the check above is not
+  # passing merely because warnings never arrive here.
+  expect_true(any(grepl("not found", seen, fixed = TRUE)))
+})
+
 test_that("a group whose images are ALL missing still gets a montage", {
   # Found while fixing --order_by on a machine column: grouping by series_index
   # puts B_s0003 -- the row whose image is absent -- alone in its own group, and

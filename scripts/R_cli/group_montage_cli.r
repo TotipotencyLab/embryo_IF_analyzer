@@ -250,8 +250,24 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     warning(msg, "; drawn as labelled placeholders.", call. = FALSE)
   }
   sheet[[".found"]] <- found
+  sizes <- table(sheet[[".group"]])
   message("Resolved ", sum(found), " of ", nrow(sheet), " image(s) in ",
-          length(unique(sheet[[".group"]])), " group(s)")
+          length(sizes), " group(s); ", sum(sizes == 1L), " of them hold one sample")
+
+  # A group of one is fine and is drawn like any other -- a section that yielded
+  # a single series still belongs beside its neighbours, and --ncol gives it the
+  # same width as them. EVERY group holding one is a different thing: it means
+  # the grouping column separates nothing, so each "montage" is one image under
+  # a new name, and the run looks exactly like a successful one. Almost always a
+  # column was named that is unique per row, --group_by series_index being the
+  # easy mistake. A warning rather than a refusal: uniform output for a later
+  # step is a legitimate reason to want it.
+  if (length(sizes) > 1L && all(sizes == 1L)) {
+    warning("--group_by ", group_col, " puts every sample in its own group, so ",
+            "each montage is a single image. Nothing is being placed beside ",
+            "anything. Did you mean a column that repeats across samples?",
+            call. = FALSE)
+  }
 
   # --- physical extents ---------------------------------------------------------
   if (scale_mode == "physical") {

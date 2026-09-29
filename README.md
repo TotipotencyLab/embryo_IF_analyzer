@@ -308,6 +308,13 @@ montage:
   would draw one follicle at two sizes in the same picture. A row with no
   `pixel_width` is an error, never a quiet fall back.
 
+A group holding a **single** image is drawn like any other: a section that
+yielded one series still belongs beside its neighbours, and passing `--ncol`
+explicitly gives every montage the same width so they line up. But if *every*
+group holds one sample the run warns, because then each montage is one image
+under a new name and nothing is being placed beside anything — usually a column
+was named that is unique per row.
+
 By default each group gets its own scale, so its largest section fills a cell —
 which means two montages are *not* comparable with each other. That is why the
 scale bar is drawn by default, and why `--um_per_px run` exists when you do want
