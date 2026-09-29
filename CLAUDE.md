@@ -468,6 +468,28 @@ another machine. Bump `VERSION` in the same commit you tag.
 
 A script copied out of the repo still runs; it records `unknown`.
 
+**What the numbers mean here is the output contract**, because that is what the
+version is *for*: `_config.txt` records it so a results folder can name the code
+that made it. So the question to ask is what a reader of an old results
+directory, or a run of an old config, would find:
+
+| | when |
+|---|---|
+| **PATCH** | the contract is untouched — same keys, same columns, same files |
+| **MINOR** | new parameters or columns appear, and the old ones still work |
+| **MAJOR** | an existing config or results directory stops working |
+
+`readParams` rejects unknown keys but tolerates missing ones, so adding a
+parameter leaves every older config runnable — which is why that is a minor and
+not a major. It is also why it must not be a patch: a `_config.txt` from the new
+code carries fields the tagged version never wrote, and "bug fixes only" would
+be a false statement about the file.
+
+v0.4.0 is the worked example. Four merges landed after v0.3.0; #31 alone was a
+bug fix and would have been 0.3.1, but #28 and #29 added `nucleus_circularity`,
+the five `overview_*` keys and the threshold settings, none of which existed at
+the tag.
+
 ## Open items
 
 - The R fixture covers one image (`Position010`) and one assay. Nothing pins the

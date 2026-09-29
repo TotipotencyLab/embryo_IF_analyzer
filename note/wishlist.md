@@ -18,6 +18,20 @@
   it actually happen.
 - IF quantification CLI: needs the background measurement question settled
   first (empty space vs cytoplasm, and nucleus vs cytoplasm signal).
+- Count an oocyte only where its **nucleolus** is visible, as the way to stop
+  one oocyte being counted once per serial section it appears in. A nucleolus is
+  roughly one per nucleus and much smaller than the oocyte, so it falls in a
+  single section — which sidesteps aligning outlines across sections entirely.
+  That alignment is the thing to avoid: a follicle's outline in the next section
+  is not a deformed copy of this one, it is a different chord through the object,
+  so shape registration is solving a harder problem than the count needs.
+  Preferred shape is a **standalone feature-filtering script** rather than a flag
+  on the annotate CLI, so the rule is visible in the command that applied it.
+  The machinery exists — `relate_features.r --within 'nucleolus=nucleus'` already
+  assigns nucleoli to parents. Known bias: a nucleolus straddling a cut is
+  counted twice, and the classical corrections for that (Abercrombie, or a
+  physical disector over a section pair) need section thickness and order, which
+  is what a specimen/section grouping column would have to carry. Deferred.
 - `features_config.txt`: the R side's equivalent of Fiji's `_config.txt`. The
   annotate CLI already stamps a `run_id` on its output and `join_feature_table()`
   refuses a join across two runs — but the id is a 10-character hash, so the
