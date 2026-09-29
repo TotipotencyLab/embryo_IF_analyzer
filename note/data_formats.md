@@ -477,6 +477,47 @@ convincing picture of nothing. A narrow range beside a wide one on another
 channel is the tell — but only if it is written down, and opening every PNG to
 find the few that went wrong is what this column exists to avoid.
 
+### Group montage — `group_montage_cli.r` writes two things
+
+`<prefix><group>_montage.png`, one per group, and one index describing all of
+them.
+
+`montage_index.tsv` — one row per **sheet row that was laid out**, including the
+ones whose image was missing, because the montage draws those as placeholder
+cells and a count taken from the picture has to be reconcilable with the table:
+
+| Column | Meaning |
+|---|---|
+| `group` | the value of the `--group_by` column |
+| `prefix` | the sample, as the sheet named it |
+| `image_path` | the file used, whether built from `--image_dir`/`--image_suffix` or taken from `--image_path_by` |
+| `status` | `ok`, or `missing` when the image was not there |
+| `row`, `col` | 1-based position in the grid, so a cell in the picture can be named |
+| `um_per_px` | micrometres per output pixel for that montage; blank under `--scale pixel` |
+| `cell_px_w`, `cell_px_h` | the cell, in output pixels |
+| `width_um`, `height_um` | the sample's physical size, `size_x * pixel_width` |
+| `montage` | the file this row was drawn into |
+
+**It is designed to be read back in.** It carries `group`, `prefix` and
+`image_path`, so re-running exactly what you looked at is
+`--sample_sheet montage_index.tsv --image_path_by image_path --group_by group`.
+That is the provenance answer rather than writing resolved paths back into
+`samples.tsv`: the sheet is shared with the Fiji side and its columns have
+declared owners in `schema/sheet_columns.tsv`, so an R CLI adding one would need
+a schema entry and `Make_SampleSheet` would have to know about it.
+
+**Panels are scaled by physical size.** `size_x * pixel_width` is the extent;
+the PNG's own dimensions are not, because Fiji has usually already resized the
+overview. Two series with identical pixel dimensions can be different physical
+sizes — this dataset holds 0.2227 and 0.4456 µm pixels — and drawing them equal
+makes one follicle look like two different ones. A row with no usable
+`pixel_width` is an error rather than a quiet fall back to pixel scaling.
+
+`--um_per_px group` (the default) fits each group's largest panel to the cell;
+`run` uses one scale for every montage, so two of them can be compared with each
+other. Because `group` means two montages are **not** comparable, the scale bar
+is drawn by default and the value is recorded in the index and in the title.
+
 ### How the nucleus threshold is chosen
 
 `nucleus_threshold` names a method from the Auto Threshold plugin — the full

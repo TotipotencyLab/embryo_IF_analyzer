@@ -222,6 +222,22 @@ loop, including how to diff.
   vline when it is x and an hline when it is y. That deliberately removes the
   whole question of matching lines to plots by position, and with it the recycle
   / skip / off-by-one failures that come with it.
+  **`group_montage_cli.r` tiles one group's images into a single picture**, for
+  the case where a count has to be made or checked by eye — an ovary is cut into
+  serial sections imaged as separate series, so one specimen's sections are
+  scattered across the sheet. Two things there are not preferences. A **missing
+  image still occupies a labelled cell**, because counting from a grid that
+  silently dropped a panel gives a wrong answer that looks like a right one. And
+  panels are scaled by **physical** size, never pixel size: identical pixel
+  dimensions can be different physical sizes, so equal-pixel scaling draws one
+  follicle at two sizes in one picture, which is exactly the misjudgement a
+  by-eye count makes. That needs `size_x`/`pixel_width`, which are `machine`
+  columns `.cli_read_sample_sheet()` drops by default — hence its
+  `keep_machine=`, which names them one at a time so a caller carrying a machine
+  column into its output has had to say which and why. `montage_index.tsv` is
+  itself a valid input to the next run, which is the provenance answer instead
+  of writing resolved paths back into `samples.tsv`.
+
   `cli_helpers.r` is shared by all three. Conventions — the testable
   `<name>_cli(args)` function, the run guard, argparser's traps — are in the
   `r-cli-convention` skill. The IF quantification CLI is deliberately deferred:

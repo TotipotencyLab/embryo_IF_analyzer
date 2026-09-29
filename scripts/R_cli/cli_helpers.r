@@ -673,7 +673,7 @@
   return(as.character(d$column[d$sheet == "samples" & d$owner == "machine"]))
 }
 
-.cli_read_sample_sheet <- function(path, id_column = "prefix") {
+.cli_read_sample_sheet <- function(path, id_column = "prefix", keep_machine = character(0)) {
   # Read sample sheet specific to this repo
   sheet <- .cli_read_table(path, "sample sheet")
   if (!id_column %in% colnames(sheet)) {
@@ -712,8 +712,26 @@
   # Machine columns are dropped rather than joined. Reported, not silent: a
   # generated samples.tsv carries sixteen of them, and somebody who wanted one
   # should be told where it went rather than left wondering.
+  # keep_machine is for a caller that genuinely needs one of them -- the group
+  # montage needs size_x and pixel_width, because the physical size of a panel
+  # is what decides how large it may be drawn, and two series with identical
+  # pixel dimensions can be different physical sizes. Named one at a time
+  # rather than a blanket "keep everything", so a caller carrying a machine
+  # column into its output has had to say which and why.
+  unknown <- setdiff(keep_machine, .cli_sheet_machine_columns())
+  if (length(unknown)) {
+    stop("keep_machine names column(s) that are not machine columns: ",
+         paste(unknown, collapse = ", "), call. = FALSE)
+  }
+  absent <- setdiff(keep_machine, colnames(sheet))
+  if (length(absent)) {
+    stop("Sample sheet has no ", paste0("'", absent, "'", collapse = ", "),
+         " column, which this step needs. Found: ",
+         paste(colnames(sheet), collapse = ", "), call. = FALSE)
+  }
   drop <- base::intersect(colnames(sheet),
-                          setdiff(.cli_sheet_machine_columns(), id_column))
+                          setdiff(.cli_sheet_machine_columns(),
+                                  c(id_column, keep_machine)))
   if (length(drop)) {
     message("  sample sheet: ", length(drop),
             " machine column(s) not carried into the output (",
