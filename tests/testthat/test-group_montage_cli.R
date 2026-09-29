@@ -1,0 +1,264 @@
+# group_montage_cli.r
+#
+# The two assertions that matter here are about pictures, not tables, and both
+# are things a person looking at the output could not check by eye:
+#
+#   - a panel drawn at the wrong SIZE. Two series with the same pixel
+#     dimensions can be different physical sizes, and drawing them equal makes
+#     the same follicle look like two different ones.
+#   - a panel that is not drawn at all. The montage exists to be counted from,
+#     so a silently dropped image is a wrong answer that looks like a right one.
+#
+# Sizes are therefore measured from the rendered pixels, by bounding box rather
+# than by area: the label box covers a FIXED number of pixels, which is a larger
+# share of a small panel than a big one, so an area ratio is off by a few
+# percent even when the geometry is exactly right.
+
+source_cli("cli_helpers.r")
+source_r_scripts("montage_grid.r")
+source_cli("group_montage_cli.r")
+
+# A colour block per sample, so every panel is identifiable in the output.
+gm_fixture <- function(env = parent.frame()) {
+  skip_if_no_pkg(c("argparser", "magick"))
+  d <- withr::local_tempdir(.local_envir = env)
+  img <- file.path(d, "img")
+  dir.create(img)
+  put <- function(prefix, px, colour) {
+    magick::image_write(magick::image_blank(px, px, color = colour),
+                        file.path(img, paste0(prefix, "_overview_ch1.png")))
+  }
+  put("A_s0001", 400, "grey40")
+  put("A_s0002", 400, "grey50")
+  put("B_s0001", 400, "steelblue")   # 2000 px x 0.5 um  = 1000 um
+  put("B_s0002", 400, "tomato")      # 1000 px x 0.25 um =  250 um, a QUARTER
+  # B_s0003's image is deliberately absent.
+  sheet <- data.frame(
+    prefix       = c("A_s0001", "A_s0002", "B_s0001", "B_s0002", "B_s0003", "C_s0001"),
+    include      = c("true", "true", "true", "true", "true", "false"),
+    section_id   = c("A", "A", "B", "B", "B", "C"),
+    ord          = c(2, 1, 1, 2, 3, 1),
+    # A's sections are 500 um, B's largest is 1000 um -- so a per-GROUP scale
+    # and a per-RUN scale are genuinely different numbers here.
+    size_x       = c(1000, 1000, 2000, 1000, 2000, 10),
+    size_y       = c(1000, 1000, 2000, 1000, 2000, 10),
+    pixel_width  = c(0.5, 0.5, 0.5, 0.25, 0.5, 1),
+    pixel_height = c(0.5, 0.5, 0.5, 0.25, 0.5, 1),
+    stringsAsFactors = FALSE)
+  sp <- file.path(d, "samples.tsv")
+  utils::write.table(sheet, sp, sep = "\t", quote = FALSE, row.names = FALSE)
+  list(dir = d, img = img, sheet = sp)
+}
+
+# Width and height of the region painted in `colour`, from the rendered file.
+gm_bbox <- function(path, colour) {
+  r <- grDevices::as.raster(magick::image_read(path))
+  hit <- which(r == colour, arr.ind = TRUE)
+  if (!nrow(hit)) return(c(w = 0L, h = 0L))
+  c(w = diff(range(hit[, "col"])) + 1L, h = diff(range(hit[, "row"])) + 1L)
+}
+
+gm_run <- function(fx, extra = character(0), out = NULL) {
+  if (is.null(out)) out <- file.path(fx$dir, paste0("out", as.integer(runif(1, 1, 1e6))))
+  idx <- suppressMessages(suppressWarnings(group_montage_cli(c(
+    "--sample_sheet", fx$sheet, "--group_by", "section_id",
+    "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
+    "--outdir", out, "--cell_height", "300", "--ncol", "3", extra))))
+  list(idx = idx, out = out)
+}
+
+test_that("panels are drawn to PHYSICAL size, not pixel size", {
+  fx <- gm_fixture()
+  r <- gm_run(fx)
+
+  big <- gm_bbox(file.path(r$out, "B_montage.png"), "#4682b4ff")   # 1000 um
+  small <- gm_bbox(file.path(r$out, "B_montage.png"), "#ff6347ff") #  250 um
+
+  # Both source images are 400x400 px. Only their physical size differs, so
+  # equal-pixel scaling would draw them identically.
+  expect_gt(big[["w"]], 0L)
+  expect_gt(small[["w"]], 0L)
+  expect_identical(big[["w"]] / small[["w"]], 4)
+  expect_identical(big[["h"]] / small[["h"]], 4)
+
+  # ...and the scale the index reports is the scale actually drawn.
+  upp <- unique(r$idx$um_per_px[r$idx$group == "B"])
+  expect_length(upp, 1L)
+  expect_equal(1000 / big[["w"]], upp, tolerance = 1e-6)
+})
+
+test_that("--scale pixel draws them the same size, which is what physical is not", {
+  # The discrimination half: without this, "the sizes differ" is equally
+  # consistent with the scaling never having run.
+  fx <- gm_fixture()
+  r <- gm_run(fx, c("--scale", "pixel"))
+  big <- gm_bbox(file.path(r$out, "B_montage.png"), "#4682b4ff")
+  small <- gm_bbox(file.path(r$out, "B_montage.png"), "#ff6347ff")
+  expect_identical(big[["w"]], small[["w"]])
+  expect_true(all(is.na(r$idx$um_per_px)))
+})
+
+test_that("a missing image still occupies a labelled cell", {
+  fx <- gm_fixture()
+  out <- file.path(fx$dir, "miss")
+  expect_warning(
+    idx <- suppressMessages(group_montage_cli(c(
+      "--sample_sheet", fx$sheet, "--group_by", "section_id",
+      "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
+      "--outdir", out, "--cell_height", "300", "--ncol", "3"))),
+    "not found")
+
+  b <- idx[idx$group == "B", ]
+  expect_identical(nrow(b), 3L)                        # three rows, not two
+  expect_identical(sum(b$status == "missing"), 1L)
+  expect_identical(b$prefix[b$status == "missing"], "B_s0003")
+  # It has a POSITION: it was laid out, not skipped.
+  expect_true(all(!is.na(b$row)) && all(!is.na(b$col)))
+  expect_identical(sort(b$col), 1:3)
+})
+
+test_that("--on_missing error refuses rather than drawing a placeholder", {
+  fx <- gm_fixture()
+  expect_error(
+    suppressMessages(group_montage_cli(c(
+      "--sample_sheet", fx$sheet, "--group_by", "section_id",
+      "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
+      "--outdir", file.path(fx$dir, "err"), "--on_missing", "error"))),
+    "not found")
+})
+
+test_that("the index records the grid position and the files written", {
+  fx <- gm_fixture()
+  r <- gm_run(fx, c("--order_by", "ord"))
+  expect_true(file.exists(file.path(r$out, "montage_index.tsv")))
+  expect_setequal(colnames(r$idx),
+                  c("group", "prefix", "image_path", "status", "row", "col",
+                    "um_per_px", "cell_px_w", "cell_px_h", "width_um",
+                    "height_um", "montage"))
+  # --order_by is honoured: A_s0002 has ord 1, so it comes first.
+  a <- r$idx[r$idx$group == "A", ]
+  expect_identical(a$prefix[1], "A_s0002")
+  expect_true(all(file.exists(file.path(r$out, unique(r$idx$montage)))))
+})
+
+test_that("--um_per_px run gives every montage one scale; group does not", {
+  fx <- gm_fixture()
+  per_group <- gm_run(fx)$idx
+  per_run <- gm_run(fx, c("--um_per_px", "run"))$idx
+
+  # run: one number for every montage, so two montages are comparable.
+  expect_length(unique(per_run$um_per_px), 1L)
+  # group: A (500 um) and B (1000 um) each fill the cell, so they differ -- and
+  # that is exactly why the scale bar is on by default under physical scaling.
+  expect_length(unique(per_group$um_per_px), 2L)
+  expect_gt(unique(per_group$um_per_px[per_group$group == "B"]),
+            unique(per_group$um_per_px[per_group$group == "A"]))
+  expect_true(all(is.finite(c(per_run$um_per_px, per_group$um_per_px))))
+})
+
+test_that("a blank grouping key is refused, not collected into a bucket", {
+  fx <- gm_fixture()
+  s <- utils::read.delim(fx$sheet, stringsAsFactors = FALSE)
+  s$section_id[s$prefix == "A_s0001"] <- ""
+  utils::write.table(s, fx$sheet, sep = "\t", quote = FALSE, row.names = FALSE)
+  expect_error(
+    suppressMessages(group_montage_cli(c(
+      "--sample_sheet", fx$sheet, "--group_by", "section_id",
+      "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
+      "--outdir", file.path(fx$dir, "blank")))),
+    "have no 'section_id'")
+})
+
+test_that("two samples resolving to one image is an error", {
+  # It would draw the same picture twice under two names, and a by-eye count
+  # would double it.
+  fx <- gm_fixture()
+  s <- utils::read.delim(fx$sheet, stringsAsFactors = FALSE)
+  s$img <- file.path(fx$img, "A_s0001_overview_ch1.png")
+  utils::write.table(s, fx$sheet, sep = "\t", quote = FALSE, row.names = FALSE)
+  expect_error(
+    suppressMessages(group_montage_cli(c(
+      "--sample_sheet", fx$sheet, "--group_by", "section_id",
+      "--image_path_by", "img",
+      "--outdir", file.path(fx$dir, "dup")))),
+    "claimed by more than one sample")
+})
+
+test_that("--image_path_by takes paths from the sheet, and excludes the built form", {
+  fx <- gm_fixture()
+  s <- utils::read.delim(fx$sheet, stringsAsFactors = FALSE)
+  s$img <- file.path(fx$img, paste0(s$prefix, "_overview_ch1.png"))
+  utils::write.table(s, fx$sheet, sep = "\t", quote = FALSE, row.names = FALSE)
+
+  out <- file.path(fx$dir, "bycol")
+  idx <- suppressMessages(suppressWarnings(group_montage_cli(c(
+    "--sample_sheet", fx$sheet, "--group_by", "section_id",
+    "--image_path_by", "img", "--outdir", out, "--cell_height", "200"))))
+  expect_identical(sum(idx$status == "ok"), 4L)
+
+  expect_error(
+    suppressMessages(group_montage_cli(c(
+      "--sample_sheet", fx$sheet, "--group_by", "section_id",
+      "--image_path_by", "img", "--image_dir", fx$img,
+      "--outdir", file.path(fx$dir, "both")))),
+    "one or the other")
+})
+
+test_that("a black background is refused", {
+  # The overviews' own background is black, so a black pad cannot be told from
+  # correctly-imaged empty field -- the exact misreading this montage prevents.
+  fx <- gm_fixture()
+  expect_error(gm_run(fx, c("--background", "black")), "must not be black")
+})
+
+test_that("physical scaling refuses a row with no pixel size", {
+  # Never a quiet fall back to pixel scaling: the claim of the picture is that
+  # a millimetre is a millimetre across it.
+  fx <- gm_fixture()
+  s <- utils::read.delim(fx$sheet, stringsAsFactors = FALSE)
+  s$pixel_width[s$prefix == "B_s0001"] <- NA
+  utils::write.table(s, fx$sheet, sep = "\t", quote = FALSE, row.names = FALSE)
+  expect_error(gm_run(fx), "no usable pixel size")
+})
+
+test_that("the sheet reader keeps only the machine columns it is asked for", {
+  fx <- gm_fixture()
+  kept <- .cli_read_sample_sheet(fx$sheet, keep_machine = c("size_x", "pixel_width"))
+  expect_true(all(c("size_x", "pixel_width") %in% colnames(kept)))
+  expect_false("size_y" %in% colnames(kept))
+  expect_false("include" %in% colnames(kept))      # a control column, never metadata
+  expect_identical(nrow(kept), 5L)                 # C_s0001 is include=false
+
+  expect_error(.cli_read_sample_sheet(fx$sheet, keep_machine = "section_id"),
+               "not machine columns")
+})
+
+test_that("mg_nice_number picks from the 1/2/5 decade series", {
+  expect_identical(mg_nice_number(900), 500)
+  expect_identical(mg_nice_number(120), 100)
+  expect_identical(mg_nice_number(7), 5)
+  expect_identical(mg_nice_number(1), 1)
+  expect_true(is.na(mg_nice_number(0)))
+  expect_true(is.na(mg_nice_number(-3)))
+})
+
+test_that("the scale bar is drawn by default, and --no_scale_bar removes it", {
+  # Purely visual, so nothing else in this file would notice if it silently
+  # stopped being drawn -- which is the case for asserting it directly.
+  fx <- gm_fixture()
+  with_bar <- gm_run(fx)$out
+  without <- gm_run(fx, "--no_scale_bar")$out
+
+  a <- magick::image_read(file.path(with_bar, "B_montage.png"))
+  b <- magick::image_read(file.path(without, "B_montage.png"))
+  expect_identical(magick::image_info(a)$width, magick::image_info(b)$width)
+  expect_identical(magick::image_info(a)$height, magick::image_info(b)$height)
+  # Same canvas, different pixels: the bar is drawn into it, not appended.
+  expect_false(identical(as.integer(grDevices::as.raster(a) == grDevices::as.raster(b)),
+                         rep(1L, length(grDevices::as.raster(a)))))
+
+  # And it says a real distance: the fixture is 1000 um wide at 1000/300 um/px,
+  # so a bar of a nice round length must appear in the label.
+  txt <- magick::image_read(file.path(with_bar, "B_montage.png"))
+  expect_gt(sum(grDevices::as.raster(a) != grDevices::as.raster(b)), 100L)
+})

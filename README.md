@@ -263,7 +263,8 @@ analysis script:
 
 [`scripts/R_cli/`](scripts/R_cli/) wraps these as command-line entry points —
 `annotate_features_cli.r`, `count_features_cli.r`, `feature_stat_cli.r`,
-`feature_scatter_cli.r` and `montage_qc_cli.r`. Each takes `--help`.
+`feature_scatter_cli.r`, `montage_qc_cli.r` and `group_montage_cli.r`. Each
+takes `--help`.
 
 `feature_stat_cli.r` is the one to run **before** choosing any size or signal
 threshold. It writes one row per detected object — area, z-extent, shape and
@@ -283,6 +284,36 @@ A `--threshold` is keyed to a **column**, not to a plot: `--threshold
 'area_med=400'` is drawn on every panel where `area_med` appears, vertically
 when it is the x axis and horizontally when it is y. So a cut-off is stated once
 and cannot drift out of step between panels.
+
+`group_montage_cli.r` tiles every image of a **group** of samples into one
+picture — the sections of one ovary, say, which are imaged as separate series
+and so sit scattered across the sample sheet. It is for the case where a count
+has to be made or sanity-checked by eye.
+
+```bash
+scripts/R_cli/group_montage_cli.r \
+  --image_dir overviews --image_suffix _overview_ch1.png \
+  --sample_sheet sheets/samples.tsv --group_by section_id --outdir montages
+```
+
+Two of its behaviours are deliberate and worth knowing before you read a
+montage:
+
+- **A missing image still gets a labelled cell.** Counting from a grid that
+  silently dropped a panel gives a wrong answer that looks like a right one —
+  you count four sections and never learn there were five. `montage_index.tsv`
+  lists every cell, including the ones marked `missing`.
+- **Panels are drawn to physical size, not pixel size.** Two series with the
+  same pixel dimensions can be different physical sizes, so equal-pixel scaling
+  would draw one follicle at two sizes in the same picture. A row with no
+  `pixel_width` is an error, never a quiet fall back.
+
+By default each group gets its own scale, so its largest section fills a cell —
+which means two montages are *not* comparable with each other. That is why the
+scale bar is drawn by default, and why `--um_per_px run` exists when you do want
+one scale across every montage. Paths are built exactly (`--image_dir` +
+prefix + `--image_suffix`), never globbed; `--image_path_by COLUMN` takes them
+from the sheet instead when the names do not follow a rule.
 
 **Which file holds what is read from the file itself**, not from its name: the
 `name` column gives the sample and the ROI id prefix gives the feature. So a
