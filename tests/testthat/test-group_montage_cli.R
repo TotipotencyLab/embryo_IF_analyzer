@@ -302,24 +302,59 @@ test_that("cells are sized per column and per row, not one size for the group", 
     file.path(d, "n2", unique(two$montage))))$width, 150L)
 })
 
-test_that("a missing image still claims the slot the sheet says it would fill", {
-  # Its placeholder has to sit in a slot the size of its neighbours, or a row
-  # collapses around the gap and the montage stops being readable as a grid.
-  # The fixture's own missing row cannot show this -- its declared size happens
-  # to equal the fallback -- so the size is made distinct here.
-  fx <- gm_fixture()
-  s <- utils::read.delim(fx$sheet, stringsAsFactors = FALSE)
-  s$size_x[s$prefix == "B_s0003"] <- 1000      # 500 um, vs 1000 um for B_s0001
-  s$size_y[s$prefix == "B_s0003"] <- 1000
-  utils::write.table(s, fx$sheet, sep = "\t", quote = FALSE, row.names = FALSE)
+test_that("a placeholder takes the slot its siblings occupy, not one the sheet predicts", {
+  # It used to take the sheet's declared size. That holds only while the files
+  # are shaped the way the sheet describes them, and they need not be: feeding
+  # wide strips against square sheet rows put a 650x650 placeholder beside a
+  # 650x200 panel -- three times too tall, and the biggest thing in the picture.
+  skip_if_no_pkg(c("argparser", "magick"))
+  d <- withr::local_tempdir()
+  img <- file.path(d, "img")
+  dir.create(img)
+  # One wide panel present; two rows missing. The sheet calls every row square,
+  # so the sheet and the file disagree -- which is the case that broke.
+  magick::image_write(magick::image_blank(650, 200, "steelblue"),
+                      file.path(img, "S01_overview_ch1.png"))
+  sheet <- data.frame(prefix = c("S01", "S02", "S03"), include = "true",
+                      section_id = "G", size_x = 2000, size_y = 2000,
+                      pixel_width = 1, pixel_height = 1, stringsAsFactors = FALSE)
+  sp <- file.path(d, "s.tsv")
+  utils::write.table(sheet, sp, sep = "\t", quote = FALSE, row.names = FALSE)
 
-  r <- gm_run(fx)                               # --ncol 3, so B_s0003 is alone in column 3
-  gone <- r$idx[r$idx$prefix == "B_s0003", ]
-  expect_identical(gone$status, "missing")
-  # Half the size of B_s0001's 1000 um, at the same scale -- NOT the --cell_max_px
-  # fallback, which is what it would get if a missing row claimed nothing.
-  big <- r$idx[r$idx$prefix == "B_s0001", ]
-  expect_equal(gone$cell_px_w, big$cell_px_w / 2, tolerance = 0.02)
+  for (mode in c("pixel", "physical")) {
+    idx <- suppressMessages(suppressWarnings(group_montage_cli(c(
+      "--sample_sheet", sp, "--group_by", "section_id", "--image_dir", img,
+      "--image_suffix", "_overview_ch1.png", "--outdir", file.path(d, mode),
+      "--ncol", "1", "--cell_max_px", "650", "--scale", mode, "--no_scale_bar"))))
+    expect_identical(sum(idx$status == "missing"), 2L)
+    # Every cell the same as the one real panel, in BOTH modes: the sheet said
+    # square in both, and it is the file that decides.
+    expect_equal(unique(idx$cell_px_w), 650)
+    expect_equal(unique(idx$cell_px_h), 200)
+  }
+})
+
+test_that("a group with no image at all still gets a montage, at the budget", {
+  # The only case with nothing to match, so the budget is all there is. It must
+  # not collapse to a zero-sized cell -- an absent group has to be visible.
+  skip_if_no_pkg(c("argparser", "magick"))
+  d <- withr::local_tempdir()
+  img <- file.path(d, "img")
+  dir.create(img)
+  sheet <- data.frame(prefix = c("S01", "S02"), include = "true", section_id = "G",
+                      size_x = 2000, size_y = 2000, pixel_width = 1,
+                      pixel_height = 1, stringsAsFactors = FALSE)
+  sp <- file.path(d, "s.tsv")
+  utils::write.table(sheet, sp, sep = "\t", quote = FALSE, row.names = FALSE)
+
+  idx <- suppressMessages(suppressWarnings(group_montage_cli(c(
+    "--sample_sheet", sp, "--group_by", "section_id", "--image_dir", img,
+    "--image_suffix", "_overview_ch1.png", "--outdir", file.path(d, "none"),
+    "--ncol", "1", "--cell_max_px", "300", "--scale", "pixel", "--no_scale_bar"))))
+  expect_identical(sum(idx$status == "missing"), 2L)
+  expect_equal(unique(idx$cell_px_w), 300)
+  expect_equal(unique(idx$cell_px_h), 300)
+  expect_true(file.exists(file.path(d, "none", unique(idx$montage))))
 })
 
 test_that("a column holding no cell at all is worth no width", {

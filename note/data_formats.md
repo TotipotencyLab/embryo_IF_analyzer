@@ -518,7 +518,10 @@ makes one follicle look like two different ones. A row with no usable
 its tallest, and each cell is padded top-left to its own column and row. A
 column holding no cell at all — `--ncol 3` with two panels — is worth no width,
 so a montage is as wide as the columns it actually fills and two montages of
-different sizes no longer match. Padding never carried size information: the
+different sizes no longer match. A cell whose image is **missing** takes the
+slot its siblings occupy, not one predicted from the sheet: the sheet's shape
+and the file's shape need not agree, and a placeholder sized from the sheet came
+out three times too tall beside a real panel. Padding never carried size information: the
 drawn pixels do, at a scale that is constant across the montage and stated by
 the scale bar.
 

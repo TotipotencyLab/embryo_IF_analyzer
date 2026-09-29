@@ -419,37 +419,45 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     row_of <- ((seq_len(n) - 1L) %/% ncol) + 1L
     col_of <- ((seq_len(n) - 1L) %% ncol) + 1L
 
-    # The slot a cell asks for. A MISSING image still asks for one: in physical
-    # mode the sheet knows the size it would have been, so its placeholder sits
-    # in a slot the size of its neighbours rather than collapsing the row.
-    slot_w <- vapply(seq_len(n), function(i) {
-      if (!is.null(fitted[[i]])) return(as.numeric(magick::image_info(fitted[[i]])$width))
-      if (is.finite(draw_w[i])) return(as.numeric(draw_w[i]))
-      return(NA_real_)
+    # The slot a cell asks for.
+    have_w <- vapply(fitted, function(im) {
+      if (is.null(im)) NA_real_ else as.numeric(magick::image_info(im)$width)
     }, numeric(1))
-    slot_h <- vapply(seq_len(n), function(i) {
-      if (!is.null(fitted[[i]])) return(as.numeric(magick::image_info(fitted[[i]])$height))
-      if (is.finite(draw_h[i])) return(as.numeric(draw_h[i]))
-      return(NA_real_)
+    have_h <- vapply(fitted, function(im) {
+      if (is.null(im)) NA_real_ else as.numeric(magick::image_info(im)$height)
     }, numeric(1))
 
-    # Two different emptinesses, and they do not get the same answer.
+    # A MISSING image still asks for a slot, and it asks for the one its
+    # SIBLINGS actually occupy -- not one predicted from the sheet.
     #
+    # It used to take the sheet's declared size, on the reasoning that the sheet
+    # knows how big the absent section would have been. That holds only while
+    # the files are shaped the way the sheet describes them. They need not be:
+    # gathering a section's per-series QC montages into one sheet feeds wide
+    # strips against square sheet rows, and the placeholder came out 650x650
+    # beside a 650x200 panel -- three times too tall, and the biggest thing in
+    # the picture.
+    #
+    # A placeholder's job is to keep the layout readable and to be visibly a
+    # gap. It is not to encode the size of what is absent; the words "no image"
+    # do that. So it matches what is there.
+    fb_w <- if (any(is.finite(have_w))) max(have_w, na.rm = TRUE) else as.numeric(cell_px)
+    fb_h <- if (any(is.finite(have_h))) max(have_h, na.rm = TRUE) else as.numeric(cell_px)
+    slot_w <- ifelse(is.finite(have_w), have_w, fb_w)
+    slot_h <- ifelse(is.finite(have_h), have_h, fb_h)
+
     # A column that holds NO CELL AT ALL -- ncol 3 with two panels in the group
     # -- is worth no width. Reserving space for it would put back exactly the
-    # blank this change removes, to hold a column that does not exist.
+    # blank this layout removes, to hold a column that does not exist.
     #
-    # A column that holds cells but nothing MEASURABLE -- every image missing,
-    # and no declared size to fall back on -- takes the budget instead, because
-    # a montage of placeholders is still a montage and must not collapse to
-    # nothing.
+    # Every cell that DOES exist has a slot by now, missing ones included, so
+    # there is no third case: a group with no image anywhere still gets the
+    # budget, through fb_w/fb_h above.
     span <- function(v, key, k) {
       out <- vapply(seq_len(k), function(j) {
         here <- v[key == j]
-        if (!length(here)) return(0)            # no cell in this column/row
-        got <- here[is.finite(here)]
-        if (!length(got)) return(as.numeric(cell_px))
-        max(got)
+        if (!length(here)) return(0)
+        max(here)
       }, numeric(1))
       return(ceiling(out))
     }
