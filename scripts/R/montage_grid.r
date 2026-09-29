@@ -66,45 +66,82 @@ mg_um_per_px <- function(extents_um, cell_px) {
   return(max(ok) / cell_px)
 }
 
-#' One cell of the montage
+#' How far two aspect ratios may differ before they are worth reporting
 #'
-#' Reads, scales and pads a single image to exactly cell_w x cell_h, with its
-#' label burned into the top-left. A missing or unreadable image becomes a
-#' labelled placeholder of the same size rather than nothing.
+#' Fiji resizes an overview on the way out, so its PNG is not the acquisition's
+#' pixel dimensions -- but the resize follows the aspect, so the SHAPE should
+#' still match the sheet. On an 11344 x 9590 series resized to 1000 wide the
+#' rounding moves the aspect by 0.07%, so a couple of percent is slack, and a
+#' file that is genuinely a different picture misses by tens of percent.
+MG_ASPECT_TOL <- 0.02
+
+#' Scale an image to fit INSIDE a box, keeping its aspect
 #'
-#' @param path image file, or NA
+#' ⚠️ Deliberately not magick's "WxH!", which forces the exact dimensions and
+#' therefore distorts anything not already that shape. The box here comes from
+#' the sample sheet, and an image whose aspect disagrees with the sheet used to
+#' be silently stretched to match it -- a distorted follicle still looks like a
+#' follicle, so nothing downstream or upstream would have said so. Fitting
+#' letterboxes instead, and when the aspects DO agree the two are identical.
+#'
+#' @param img a magick image, or NULL
+#' @param box_w,box_h the box, in output pixels
+#' @return a magick image no larger than the box, or NULL
+mg_fit <- function(img, box_w, box_h) {
+  if (is.null(img)) {
+    return(NULL)
+  }
+  return(magick::image_scale(img, paste0(as.integer(round(box_w)), "x",
+                                         as.integer(round(box_h)))))
+}
+
+#' Does an image have the shape the sheet says it should?
+#'
+#' @param img a magick image
+#' @param expect_aspect width/height the sheet implies, or NA to skip
+#' @return NA when it matches or cannot be checked; otherwise the observed
+#'   aspect, so the caller can report by how much
+mg_aspect_off <- function(img, expect_aspect, tol = MG_ASPECT_TOL) {
+  if (is.null(img) || !is.finite(expect_aspect) || expect_aspect <= 0) {
+    return(NA_real_)
+  }
+  info <- magick::image_info(img)
+  if (!is.finite(info$height) || info$height <= 0) {
+    return(NA_real_)
+  }
+  got <- info$width / info$height
+  if (abs(got / expect_aspect - 1) <= tol) {
+    return(NA_real_)
+  }
+  return(got)
+}
+
+#' Pad a fitted image into a cell, and label it
+#'
+#' A NULL image becomes a labelled placeholder of the same size, never nothing.
+#' The montage exists to be counted from, and a panel that silently vanished is
+#' a wrong answer that looks like a right one.
+#'
+#' @param img a magick image already scaled to its drawn size, or NULL
 #' @param cell_w,cell_h the cell, in output pixels
 #' @param label text for the corner; "" for none
-#' @param draw_w,draw_h size to scale the image to, inside the cell. NULL fits it.
-#' @param bg pad colour. Never use black: the overview's own background is
-#'   black, so a black pad is indistinguishable from correctly-imaged empty
-#'   field, which is the misreading this montage exists to prevent.
+#' @param bg pad colour. Never black: the overview's own background is black, so
+#'   a black pad cannot be told from correctly-imaged empty field.
 #' @return a magick image of exactly cell_w x cell_h
-mg_cell <- function(path, cell_w, cell_h, label = "", draw_w = NULL, draw_h = NULL,
-                    bg = "white", missing_color = "#b00020", label_color = "black") {
+mg_pad <- function(img, cell_w, cell_h, label = "", bg = "white",
+                   missing_color = "#b00020", label_color = "black") {
   cell_w <- as.integer(round(cell_w))
   cell_h <- as.integer(round(cell_h))
   font <- max(9L, as.integer(round(cell_h / 26)))
 
-  im <- NULL
-  if (!is.na(path) && nzchar(path) && file.exists(path)) {
-    im <- tryCatch(magick::image_read(path), error = function(e) NULL)
-  }
-
-  if (is.null(im)) {
+  if (is.null(img)) {
     cell <- magick::image_blank(cell_w, cell_h, color = bg)
     cell <- magick::image_annotate(cell, "no image", gravity = "center",
                                    size = font, color = missing_color)
   } else {
-    if (!is.null(draw_w) && !is.null(draw_h)) {
-      im <- magick::image_scale(im, paste0(as.integer(round(draw_w)), "x",
-                                           as.integer(round(draw_h)), "!"))
-    } else {
-      im <- magick::image_scale(im, paste0(cell_w, "x", cell_h))
-    }
-    # Pad to the cell from the top-left, so panels of different physical size
-    # share an origin and their sizes can be compared across the grid.
-    cell <- magick::image_extent(im, paste0(cell_w, "x", cell_h),
+    # From the top-left, so panels of different size share an origin and their
+    # sizes can be compared across the grid.
+    cell <- magick::image_extent(img, paste0(cell_w, "x", cell_h),
                                  gravity = "northwest", color = bg)
   }
 
@@ -114,6 +151,31 @@ mg_cell <- function(path, cell_w, cell_h, label = "", draw_w = NULL, draw_h = NU
                                    color = label_color, boxcolor = "#ffffffcc")
   }
   return(cell)
+}
+
+#' One cell, read from a file: fit then pad
+#'
+#' The convenience form. A caller that needs the fitted size BEFORE choosing the
+#' cell -- which is anything sizing its cells to the images it actually has --
+#' calls mg_fit() and mg_pad() separately instead.
+#'
+#' @param path image file, or NA
+#' @inheritParams mg_pad
+#' @param draw_w,draw_h size to fit the image into; NULL means the whole cell
+#' @return a magick image of exactly cell_w x cell_h
+mg_cell <- function(path, cell_w, cell_h, label = "", draw_w = NULL, draw_h = NULL,
+                    bg = "white", missing_color = "#b00020", label_color = "black") {
+  im <- NULL
+  if (!is.na(path) && nzchar(path) && file.exists(path)) {
+    im <- tryCatch(magick::image_read(path), error = function(e) NULL)
+  }
+  im <- if (is.null(draw_w) || is.null(draw_h)) {
+    mg_fit(im, cell_w, cell_h)
+  } else {
+    mg_fit(im, draw_w, draw_h)
+  }
+  return(mg_pad(im, cell_w, cell_h, label = label, bg = bg,
+                missing_color = missing_color, label_color = label_color))
 }
 
 #' Lay cells out in a grid

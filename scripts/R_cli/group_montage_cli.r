@@ -112,8 +112,11 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = "sheet column(s) for the per-panel label [default: the prefix]")
   p <- add_argument(p, "--ncol", short = "-n", type = "integer", default = 0L,
                     help = "grid columns [default: about the square root of the group size]")
-  p <- add_argument(p, "--cell_height", short = "-H", type = "integer", default = 500L,
-                    help = "cell side in output pixels [default: 500]")
+  p <- add_argument(p, "--cell_max_px", short = "-C", type = "integer", default = 500L,
+                    help = paste("the cell's LONGEST side, in output pixels [default: 500].",
+                                 "Under --scale pixel each image's longest side becomes this;",
+                                 "under --scale physical only the largest panel's does, and",
+                                 "the rest stay proportionally smaller"))
   p <- add_argument(p, "--scale", short = "-S", type = "character", default = "physical",
                     help = "physical | pixel [default: physical]")
   p <- add_argument(p, "--um_per_px", short = "-U", type = "character", default = "group",
@@ -288,7 +291,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   }
 
   # --- the scale ----------------------------------------------------------------
-  cell_px <- max(50L, as.integer(argv$cell_height))
+  cell_px <- max(50L, as.integer(argv$cell_max_px))
   spec <- tolower(.gm_one(.cli_resolve_arg(argv$um_per_px, "--um_per_px"), "group"))
   run_upp <- NA_real_
   if (scale_mode == "physical") {
@@ -324,6 +327,10 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   index <- list()
   written <- character(0)
+  # Collected across every group and reported once. One line per row would be
+  # thousands on a tile scan, and a warning nobody finishes reading is a warning
+  # that does not work.
+  odd <- list()
   for (g in unique(sheet[[".group"]])) {
     rows <- sheet[sheet[[".group"]] == g, , drop = FALSE]
     if (!is.na(order_col)) {
@@ -335,34 +342,139 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     upp <- NA_real_
     draw_w <- rep(NA_real_, n)
     draw_h <- rep(NA_real_, n)
-    cell_w <- cell_px
-    cell_h <- cell_px
     if (scale_mode == "physical") {
       longest <- pmax(rows[[".w_um"]], rows[[".h_um"]])
       upp <- if (is.finite(run_upp)) run_upp else mg_um_per_px(longest, cell_px)
       draw_w <- rows[[".w_um"]] / upp
       draw_h <- rows[[".h_um"]] / upp
-      # An explicit --um_per_px can make a panel larger than --cell_height; the
-      # cell grows to hold it rather than the panel being quietly shrunk, which
-      # would break the physical claim to keep a number tidy.
-      cell_w <- max(cell_px, ceiling(max(draw_w[is.finite(draw_w)], 0)))
-      cell_h <- max(cell_px, ceiling(max(draw_h[is.finite(draw_h)], 0)))
     }
 
     labels <- apply(rows[, label_cols, drop = FALSE], 1L,
                     function(r) paste(as.character(r), collapse = " | "))
+
+    # Read once, scale immediately, keep only the scaled copy. The full-size
+    # image is never held beyond the line that shrinks it: an overview of a tile
+    # merge can be a hundred megapixels, and a group of them held at once is the
+    # same mistake the Fiji side had to be dug out of.
+    fitted <- lapply(seq_len(n), function(i) {
+      if (!rows[[".found"]][i]) {
+        return(NULL)
+      }
+      im <- tryCatch(magick::image_read(rows[[".path"]][i]), error = function(e) NULL)
+      if (is.null(im)) {
+        return(NULL)
+      }
+      # Checked HERE, where the image is in hand, rather than by reading every
+      # file a second time. Physical scaling only: it is the one mode that uses
+      # the sheet's dimensions, so it is the one mode where a mismatch has a
+      # consequence. Under --scale pixel the sheet's size is never consulted and
+      # an oddly-shaped file is a legitimate thing to hand in, so warning there
+      # would fire on every row of a deliberate use and teach the warning to be
+      # ignored.
+      #
+      # NB the mode test is belt-and-braces and cannot currently fail: .w_um is
+      # NA outside physical mode, so mg_aspect_off() has nothing to compare and
+      # returns NA anyway. Removing it would leave the behaviour resting on that
+      # one non-obvious fact, and computing the extents in both modes -- a
+      # plausible thing to want, so the index could report them -- would then
+      # silently switch the warning on. Stated rather than inferred.
+      if (scale_mode == "physical") {
+        got <- mg_aspect_off(im, rows[[".w_um"]][i] / rows[[".h_um"]][i])
+        if (is.finite(got)) {
+          odd[[length(odd) + 1L]] <<- list(prefix = rows[["prefix"]][i], got = got,
+                                           want = rows[[".w_um"]][i] / rows[[".h_um"]][i])
+        }
+      }
+      if (is.finite(draw_w[i]) && is.finite(draw_h[i])) {
+        mg_fit(im, draw_w[i], draw_h[i])
+      } else {
+        # Pixel mode: no physical size to honour, so each image's LONGEST side
+        # becomes the budget. Fitting inside a square box does exactly that and
+        # keeps the aspect; the cell below is then measured, not assumed.
+        mg_fit(im, cell_px, cell_px)
+      }
+    })
+
+    # A TABLE, not a uniform grid: each column is as wide as its widest cell and
+    # each row as tall as its tallest, and a cell is padded only to its own
+    # column and row.
+    #
+    # One cell size for the whole group is what a uniform grid forces, and it
+    # spends the difference on blank space: a group holding one tall panel and
+    # two short ones gave all three the tall panel's height, so two thirds of
+    # the montage was white below the content. Sizing per column and per row
+    # removes exactly that and nothing else.
+    #
+    # Horizontal blank does NOT all go away, and cannot: the output is a
+    # rectangle, so a row narrower than the widest row is padded out to it. What
+    # goes is the vertical waste, which is the larger share whenever panels
+    # differ in height.
+    #
+    # Padding is top-left, so cells share an origin and a column can be scanned
+    # down. Centring would look tidier and would cost that.
+    #
+    # NB padding never carried size information -- the DRAWN pixels do, at a
+    # scale that is constant across the montage and stated by the scale bar. So
+    # letting cells differ in size does not make panels less comparable.
+    row_of <- ((seq_len(n) - 1L) %/% ncol) + 1L
+    col_of <- ((seq_len(n) - 1L) %% ncol) + 1L
+
+    # The slot a cell asks for.
+    have_w <- vapply(fitted, function(im) {
+      if (is.null(im)) NA_real_ else as.numeric(magick::image_info(im)$width)
+    }, numeric(1))
+    have_h <- vapply(fitted, function(im) {
+      if (is.null(im)) NA_real_ else as.numeric(magick::image_info(im)$height)
+    }, numeric(1))
+
+    # A MISSING image still asks for a slot, and it asks for the one its
+    # SIBLINGS actually occupy -- not one predicted from the sheet.
+    #
+    # It used to take the sheet's declared size, on the reasoning that the sheet
+    # knows how big the absent section would have been. That holds only while
+    # the files are shaped the way the sheet describes them. They need not be:
+    # gathering a section's per-series QC montages into one sheet feeds wide
+    # strips against square sheet rows, and the placeholder came out 650x650
+    # beside a 650x200 panel -- three times too tall, and the biggest thing in
+    # the picture.
+    #
+    # A placeholder's job is to keep the layout readable and to be visibly a
+    # gap. It is not to encode the size of what is absent; the words "no image"
+    # do that. So it matches what is there.
+    fb_w <- if (any(is.finite(have_w))) max(have_w, na.rm = TRUE) else as.numeric(cell_px)
+    fb_h <- if (any(is.finite(have_h))) max(have_h, na.rm = TRUE) else as.numeric(cell_px)
+    slot_w <- ifelse(is.finite(have_w), have_w, fb_w)
+    slot_h <- ifelse(is.finite(have_h), have_h, fb_h)
+
+    # A column that holds NO CELL AT ALL -- ncol 3 with two panels in the group
+    # -- is worth no width. Reserving space for it would put back exactly the
+    # blank this layout removes, to hold a column that does not exist.
+    #
+    # Every cell that DOES exist has a slot by now, missing ones included, so
+    # there is no third case: a group with no image anywhere still gets the
+    # budget, through fb_w/fb_h above.
+    span <- function(v, key, k) {
+      out <- vapply(seq_len(k), function(j) {
+        here <- v[key == j]
+        if (!length(here)) return(0)
+        max(here)
+      }, numeric(1))
+      return(ceiling(out))
+    }
+    col_w <- span(slot_w, col_of, ncol)
+    row_h <- span(slot_h, row_of, max(row_of))
+
     cells <- lapply(seq_len(n), function(i) {
-      mg_cell(path = if (rows[[".found"]][i]) rows[[".path"]][i] else NA_character_,
-              cell_w = cell_w, cell_h = cell_h, label = labels[i],
-              draw_w = if (is.finite(draw_w[i])) draw_w[i] else NULL,
-              draw_h = if (is.finite(draw_h[i])) draw_h[i] else NULL,
-              bg = bg)
+      mg_pad(fitted[[i]], cell_w = col_w[col_of[i]], cell_h = row_h[row_of[i]],
+             label = labels[i], bg = bg)
     })
 
     # full_width stated, not inferred: a group of one, or a half-empty last
     # row, still comes out the width of a full grid, so every montage in the
     # run lines up when they are read side by side.
-    img <- mg_grid(cells, ncol = ncol, bg = bg, full_width = cell_w * ncol)
+    # Every row is already sum(col_w) wide by construction, except a last row
+    # holding fewer than ncol cells -- which full_width pads out, as before.
+    img <- mg_grid(cells, ncol = ncol, bg = bg, full_width = sum(col_w))
     if (scale_mode == "physical" && !argv$no_scale_bar) {
       img <- mg_scale_bar(img, upp)
     }
@@ -385,9 +497,26 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       status = ifelse(rows[[".found"]], "ok", "missing"),
       row = ((seq_len(n) - 1L) %/% ncol) + 1L,
       col = ((seq_len(n) - 1L) %% ncol) + 1L,
-      um_per_px = upp, cell_px_w = cell_w, cell_px_h = cell_h,
+      # Per CELL now, not per group: with a table layout a montage no longer has
+      # one cell size, and a reader matching a picture back to a row needs the
+      # slot that row was actually given.
+      um_per_px = upp, cell_px_w = col_w[col_of], cell_px_h = row_h[row_of],
       width_um = rows[[".w_um"]], height_um = rows[[".h_um"]],
       montage = basename(f), stringsAsFactors = FALSE)
+  }
+
+  if (length(odd)) {
+    ex <- utils::head(odd, 3)
+    warning(length(odd), " image(s) are not the shape the sample sheet describes, ",
+            "so they are fitted into it with blank space rather than stretched to ",
+            "match: ",
+            paste(vapply(ex, function(o) sprintf("%s (%.2f vs %.2f)",
+                                                 o$prefix, o$got, o$want), character(1)),
+                  collapse = ", "),
+            if (length(odd) > 3) ", ..." else "",
+            ". Either the sheet is stale, --image_suffix picked a differently ",
+            "shaped file, or these images are not the samples the sheet names.",
+            call. = FALSE)
   }
 
   idx <- do.call(rbind, index)

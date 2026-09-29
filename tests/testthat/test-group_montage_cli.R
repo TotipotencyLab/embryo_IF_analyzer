@@ -67,7 +67,7 @@ gm_run <- function(fx, extra = character(0), out = NULL) {
   idx <- suppressMessages(suppressWarnings(group_montage_cli(c(
     "--sample_sheet", fx$sheet, "--group_by", "section_id",
     "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
-    "--outdir", out, "--cell_height", "300", "--ncol", "3", extra))))
+    "--outdir", out, "--cell_max_px", "300", "--ncol", "3", extra))))
   list(idx = idx, out = out)
 }
 
@@ -91,6 +91,87 @@ test_that("panels are drawn to PHYSICAL size, not pixel size", {
   expect_equal(1000 / big[["w"]], upp, tolerance = 1e-6)
 })
 
+test_that("an image the wrong shape is letterboxed, not stretched", {
+  # The sheet gives the drawn size, and it used to be applied with magick's
+  # "WxH!", which forces those exact dimensions and therefore DISTORTS anything
+  # not already that shape. A squashed follicle still looks like a follicle, so
+  # nothing said so. Fitting preserves the aspect and pads the difference.
+  fx <- gm_fixture()
+  # B_s0001's sheet row says 2000x2000 px at 0.5 um = a SQUARE 1000x1000 um.
+  # Give it a 2:1 image instead.
+  magick::image_write(magick::image_blank(400, 200, color = "steelblue"),
+                      file.path(fx$img, "B_s0001_overview_ch1.png"))
+  r <- gm_run(fx)
+
+  box <- gm_bbox(file.path(r$out, "B_montage.png"), "#4682b4ff")
+  # Stretched, it would have filled a square cell: w == h. Fitted, it keeps 2:1.
+  expect_gt(box[["w"]], box[["h"]])
+  expect_equal(box[["w"]] / box[["h"]], 2, tolerance = 0.02)
+})
+
+test_that("a shape the sheet does not describe is warned about, in physical mode only", {
+  fx <- gm_fixture()
+  magick::image_write(magick::image_blank(400, 200, color = "steelblue"),
+                      file.path(fx$img, "B_s0001_overview_ch1.png"))
+
+  grab <- function(extra = character(0)) {
+    seen <- character(0)
+    withCallingHandlers(
+      suppressMessages(group_montage_cli(c(
+        "--sample_sheet", fx$sheet, "--group_by", "section_id",
+        "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
+        "--outdir", file.path(fx$dir, paste0("w", length(extra))),
+        "--cell_max_px", "200", extra))),
+      warning = function(cond) {
+        seen <<- c(seen, conditionMessage(cond))
+        invokeRestart("muffleWarning")
+      })
+    seen
+  }
+
+  phys <- grab()
+  expect_true(any(grepl("not the shape the sample sheet describes", phys, fixed = TRUE)))
+  expect_true(any(grepl("B_s0001", phys, fixed = TRUE)))
+
+  # ...and NOT under --scale pixel, where the sheet's dimensions are never
+  # consulted and an oddly-shaped file is a legitimate thing to hand in.
+  # Warning there would fire on every row of a deliberate use.
+  #
+  # This holds for two independent reasons -- the mode test, and .w_um being NA
+  # outside physical mode -- so it does NOT prove the mode test is doing the
+  # work. Verified: removing that test fails nothing. It is asserted here as
+  # the behaviour, not as a guard on the implementation.
+  pix <- grab(c("--scale", "pixel"))
+  expect_false(any(grepl("not the shape the sample sheet describes", pix, fixed = TRUE)))
+  # The fixture still warns about its missing image, so an empty result would
+  # not prove the check was skipped rather than the warnings being swallowed.
+  expect_true(any(grepl("not found", pix, fixed = TRUE)))
+})
+
+test_that("a correctly shaped image is not warned about", {
+  # The rounding a resize introduces must not trip it: Fiji's overview of an
+  # 11344 x 9590 series comes out 1000 x 846, which is 0.07% off.
+  fx <- gm_fixture()
+  magick::image_write(magick::image_blank(1000, 846, color = "steelblue"),
+                      file.path(fx$img, "B_s0001_overview_ch1.png"))
+  s <- utils::read.delim(fx$sheet, stringsAsFactors = FALSE)
+  s$size_x[s$prefix == "B_s0001"] <- 11344
+  s$size_y[s$prefix == "B_s0001"] <- 9590
+  utils::write.table(s, fx$sheet, sep = "\t", quote = FALSE, row.names = FALSE)
+
+  seen <- character(0)
+  withCallingHandlers(
+    suppressMessages(group_montage_cli(c(
+      "--sample_sheet", fx$sheet, "--group_by", "section_id",
+      "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
+      "--outdir", file.path(fx$dir, "ok"), "--cell_max_px", "200"))),
+    warning = function(cond) {
+      seen <<- c(seen, conditionMessage(cond))
+      invokeRestart("muffleWarning")
+    })
+  expect_false(any(grepl("not the shape", seen, fixed = TRUE)))
+})
+
 test_that("--scale pixel draws them the same size, which is what physical is not", {
   # The discrimination half: without this, "the sizes differ" is equally
   # consistent with the scaling never having run.
@@ -109,7 +190,7 @@ test_that("a missing image still occupies a labelled cell", {
     idx <- suppressMessages(group_montage_cli(c(
       "--sample_sheet", fx$sheet, "--group_by", "section_id",
       "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
-      "--outdir", out, "--cell_height", "300", "--ncol", "3"))),
+      "--outdir", out, "--cell_max_px", "300", "--ncol", "3"))),
     "not found")
 
   b <- idx[idx$group == "B", ]
@@ -136,11 +217,177 @@ test_that("a group of one is drawn, and --ncol makes it the same width as the re
 
   files <- file.path(r2$out, unique(r2$idx$montage))
   expect_true(all(file.exists(files)))
-  # An explicit --ncol fixes the width, so the one-panel montage lines up with
-  # the others instead of being a third of their size.
-  widths <- vapply(files, function(f) magick::image_info(magick::image_read(f))$width,
-                   numeric(1))
-  expect_length(unique(widths), 1L)
+  # An explicit --ncol fixes the COLUMN COUNT, so the one-panel montage is a
+  # full-width row rather than a third of one.
+  expect_true(all(r2$idx$col <= 3L))
+  expect_identical(unique(r2$idx$cell_px_w[r2$idx$group == "SOLO"]),
+                   unique(r2$idx$cell_px_w[r2$idx$group == "A"]))
+
+  # Montage width is now the sum of the COLUMNS THAT HOLD SOMETHING, so a group
+  # with fewer panels than --ncol is genuinely narrower. That is the cost of a
+  # table layout and is deliberate: reserving width for a column that holds no
+  # cell would put back exactly the blank space the layout removes.
+  width_of <- function(grp) {
+    magick::image_info(magick::image_read(
+      file.path(r2$out, unique(r2$idx$montage[r2$idx$group == grp]))))$width
+  }
+  # B holds three panels and so fills all three columns; SOLO holds one and is
+  # one column wide. (Group A is also a singleton here -- A_s0001 moved to
+  # SOLO -- so comparing against it would prove nothing.)
+  expect_identical(sum(r2$idx$group == "B"), 3L)
+  expect_lt(width_of("SOLO"), width_of("B"))
+  # ...and it is exactly one column, not a third of a fixed grid.
+  expect_equal(width_of("SOLO"), unique(r2$idx$cell_px_w[r2$idx$group == "SOLO"]))
+})
+
+test_that("cells are sized per column and per row, not one size for the group", {
+  # A table: column j is as wide as its widest cell, row i as tall as its
+  # tallest, and a cell is padded only to its own column and row. One size for
+  # the whole group spends the difference on blank space.
+  skip_if_no_pkg(c("argparser", "magick"))
+  d <- withr::local_tempdir()
+  img <- file.path(d, "img")
+  dir.create(img)
+  dims <- list(c(200, 100), c(100, 200), c(200, 50))
+  pre <- sprintf("S%02d", seq_along(dims))
+  for (k in seq_along(dims)) {
+    magick::image_write(magick::image_blank(dims[[k]][1], dims[[k]][2], "steelblue"),
+                        file.path(img, paste0(pre[k], "_overview_ch1.png")))
+  }
+  sheet <- data.frame(prefix = pre, include = "true", section_id = "G",
+                      size_x = vapply(dims, `[`, 0, 1), size_y = vapply(dims, `[`, 0, 2),
+                      pixel_width = 1, pixel_height = 1, stringsAsFactors = FALSE)
+  sp <- file.path(d, "s.tsv")
+  utils::write.table(sheet, sp, sep = "\t", quote = FALSE, row.names = FALSE)
+
+  run <- function(ncol) {
+    o <- file.path(d, paste0("n", ncol))
+    suppressMessages(suppressWarnings(group_montage_cli(c(
+      "--sample_sheet", sp, "--group_by", "section_id", "--image_dir", img,
+      "--image_suffix", "_overview_ch1.png", "--outdir", o,
+      "--ncol", as.character(ncol), "--cell_max_px", "100", "--no_scale_bar"))))
+  }
+
+  # ncol = 1: fitted 100x50, 50x100, 100x25. One column, width 100; each row
+  # its own height. The 50-wide panel is padded left/right to 100 -- which is
+  # unavoidable, the output being a rectangle.
+  one <- run(1)
+  expect_equal(one$cell_px_w, c(100, 100, 100))
+  expect_equal(one$cell_px_h, c(50, 100, 25))
+
+  # ncol = 2: columns are (100, 50) and rows are (100, 25).
+  two <- run(2)
+  expect_equal(two$cell_px_w, c(100, 50, 100))
+  expect_equal(two$cell_px_h, c(100, 100, 25))
+  expect_equal(two$row, c(1, 1, 2))
+  expect_equal(two$col, c(1, 2, 1))
+
+  # ...and the IMAGE agrees with the index. Without this the index could report
+  # a table while the montage was drawn with one cell size for the group --
+  # verified: making the cells uniform fails nothing above.
+  #
+  # The title band is not hard-coded. Its height is the same in both runs, so
+  # asserting that (height - content) matches across them pins the layout
+  # without pinning the band: content is 50+100+25 at ncol 1 and 100+25 at
+  # ncol 2.
+  h1 <- magick::image_info(magick::image_read(
+    file.path(d, "n1", unique(one$montage))))$height
+  h2 <- magick::image_info(magick::image_read(
+    file.path(d, "n2", unique(two$montage))))$height
+  expect_identical(h1 - 175L, h2 - 125L)
+  # And the widths, which the band does not touch at all.
+  expect_identical(magick::image_info(magick::image_read(
+    file.path(d, "n1", unique(one$montage))))$width, 100L)
+  expect_identical(magick::image_info(magick::image_read(
+    file.path(d, "n2", unique(two$montage))))$width, 150L)
+})
+
+test_that("a placeholder takes the slot its siblings occupy, not one the sheet predicts", {
+  # It used to take the sheet's declared size. That holds only while the files
+  # are shaped the way the sheet describes them, and they need not be: feeding
+  # wide strips against square sheet rows put a 650x650 placeholder beside a
+  # 650x200 panel -- three times too tall, and the biggest thing in the picture.
+  skip_if_no_pkg(c("argparser", "magick"))
+  d <- withr::local_tempdir()
+  img <- file.path(d, "img")
+  dir.create(img)
+  # One wide panel present; two rows missing. The sheet calls every row square,
+  # so the sheet and the file disagree -- which is the case that broke.
+  magick::image_write(magick::image_blank(650, 200, "steelblue"),
+                      file.path(img, "S01_overview_ch1.png"))
+  sheet <- data.frame(prefix = c("S01", "S02", "S03"), include = "true",
+                      section_id = "G", size_x = 2000, size_y = 2000,
+                      pixel_width = 1, pixel_height = 1, stringsAsFactors = FALSE)
+  sp <- file.path(d, "s.tsv")
+  utils::write.table(sheet, sp, sep = "\t", quote = FALSE, row.names = FALSE)
+
+  for (mode in c("pixel", "physical")) {
+    idx <- suppressMessages(suppressWarnings(group_montage_cli(c(
+      "--sample_sheet", sp, "--group_by", "section_id", "--image_dir", img,
+      "--image_suffix", "_overview_ch1.png", "--outdir", file.path(d, mode),
+      "--ncol", "1", "--cell_max_px", "650", "--scale", mode, "--no_scale_bar"))))
+    expect_identical(sum(idx$status == "missing"), 2L)
+    # Every cell the same as the one real panel, in BOTH modes: the sheet said
+    # square in both, and it is the file that decides.
+    expect_equal(unique(idx$cell_px_w), 650)
+    expect_equal(unique(idx$cell_px_h), 200)
+  }
+})
+
+test_that("a group with no image at all still gets a montage, at the budget", {
+  # The only case with nothing to match, so the budget is all there is. It must
+  # not collapse to a zero-sized cell -- an absent group has to be visible.
+  skip_if_no_pkg(c("argparser", "magick"))
+  d <- withr::local_tempdir()
+  img <- file.path(d, "img")
+  dir.create(img)
+  sheet <- data.frame(prefix = c("S01", "S02"), include = "true", section_id = "G",
+                      size_x = 2000, size_y = 2000, pixel_width = 1,
+                      pixel_height = 1, stringsAsFactors = FALSE)
+  sp <- file.path(d, "s.tsv")
+  utils::write.table(sheet, sp, sep = "\t", quote = FALSE, row.names = FALSE)
+
+  idx <- suppressMessages(suppressWarnings(group_montage_cli(c(
+    "--sample_sheet", sp, "--group_by", "section_id", "--image_dir", img,
+    "--image_suffix", "_overview_ch1.png", "--outdir", file.path(d, "none"),
+    "--ncol", "1", "--cell_max_px", "300", "--scale", "pixel", "--no_scale_bar"))))
+  expect_identical(sum(idx$status == "missing"), 2L)
+  expect_equal(unique(idx$cell_px_w), 300)
+  expect_equal(unique(idx$cell_px_h), 300)
+  expect_true(file.exists(file.path(d, "none", unique(idx$montage))))
+})
+
+test_that("a column holding no cell at all is worth no width", {
+  # --ncol 3 with two panels must not reserve a third column: that would put
+  # back exactly the blank space the table layout removes.
+  fx <- gm_fixture()
+  r <- gm_run(fx)                                  # gm_run fixes --ncol 3
+  a <- r$idx[r$idx$group == "A", ]
+  expect_identical(nrow(a), 2L)
+  w <- magick::image_info(magick::image_read(file.path(r$out, unique(a$montage))))$width
+  expect_equal(w, sum(unique(data.frame(c = a$col, w = a$cell_px_w))$w))
+})
+
+test_that("the cell is the bounding box of the group, not a square", {
+  # The floor used to apply to BOTH axes, which made every cell square: the
+  # scale is chosen so the largest panel's longest side is exactly the budget,
+  # so the other axis was always short and always padded back up. A group of
+  # wide sections came out most of the way white.
+  fx <- gm_fixture()
+  for (p in c("B_s0001", "B_s0002")) {
+    magick::image_write(magick::image_blank(400, 100, color = "steelblue"),
+                        file.path(fx$img, paste0(p, "_overview_ch1.png")))
+  }
+  s <- utils::read.delim(fx$sheet, stringsAsFactors = FALSE)
+  s$size_x[s$prefix %in% c("B_s0001", "B_s0002")] <- 2000   # 1000 um wide
+  s$size_y[s$prefix %in% c("B_s0001", "B_s0002")] <- 500    #  250 um tall
+  utils::write.table(s, fx$sheet, sep = "\t", quote = FALSE, row.names = FALSE)
+
+  r <- gm_run(fx, c("--scale", "pixel"))
+  b <- r$idx[r$idx$group == "B", ]
+  expect_lt(unique(b$cell_px_h), unique(b$cell_px_w))
+  # 4:1 images, so the cell follows them rather than being squared off.
+  expect_equal(unique(b$cell_px_w) / unique(b$cell_px_h), 4, tolerance = 0.05)
 })
 
 test_that("a grouping column that separates nothing is warned about", {
@@ -151,7 +398,7 @@ test_that("a grouping column that separates nothing is warned about", {
     suppressMessages(group_montage_cli(c(
       "--sample_sheet", fx$sheet, "--group_by", "series_index",
       "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
-      "--outdir", file.path(fx$dir, "degen"), "--cell_height", "150"))),
+      "--outdir", file.path(fx$dir, "degen"), "--cell_max_px", "150"))),
     "every sample in its own group")
 
   # ...and a MIXTURE is not warned about. This needs a fixture that ACTUALLY
@@ -174,7 +421,7 @@ test_that("a grouping column that separates nothing is warned about", {
     suppressMessages(group_montage_cli(c(
       "--sample_sheet", fx2$sheet, "--group_by", "section_id",
       "--image_dir", fx2$img, "--image_suffix", "_overview_ch1.png",
-      "--outdir", file.path(fx2$dir, "mixed"), "--cell_height", "150"))),
+      "--outdir", file.path(fx2$dir, "mixed"), "--cell_max_px", "150"))),
     warning = function(cond) {
       seen <<- c(seen, conditionMessage(cond))
       invokeRestart("muffleWarning")
@@ -198,7 +445,7 @@ test_that("a group whose images are ALL missing still gets a montage", {
   idx <- suppressMessages(suppressWarnings(group_montage_cli(c(
     "--sample_sheet", fx$sheet, "--group_by", "series_index",
     "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
-    "--outdir", out, "--cell_height", "150"))))
+    "--outdir", out, "--cell_max_px", "150"))))
 
   gone <- idx[idx$prefix == "B_s0003", ]
   expect_identical(nrow(gone), 1L)
@@ -256,7 +503,7 @@ test_that("--label_by and --group_by also accept a machine column", {
   idx2 <- suppressMessages(suppressWarnings(group_montage_cli(c(
     "--sample_sheet", fx$sheet, "--group_by", "series_index",
     "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
-    "--outdir", out2, "--cell_height", "150"))))
+    "--outdir", out2, "--cell_max_px", "150"))))
   # one group per row, since series_index is unique
   expect_length(unique(idx2$group), 5L)
 })
@@ -320,7 +567,7 @@ test_that("--image_path_by takes paths from the sheet, and excludes the built fo
   out <- file.path(fx$dir, "bycol")
   idx <- suppressMessages(suppressWarnings(group_montage_cli(c(
     "--sample_sheet", fx$sheet, "--group_by", "section_id",
-    "--image_path_by", "img", "--outdir", out, "--cell_height", "200"))))
+    "--image_path_by", "img", "--outdir", out, "--cell_max_px", "200"))))
   expect_identical(sum(idx$status == "ok"), 4L)
 
   expect_error(
@@ -358,6 +605,19 @@ test_that("the sheet reader keeps only the machine columns it is asked for", {
 
   expect_error(.cli_read_sample_sheet(fx$sheet, keep_machine = "section_id"),
                "not machine columns")
+})
+
+test_that("mg_aspect_off tolerates a resize's rounding and catches a real mismatch", {
+  skip_if_no_pkg("magick")
+  # 11344 x 9590 resized to 1000 wide gives 846 -- 0.07% off, which must pass.
+  im <- magick::image_blank(1000, 846, color = "white")
+  expect_true(is.na(mg_aspect_off(im, 11344 / 9590)))
+  # A 2:1 image where a square was described misses by 100%.
+  wide <- magick::image_blank(400, 200, color = "white")
+  expect_equal(mg_aspect_off(wide, 1), 2)
+  # Nothing to compare against is not a mismatch.
+  expect_true(is.na(mg_aspect_off(wide, NA_real_)))
+  expect_true(is.na(mg_aspect_off(NULL, 1)))
 })
 
 test_that("mg_nice_number picks from the 1/2/5 decade series", {
