@@ -437,6 +437,46 @@ is a complete record of what the run did rather than of what succeeded:
 A row failing does not stop the batch. On a long run this file, not the log, is
 what says which images need attention.
 
+### Overview-only batch — `Run_Overview_Batch.groovy`
+
+Projections and nothing else: no threshold, no particles, no measurement, no
+ROI files. It writes
+
+```
+<prefix>_overview_ch<N>.png
+```
+
+— the **same names** the nucleus path writes for its raw overview, and that is
+load-bearing rather than a coincidence. Both go through
+`Overview.overviewPath()`, and for the same projection, size and contrast
+settings the two produce byte-identical PNGs (verified on the fixture, both
+channels). A file from either runner is interchangeable to anything downstream,
+so a montage or a QC panel need not know which one made it. No suffix parameter
+is offered: the suffix exists to mark that outlines were drawn, and nothing here
+draws any.
+
+**`batch_summary.tsv` has a fixed frame and a variable middle.** Every batch
+writes `prefix`, `path`, `series_index`, `status`, `open_method` first and
+`seconds`, `message` last, with the same meanings as the table above; between
+them sit the columns that *that* batch's work reports. Blank in those columns
+means the row did not run, and every row carries every column — an `excluded`
+or `failed` row is padded rather than shortened, so the table stays rectangular
+whatever happened to it.
+
+For this runner the middle is:
+
+| Column | Meaning |
+|---|---|
+| `channels` | the channels projected, comma separated, in the order written |
+| `png_size` | `<width>x<height>` of the PNG actually written, after any resize |
+| `display_range` | per channel, `ch<N>:lo-hi` — the display window the contrast setting chose |
+
+`display_range` is there because `auto` contrast stretches whatever it is given:
+a channel holding only noise has that noise stretched to full range and saves a
+convincing picture of nothing. A narrow range beside a wide one on another
+channel is the tell — but only if it is written down, and opening every PNG to
+find the few that went wrong is what this column exists to avoid.
+
 ### How the nucleus threshold is chosen
 
 `nucleus_threshold` names a method from the Auto Threshold plugin — the full

@@ -162,6 +162,24 @@ loop, including how to diff.
   series names and says whether they are separate fields of a tile scan or
   genuinely the same image, which the name alone cannot tell you.
   `Open_LifFile.groovy` opens one chosen series into a window, by index or name.
+- **`Run_Overview_Batch.groovy` is the cheap look at a dataset**: overview PNGs
+  for every included sheet row and nothing else. It exists because deciding what
+  a slide contains should not cost a segmentation run — detection needs a tuned
+  config you cannot write until you have seen the images. Its PNGs carry the
+  same `<prefix>_overview_ch<N>.png` names the nucleus path writes, and are
+  byte-identical for the same settings, so nothing downstream needs to know
+  which runner made one.
+- **`BatchRunner.runEach()` is the loop; `run()` is one caller of it.** Include,
+  the duplicate-prefix refusal, resolving and opening the image, the pixel-size
+  warning, closing the stack on both paths, one row's failure not costing the
+  other hundred and ninety-nine, and `batch_summary.tsv` are the same for any
+  batch and are not worth a second copy — which is what a forked runner would
+  be. A caller supplies the per-row work and names the columns that work
+  reports; those columns are written blank for excluded and failed rows, so the
+  summary is rectangular whatever happened. Whether a mixed-pixel-size batch
+  *matters* is also the caller's to say: the detection is shared, the sentence
+  is not, because warning an overview batch about a blur sigma it never uses is
+  noise, and noise is what stops warnings being read.
 - `Overview.groovy` builds the quick-look PNGs (project → prepare → addOutlines →
   savePng, each usable alone). Its `merged` outline mode unions ROIs **in the 2D
   projection**, so objects overlapping in x-y share one outline: it is a picture,

@@ -52,6 +52,18 @@ class BatchRunner {
     }
 
     /** include is a real boolean, never "a non-empty string is true". */
+    /** What a mixed-pixel-size batch means, when nothing more is known. */
+    static final String PIXEL_SIZE_NOTE_GENERIC =
+        "Settings given in PIXELS are a different physical size on each; settings in " +
+        "calibrated units transfer. Check one series from each group before trusting the rest."
+
+    /** ...and what it means for the nucleus pipeline specifically. */
+    static final String PIXEL_SIZE_NOTE_NUCLEUS =
+        "nucleus_particle_size is in calibrated units and transfers; nucleus_blur_sigma, " +
+        "nucleolus_blur_sigma and nucleolus_erode_px are in PIXELS and do NOT -- the same " +
+        "value is a different physical size on each. Check the result on one series from " +
+        "each group before trusting the rest."
+
     static boolean isIncluded(Object v) {
         if (v == null) return true                       // no column: everything
         def s = v.toString().trim().toLowerCase()
@@ -390,7 +402,59 @@ class BatchRunner {
      * @return [summary: rows, ok: n, failed: n, excluded: n, warnings: []]
      */
     Map run(List<Map> rows, File imageRoot, Map params, File outdir, Closure log = null) {
+        // The nucleus batch: the shared loop below, plus the work one row does
+        // and the columns that work reports. Kept as its own entry point
+        // because it is what every existing caller asks for.
+        def cols = ["threshold", "mask_pct", "n_nucleus", "n_nucleolus"]
+        def res = runEach(rows, imageRoot,
+                          params + [pixel_size_note: PIXEL_SIZE_NOTE_NUCLEUS],
+                          outdir, cols, log) {
+                      imp, prefix, si, method, row ->
+            // The sheet's prefix is authoritative: resolveImageId() would dig
+            // "Series001" out of the slice label, which recurs in every file.
+            // Where this image came from, recorded in its own _config.txt: a
+            // results folder should say which series of which file produced it
+            // without anyone having to parse the prefix back apart.
+            def r = pipeline.run(imp, outdir,
+                                 params + [basename    : prefix,
+                                           open_method : method,
+                                           source_file : row.path,
+                                           series_index: si,
+                                           series_name : (row.series_name ?: "")])
+            // What the threshold chose, per row. Every _config.txt carries it
+            // too, but finding the handful of rows where it went wrong should
+            // not mean opening a thousand files -- and on a slide that scans
+            // across empty sections, "went wrong" is the common case.
+            return [threshold: r.threshold, mask_pct: r.maskPct,
+                    n_nucleus: r.nucRois.size(), n_nucleolus: r.nuclRois.size()]
+        }
+
+        // The parameters actually used, as a file that can be fed straight back
+        // in -- provenance for the batch as a whole, beside the per-image config.
+        RC.writeParams(params.findAll { k, v -> NP.PARAM_TYPES.containsKey(k) },
+                       new File(outdir, "batch_params.txt"))
+        return res
+    }
+
+    /**
+     * Run a closure over every included row, and write the summary.
+     *
+     * Everything that is the same for any batch lives here: include, the
+     * duplicate-prefix refusal, resolving and opening the image, the pixel-size
+     * warning, closing the stack on both paths, one row's failure not costing
+     * the other hundred and ninety-nine, and batch_summary.tsv.
+     *
+     * @param extraCols the columns `work` contributes, in order. They sit
+     *                  between open_method and seconds, and are written blank
+     *                  for excluded and failed rows -- so every row has every
+     *                  column and the table is rectangular whatever happened.
+     * @param work      called as (imp, prefix, seriesIndex, openMethod, row);
+     *                  returns a Map of extraCols -> value.
+     */
+    Map runEach(List<Map> rows, File imageRoot, Map params, File outdir,
+                List<String> extraCols, Closure log = null, Closure work) {
         outdir.mkdirs()
+        def blanks = extraCols.collectEntries { [(it): ""] }
         def say = { String m -> log?.call(m) }
         def warnings = []
 
@@ -424,13 +488,16 @@ class BatchRunner {
                 (params.nucleus_threshold_range ?: "") as String)
         }
 
+        // Whether a mixed-pixel-size batch MATTERS depends on what the rows do,
+        // so the detection is here and the advice comes from the caller. An
+        // overview batch spans pixel sizes happily -- warning it about a blur
+        // sigma it never uses would be noise, and noise is what stops warnings
+        // being read.
         def sizes = pixelSizes(included)
         if (sizes.size() > 1) {
             def w = "This batch spans " + sizes.size() + " different pixel sizes (" +
-                    sizes.keySet().sort().join(", ") + "). nucleus_particle_size is in " +
-                    "calibrated units and transfers; nucleus_blur_sigma is in PIXELS and does " +
-                    "NOT -- the same sigma is a different physical blur on each. Check the " +
-                    "result on one series from each group before trusting the rest."
+                    sizes.keySet().sort().join(", ") + "). " +
+                    (params.pixel_size_note ?: PIXEL_SIZE_NOTE_GENERIC)
             warnings << w
             say("WARNING: " + w)
         }
@@ -445,10 +512,9 @@ class BatchRunner {
         rows.each { row ->
             def prefix = (row.prefix ?: "").toString()
             if (!isIncluded(row.include)) {
-                summary << [prefix: prefix, path: row.path, series_index: row.series_index,
-                            status: "excluded", open_method: "", threshold: "",
-                            mask_pct: "", n_nucleus: "",
-                            n_nucleolus: "", seconds: "", message: ""]
+                summary << ([prefix: prefix, path: row.path, series_index: row.series_index,
+                             status: "excluded", open_method: ""] + blanks +
+                            [seconds: "", message: ""])
                 return
             }
             long t0 = System.currentTimeMillis()
@@ -483,32 +549,23 @@ class BatchRunner {
                 // Where this image came from, recorded in its own _config.txt: a
                 // results folder should say which series of which file produced
                 // it without anyone having to parse the prefix back apart.
-                def res = pipeline.run(imp, outdir,
-                                      params + [basename    : prefix,
-                                                open_method : method,
-                                                source_file : row.path,
-                                                series_index: si,
-                                                series_name : (row.series_name ?: "")])
-                summary << [prefix: prefix, path: row.path, series_index: row.series_index,
-                            status: "ok", open_method: method,
-                            // What the threshold chose, per row. Every _config.txt
-                            // carries it too, but finding the handful of rows where
-                            // it went wrong should not mean opening a thousand files
-                            // -- and on a slide that scans across empty sections,
-                            // "went wrong" is the common case, not the rare one.
-                            threshold: res.threshold, mask_pct: res.maskPct,
-                            n_nucleus: res.nucRois.size(), n_nucleolus: res.nuclRois.size(),
-                            seconds: fmtSeconds(System.currentTimeMillis() - t0), message: ""]
+                // What this row DOES is the caller's; everything around it --
+                // include, duplicate prefixes, opening, closing, the summary
+                // row, one row's failure not costing the rest -- is the same
+                // for any batch and is not worth a second copy.
+                def extra = work.call(imp, prefix, si, method, row) ?: [:]
+                summary << ([prefix: prefix, path: row.path, series_index: row.series_index,
+                             status: "ok", open_method: method] + extra +
+                            [seconds: fmtSeconds(System.currentTimeMillis() - t0), message: ""])
                 ok++
             } catch (Throwable t) {
                 // One bad image must not cost the other hundred and ninety-nine.
                 def msg = t.getClass().getSimpleName() + ": " + (t.getMessage() ?: "(no message)")
                 say("FAILED " + prefix + ": " + msg)
-                summary << [prefix: prefix, path: row.path, series_index: row.series_index,
-                            status: "failed", open_method: method, threshold: "",
-                            mask_pct: "", n_nucleus: "", n_nucleolus: "",
-                            seconds: fmtSeconds(System.currentTimeMillis() - t0),
-                            message: oneLine(msg)]
+                summary << ([prefix: prefix, path: row.path, series_index: row.series_index,
+                             status: "failed", open_method: method] + blanks +
+                            [seconds: fmtSeconds(System.currentTimeMillis() - t0),
+                             message: oneLine(msg)])
                 failed++
             } finally {
                 // Always, on both paths: a stack held here is gigabytes.
@@ -522,15 +579,9 @@ class BatchRunner {
             closeReader()
         }
 
-        def cols = ["prefix", "path", "series_index", "status", "open_method",
-                    "threshold", "mask_pct",
-                    "n_nucleus", "n_nucleolus", "seconds", "message"]
+        def cols = ["prefix", "path", "series_index", "status", "open_method"] +
+                   extraCols + ["seconds", "message"]
         TSV.write(summary, new File(outdir, "batch_summary.tsv"), cols)
-
-        // The parameters actually used, as a file that can be fed straight back
-        // in -- provenance for the batch as a whole, beside the per-image config.
-        RC.writeParams(params.findAll { k, v -> NP.PARAM_TYPES.containsKey(k) },
-                       new File(outdir, "batch_params.txt"))
 
         say("Done: " + ok + " ok, " + failed + " failed, " +
             (rows.size() - included.size()) + " excluded")

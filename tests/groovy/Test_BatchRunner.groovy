@@ -480,7 +480,87 @@ check("they are provenance, not parameters",
       errOf { RC.readParams(new File(outProv, "PV_config.txt"), NP.PARAM_TYPES) }, null)
 
 
+println ""
+println "=== runEach: the shared loop, with the caller's own work ==="
+
+// run() is now one caller of runEach(); Run_Overview_Batch.groovy is another.
+// What is asserted here is the part they share -- include, the duplicate
+// refusal, opening, closing, one failure not costing the rest, and a summary
+// that is RECTANGULAR whatever happened to a row.
+def outEach = new File(tmp, "each"); outEach.mkdirs()
+def seen = []
+def eachRes = runner.runEach(rows, raw, [open_mode: "auto"], outEach,
+                             ["n_slices", "title"], null,
+                             { imp, prefix, si, openMethod, row ->
+                                 seen << prefix
+                                 return [n_slices: imp.getNSlices(), title: imp.getTitle()]
+                             })
+// A, B and C are included; B points at a file that is not there. So the work
+// closure must see exactly the rows that OPENED -- naming them, because a
+// count alone would pass if it ran the wrong two.
+check("work sees only the rows that opened",  seen.sort(), ["A", "C"])
+check("...counted as ok",                     eachRes.ok, 2)
+check("...and the unopenable row is contained", eachRes.failed, 1)
+
+def eachTsv = new File(outEach, "batch_summary.tsv")
+check("runEach writes batch_summary.tsv",     eachTsv.isFile(), true)
+def eachHdr = eachTsv.readLines()[0].split("\t").toList()
+check("...with the caller's columns, in place",
+      eachHdr, ["prefix", "path", "series_index", "status", "open_method",
+                "n_slices", "title", "seconds", "message"])
+
+// THE point of `blanks`: an excluded or failed row has no work output, and a
+// ragged table would make every reader of it wrong about which column is which.
+def eachRows = TSV.read(eachTsv)
+def widths = eachRows.collect { it.keySet().size() }.toSet()
+check("every row has every column",           widths.size(), 1)
+def exRow = eachRows.find { it.status == "excluded" }
+check("an excluded row has blank work cells",
+      (exRow == null) ? "no excluded row in fixture" : [exRow.n_slices, exRow.title],
+      (exRow == null) ? "no excluded row in fixture" : ["", ""])
+
+// A throwing row must be contained, not fatal -- and must still be countable.
+def outThrow = new File(tmp, "eachthrow"); outThrow.mkdirs()
+int called = 0
+def throwRes = runner.runEach(rows, raw, [open_mode: "auto"], outThrow,
+                              ["n_slices"], null,
+                              { imp, prefix, si, openMethod, row ->
+                                  called++
+                                  throw new IllegalStateException("deliberate")
+                              })
+check("every opened row still reached the work", called, 2)
+check("...all three included rows failed",      throwRes.failed, 3)
+check("...and none is counted ok",              throwRes.ok, 0)
+def throwRows = TSV.read(new File(outThrow, "batch_summary.tsv"))
+// Each failure keeps ITS OWN reason. Collapsing them to one message would hide
+// that B failed for a different cause than A and C, which is the whole value
+// of the message column on a long batch.
+check("...each failure keeps its own reason",
+      throwRows.findAll { it.status == "failed" }
+               .collectEntries { [(it.prefix): it.message.contains("deliberate")] },
+      [A: true, B: false, C: true])
+check("...and B's reason is the missing file",
+      throwRows.find { it.prefix == "B" }.message.contains("no such image file"), true)
+
+// The pixel-size warning is now the CALLER's sentence, because whether a mixed
+// batch matters depends on what the rows do. Without this the overview batch
+// would warn about a blur sigma it never uses.
+def outNote = new File(tmp, "eachnote"); outNote.mkdirs()
+def noteRes = runner.runEach(mixed, raw, [open_mode: "auto"], outNote, [], null,
+                             { imp, prefix, si, openMethod, row -> [:] })
+def mixedWarn = noteRes.warnings.find { it.contains("different pixel sizes") }
+check("mixed pixel sizes still warn",         mixedWarn != null, true)
+check("...with the generic note by default",
+      mixedWarn == null ? "no warning" : mixedWarn.contains("nucleus_blur_sigma"), false)
+// ...and run() supplies the nucleus one, which now names ALL three pixel settings.
+def nucWarn = res2.warnings.find { it.contains("different pixel sizes") }
+check("run() still gives the nucleus note",
+      nucWarn == null ? "no warning" : nucWarn.contains("nucleus_blur_sigma"), true)
+check("...naming nucleolus_erode_px too",
+      nucWarn == null ? "no warning" : nucWarn.contains("nucleolus_erode_px"), true)
+
 tmp.deleteDir()
+
 println ""
 println "passed: ${passed}   FAILED: ${failed}"
 if (failed > 0) throw new AssertionError("${failed} batch check(s) failed")

@@ -98,6 +98,7 @@ reference and comparison but are no longer the primary path.
 | `RoiExport.groovy` | outline `.txt`, ROI `.zip`, measurement `.txt` |
 | `RoiDetect.groovy` | mask building (blur, threshold, fill holes, watershed) and particle detection |
 | `Run_Overview.groovy` | quick-look PNG: z-projection with detected outlines drawn on |
+| `Run_Overview_Batch.groovy` | overview PNGs for every included row of a sample sheet, and nothing else — see a dataset without segmenting it |
 | `Overview.groovy` | projection, contrast, resize, outline drawing, PNG export |
 | `Inspect_ImageFile.groovy` | list the series in a file and their dimensions, without loading pixels |
 | `Inspect_Session.groovy` | report open images, the active image, ROI Manager and measurement settings |
@@ -153,6 +154,24 @@ genuinely different projections can come out looking identical.
 `Run_Overview.groovy` exposes the rest — outline colours, line width, where the
 ROIs come from — and can take its outlines from saved `*_outline_ROIs.zip`
 files, so overviews can be regenerated later without re-running detection.
+
+`Run_Overview_Batch.groovy` does the same for a whole sample sheet, **without
+detecting anything** — projections only. It is the step before choosing
+detection settings: a tile-merged slide costs minutes per series to segment and
+needs a config you cannot write until you have seen the images. The PNGs carry
+the same `<prefix>_overview_ch<N>.png` names the nucleus path writes, and for
+the same settings are byte-identical to them, so nothing reading one has to
+know which runner produced it.
+
+```bash
+ImageJ-macosx --headless --console \
+  --run scripts/groovy/Run_Overview_Batch.groovy \
+  "sheetFile='sheets/samples.tsv',outdir='overviews',imageRoot='raw',outWidth=1000"
+```
+
+Its `batch_summary.tsv` records the **display range per channel**, which is the
+one thing a picture cannot tell you: `auto` contrast stretches whatever it is
+given, so a channel holding only noise saves a convincing picture of nothing.
 
 Every run records **the threshold it actually used**, as the pixel range it
 selected (`nucleus_threshold_used`, e.g. `90-255`), and **how much of the frame
