@@ -514,27 +514,31 @@ another machine. Bump `VERSION` in the same commit you tag.
 
 A script copied out of the repo still runs; it records `unknown`.
 
-**What the numbers mean here is the output contract**, because that is what the
-version is *for*: `_config.txt` records it so a results folder can name the code
-that made it. So the question to ask is what a reader of an old results
-directory, or a run of an old config, would find:
+**What the numbers mean here** is keyed to the output contract, because that is
+what the version is *for*: `_config.txt` records it so a results folder can name
+the code that made it. The rule is deliberately loose while the repo has one
+user — the point is that the number not be misleading, not that it be derivable:
 
 | | when |
 |---|---|
-| **PATCH** | the contract is untouched — same keys, same columns, same files |
-| **MINOR** | new parameters or columns appear, and the old ones still work |
-| **MAJOR** | an existing config or results directory stops working |
+| **PATCH** | bug fixes; new parameters or columns appear and nothing existing breaks; a small addition to the contract |
+| **MINOR** | a schema change of limited scope, or a key new capability in the pipeline |
+| **MAJOR** | a schema change large enough to break existing code or data, or a milestone for the repo as a whole — a complete end-to-end IF analysis pipeline would be one, and we are not there |
 
 `readParams` rejects unknown keys but tolerates missing ones, so adding a
-parameter leaves every older config runnable — which is why that is a minor and
-not a major. It is also why it must not be a patch: a `_config.txt` from the new
-code carries fields the tagged version never wrote, and "bug fixes only" would
-be a false statement about the file.
+parameter leaves every older config runnable — which is why that is not a major.
 
-v0.4.0 is the worked example. Four merges landed after v0.3.0; #31 alone was a
-bug fix and would have been 0.3.1, but #28 and #29 added `nucleus_circularity`,
-the five `overview_*` keys and the threshold settings, none of which existed at
-the tag.
+⚠️ **The rule says nothing about command-line surface.** Renaming a CLI flag
+breaks a *command*, not an output, so it falls through to patch. That is
+tolerable here — argparser fails loudly on an unknown flag, and there is one
+caller — but it is a gap, not a decision. `--cell_height` → `--cell_max_px` in
+0.5.1 is the worked example.
+
+⚠️ **v0.4.0 and v0.5.0 were tagged under a stricter predecessor of this rule**,
+which had new parameters as a minor rather than a patch. Under the rule above
+v0.5.0 would have been 0.4.1. They are left as they are — a published tag is
+not worth rewriting — so the history does not read consistently with this table
+before 0.5.1.
 
 ## Open items
 
