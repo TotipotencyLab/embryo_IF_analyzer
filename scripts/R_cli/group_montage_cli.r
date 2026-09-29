@@ -324,6 +324,10 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   index <- list()
   written <- character(0)
+  # Collected across every group and reported once. One line per row would be
+  # thousands on a tile scan, and a warning nobody finishes reading is a warning
+  # that does not work.
+  odd <- list()
   for (g in unique(sheet[[".group"]])) {
     rows <- sheet[sheet[[".group"]] == g, , drop = FALSE]
     if (!is.na(order_col)) {
@@ -351,12 +355,50 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
     labels <- apply(rows[, label_cols, drop = FALSE], 1L,
                     function(r) paste(as.character(r), collapse = " | "))
+
+    # Read once, scale immediately, keep only the scaled copy. The full-size
+    # image is never held beyond the line that shrinks it: an overview of a tile
+    # merge can be a hundred megapixels, and a group of them held at once is the
+    # same mistake the Fiji side had to be dug out of.
+    fitted <- lapply(seq_len(n), function(i) {
+      if (!rows[[".found"]][i]) {
+        return(NULL)
+      }
+      im <- tryCatch(magick::image_read(rows[[".path"]][i]), error = function(e) NULL)
+      if (is.null(im)) {
+        return(NULL)
+      }
+      # Checked HERE, where the image is in hand, rather than by reading every
+      # file a second time. Physical scaling only: it is the one mode that uses
+      # the sheet's dimensions, so it is the one mode where a mismatch has a
+      # consequence. Under --scale pixel the sheet's size is never consulted and
+      # an oddly-shaped file is a legitimate thing to hand in, so warning there
+      # would fire on every row of a deliberate use and teach the warning to be
+      # ignored.
+      #
+      # NB the mode test is belt-and-braces and cannot currently fail: .w_um is
+      # NA outside physical mode, so mg_aspect_off() has nothing to compare and
+      # returns NA anyway. Removing it would leave the behaviour resting on that
+      # one non-obvious fact, and computing the extents in both modes -- a
+      # plausible thing to want, so the index could report them -- would then
+      # silently switch the warning on. Stated rather than inferred.
+      if (scale_mode == "physical") {
+        got <- mg_aspect_off(im, rows[[".w_um"]][i] / rows[[".h_um"]][i])
+        if (is.finite(got)) {
+          odd[[length(odd) + 1L]] <<- list(prefix = rows[["prefix"]][i], got = got,
+                                           want = rows[[".w_um"]][i] / rows[[".h_um"]][i])
+        }
+      }
+      if (is.finite(draw_w[i]) && is.finite(draw_h[i])) {
+        mg_fit(im, draw_w[i], draw_h[i])
+      } else {
+        mg_fit(im, cell_w, cell_h)
+      }
+    })
+
     cells <- lapply(seq_len(n), function(i) {
-      mg_cell(path = if (rows[[".found"]][i]) rows[[".path"]][i] else NA_character_,
-              cell_w = cell_w, cell_h = cell_h, label = labels[i],
-              draw_w = if (is.finite(draw_w[i])) draw_w[i] else NULL,
-              draw_h = if (is.finite(draw_h[i])) draw_h[i] else NULL,
-              bg = bg)
+      mg_pad(fitted[[i]], cell_w = cell_w, cell_h = cell_h,
+             label = labels[i], bg = bg)
     })
 
     # full_width stated, not inferred: a group of one, or a half-empty last
@@ -388,6 +430,20 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       um_per_px = upp, cell_px_w = cell_w, cell_px_h = cell_h,
       width_um = rows[[".w_um"]], height_um = rows[[".h_um"]],
       montage = basename(f), stringsAsFactors = FALSE)
+  }
+
+  if (length(odd)) {
+    ex <- utils::head(odd, 3)
+    warning(length(odd), " image(s) are not the shape the sample sheet describes, ",
+            "so they are fitted into it with blank space rather than stretched to ",
+            "match: ",
+            paste(vapply(ex, function(o) sprintf("%s (%.2f vs %.2f)",
+                                                 o$prefix, o$got, o$want), character(1)),
+                  collapse = ", "),
+            if (length(odd) > 3) ", ..." else "",
+            ". Either the sheet is stale, --image_suffix picked a differently ",
+            "shaped file, or these images are not the samples the sheet names.",
+            call. = FALSE)
   }
 
   idx <- do.call(rbind, index)

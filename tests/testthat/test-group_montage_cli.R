@@ -91,6 +91,87 @@ test_that("panels are drawn to PHYSICAL size, not pixel size", {
   expect_equal(1000 / big[["w"]], upp, tolerance = 1e-6)
 })
 
+test_that("an image the wrong shape is letterboxed, not stretched", {
+  # The sheet gives the drawn size, and it used to be applied with magick's
+  # "WxH!", which forces those exact dimensions and therefore DISTORTS anything
+  # not already that shape. A squashed follicle still looks like a follicle, so
+  # nothing said so. Fitting preserves the aspect and pads the difference.
+  fx <- gm_fixture()
+  # B_s0001's sheet row says 2000x2000 px at 0.5 um = a SQUARE 1000x1000 um.
+  # Give it a 2:1 image instead.
+  magick::image_write(magick::image_blank(400, 200, color = "steelblue"),
+                      file.path(fx$img, "B_s0001_overview_ch1.png"))
+  r <- gm_run(fx)
+
+  box <- gm_bbox(file.path(r$out, "B_montage.png"), "#4682b4ff")
+  # Stretched, it would have filled a square cell: w == h. Fitted, it keeps 2:1.
+  expect_gt(box[["w"]], box[["h"]])
+  expect_equal(box[["w"]] / box[["h"]], 2, tolerance = 0.02)
+})
+
+test_that("a shape the sheet does not describe is warned about, in physical mode only", {
+  fx <- gm_fixture()
+  magick::image_write(magick::image_blank(400, 200, color = "steelblue"),
+                      file.path(fx$img, "B_s0001_overview_ch1.png"))
+
+  grab <- function(extra = character(0)) {
+    seen <- character(0)
+    withCallingHandlers(
+      suppressMessages(group_montage_cli(c(
+        "--sample_sheet", fx$sheet, "--group_by", "section_id",
+        "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
+        "--outdir", file.path(fx$dir, paste0("w", length(extra))),
+        "--cell_height", "200", extra))),
+      warning = function(cond) {
+        seen <<- c(seen, conditionMessage(cond))
+        invokeRestart("muffleWarning")
+      })
+    seen
+  }
+
+  phys <- grab()
+  expect_true(any(grepl("not the shape the sample sheet describes", phys, fixed = TRUE)))
+  expect_true(any(grepl("B_s0001", phys, fixed = TRUE)))
+
+  # ...and NOT under --scale pixel, where the sheet's dimensions are never
+  # consulted and an oddly-shaped file is a legitimate thing to hand in.
+  # Warning there would fire on every row of a deliberate use.
+  #
+  # This holds for two independent reasons -- the mode test, and .w_um being NA
+  # outside physical mode -- so it does NOT prove the mode test is doing the
+  # work. Verified: removing that test fails nothing. It is asserted here as
+  # the behaviour, not as a guard on the implementation.
+  pix <- grab(c("--scale", "pixel"))
+  expect_false(any(grepl("not the shape the sample sheet describes", pix, fixed = TRUE)))
+  # The fixture still warns about its missing image, so an empty result would
+  # not prove the check was skipped rather than the warnings being swallowed.
+  expect_true(any(grepl("not found", pix, fixed = TRUE)))
+})
+
+test_that("a correctly shaped image is not warned about", {
+  # The rounding a resize introduces must not trip it: Fiji's overview of an
+  # 11344 x 9590 series comes out 1000 x 846, which is 0.07% off.
+  fx <- gm_fixture()
+  magick::image_write(magick::image_blank(1000, 846, color = "steelblue"),
+                      file.path(fx$img, "B_s0001_overview_ch1.png"))
+  s <- utils::read.delim(fx$sheet, stringsAsFactors = FALSE)
+  s$size_x[s$prefix == "B_s0001"] <- 11344
+  s$size_y[s$prefix == "B_s0001"] <- 9590
+  utils::write.table(s, fx$sheet, sep = "\t", quote = FALSE, row.names = FALSE)
+
+  seen <- character(0)
+  withCallingHandlers(
+    suppressMessages(group_montage_cli(c(
+      "--sample_sheet", fx$sheet, "--group_by", "section_id",
+      "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
+      "--outdir", file.path(fx$dir, "ok"), "--cell_height", "200"))),
+    warning = function(cond) {
+      seen <<- c(seen, conditionMessage(cond))
+      invokeRestart("muffleWarning")
+    })
+  expect_false(any(grepl("not the shape", seen, fixed = TRUE)))
+})
+
 test_that("--scale pixel draws them the same size, which is what physical is not", {
   # The discrimination half: without this, "the sizes differ" is equally
   # consistent with the scaling never having run.
@@ -358,6 +439,19 @@ test_that("the sheet reader keeps only the machine columns it is asked for", {
 
   expect_error(.cli_read_sample_sheet(fx$sheet, keep_machine = "section_id"),
                "not machine columns")
+})
+
+test_that("mg_aspect_off tolerates a resize's rounding and catches a real mismatch", {
+  skip_if_no_pkg("magick")
+  # 11344 x 9590 resized to 1000 wide gives 846 -- 0.07% off, which must pass.
+  im <- magick::image_blank(1000, 846, color = "white")
+  expect_true(is.na(mg_aspect_off(im, 11344 / 9590)))
+  # A 2:1 image where a square was described misses by 100%.
+  wide <- magick::image_blank(400, 200, color = "white")
+  expect_equal(mg_aspect_off(wide, 1), 2)
+  # Nothing to compare against is not a mismatch.
+  expect_true(is.na(mg_aspect_off(wide, NA_real_)))
+  expect_true(is.na(mg_aspect_off(NULL, 1)))
 })
 
 test_that("mg_nice_number picks from the 1/2/5 decade series", {
