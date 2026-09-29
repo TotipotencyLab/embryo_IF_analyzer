@@ -56,14 +56,32 @@ suppressPackageStartupMessages({
     if (is.na(.THIS_DIR)) stop("cannot locate cli_helpers.r", call. = FALSE)
     sys.source(file.path(.THIS_DIR, "cli_helpers.r"), envir = globalenv())
   }
-  # Only the one file, not the whole of scripts/R/. This CLI reads finished
+  # Only these files, not the whole of scripts/R/. This CLI reads finished
   # tables and does no geometry, so pulling in the sf-dependent library would
   # add failure modes it cannot hit.
-  if (!exists("join_feature_table", mode = "function")) {
-    dir <- if (is.na(rlib)) file.path(.THIS_DIR, "..", "R") else rlib
-    f <- file.path(dir, "feature_join.r")
+  #
+  # classify_features.r is here for ONE constant: compose_feature_class() in
+  # feature_join.r writes CLASS_UNCLASSIFIED into empty class cells, so the
+  # labels it makes agree with the ones classify_features() wrote. Sourcing
+  # feature_join.r alone left that name unbound and every --feature_class_by
+  # run died with "object 'CLASS_UNCLASSIFIED' not found" -- at the point of
+  # use, after the input had been read and joined. It is safe to add: the file
+  # is self-contained, declaring constants and functions and requiring no
+  # package at all, which is why it does not reintroduce what the narrow
+  # sourcing above exists to avoid.
+  #
+  # The test suite could not have caught this. It pre-sources the whole of
+  # scripts/R/, so the name was always bound there; only the CLI's own,
+  # deliberately narrower sourcing was short. Hence the subprocess test in
+  # test-count_montage_cli.R, which runs this file the way a user does.
+  dir <- if (is.na(rlib)) file.path(.THIS_DIR, "..", "R") else rlib
+  needed <- c(feature_join.r = "join_feature_table",
+              classify_features.r = "CLASS_UNCLASSIFIED")
+  for (fname in names(needed)) {
+    if (exists(needed[[fname]])) next
+    f <- file.path(dir, fname)
     if (!file.exists(f)) {
-      stop("cannot locate feature_join.r; pass --rlib_path", call. = FALSE)
+      stop("cannot locate ", fname, "; pass --rlib_path", call. = FALSE)
     }
     sys.source(f, envir = globalenv())
   }
