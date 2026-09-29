@@ -161,18 +161,38 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
          call. = FALSE)
   }
 
-  # size_x/size_y/pixel_width/pixel_height are machine columns, and the sheet
-  # reader drops those by default so they cannot land on an output row. Physical
-  # scaling is exactly the case that needs them, so they are asked for by name.
-  want <- if (scale_mode == "physical") {
+  # Every column this run names has to be resolved BEFORE the sheet is read,
+  # because the reader drops machine columns and cannot know which of them this
+  # step needs. Two kinds have to be kept:
+  #
+  #   - the four physical-size columns, when scaling physically;
+  #   - whatever the USER named. `--order_by series_index` is the obvious and
+  #     correct thing to ask for -- with serial sections the order IS the
+  #     information -- and series_index is a machine column, so asking only for
+  #     the physical four made a sensible command fail with "--order_by names no
+  #     column of the sample sheet". --group_by, --label_by and --image_path_by
+  #     can each name one just as easily.
+  group_col <- .gm_one(.cli_resolve_arg(argv$group_by, "--group_by"))
+  order_col <- .gm_one(.cli_resolve_arg(argv$order_by, "--order_by"))
+  label_cols <- .cli_resolve_arg(argv$label_by, "--label_by")
+  if (!length(label_cols)) label_cols <- "prefix"
+
+  physical_cols <- if (scale_mode == "physical") {
     c("size_x", "size_y", "pixel_width", "pixel_height")
   } else {
     character(0)
   }
+  named_cols <- c(group_col, order_col, label_cols, path_by)
+  named_cols <- named_cols[!is.na(named_cols) & nzchar(named_cols)]
+  # Intersected rather than passed straight through: keep_machine refuses a name
+  # that is not a machine column, and naming an ordinary one is the common case.
+  # This asks only for those that would otherwise be dropped.
+  want <- base::intersect(unique(c(physical_cols, named_cols)),
+                          .cli_sheet_machine_columns())
+
   sheet <- .cli_read_sample_sheet(.gm_one(.cli_resolve_arg(argv$sample_sheet, "--sample_sheet")),
                                   keep_machine = want)
 
-  group_col <- .gm_one(.cli_resolve_arg(argv$group_by, "--group_by"))
   if (!group_col %in% colnames(sheet)) {
     stop("--group_by names no column of the sample sheet: ", group_col,
          "\n  available: ", paste(colnames(sheet), collapse = ", "), call. = FALSE)
@@ -258,7 +278,11 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   if (scale_mode == "physical") {
     longest <- pmax(sheet[[".w_um"]], sheet[[".h_um"]])
     if (spec == "run") {
-      run_upp <- mg_um_per_px(longest[sheet[[".found"]]], cell_px)
+      # Every row, not only the ones whose image turned up. The sheet knows a
+      # sample's physical size whether or not its PNG exists, and a group whose
+      # images are ALL missing must still get a montage of placeholders rather
+      # than an error -- the whole point is that a missing panel is visible.
+      run_upp <- mg_um_per_px(longest, cell_px)
     } else if (spec != "group") {
       run_upp <- suppressWarnings(as.numeric(spec))
       if (!is.finite(run_upp) || run_upp <= 0) {
@@ -272,12 +296,10 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
   out_prefix <- .gm_one(.cli_resolve_arg(argv$output_prefix, "--output_prefix"), "")
 
-  order_col <- .gm_one(.cli_resolve_arg(argv$order_by, "--order_by"))
   if (!is.na(order_col) && !order_col %in% colnames(sheet)) {
-    stop("--order_by names no column of the sample sheet: ", order_col, call. = FALSE)
+    stop("--order_by names no column of the sample sheet: ", order_col,
+         "\n  available: ", paste(colnames(sheet), collapse = ", "), call. = FALSE)
   }
-  label_cols <- .cli_resolve_arg(argv$label_by, "--label_by")
-  if (!length(label_cols)) label_cols <- "prefix"
   absent_l <- setdiff(label_cols, colnames(sheet))
   if (length(absent_l)) {
     stop("--label_by names no column of the sample sheet: ",
@@ -301,7 +323,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     cell_h <- cell_px
     if (scale_mode == "physical") {
       longest <- pmax(rows[[".w_um"]], rows[[".h_um"]])
-      upp <- if (is.finite(run_upp)) run_upp else mg_um_per_px(longest[rows[[".found"]]], cell_px)
+      upp <- if (is.finite(run_upp)) run_upp else mg_um_per_px(longest, cell_px)
       draw_w <- rows[[".w_um"]] / upp
       draw_h <- rows[[".h_um"]] / upp
       # An explicit --um_per_px can make a panel larger than --cell_height; the

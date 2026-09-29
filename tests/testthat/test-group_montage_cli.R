@@ -38,6 +38,10 @@ gm_fixture <- function(env = parent.frame()) {
     include      = c("true", "true", "true", "true", "true", "false"),
     section_id   = c("A", "A", "B", "B", "B", "C"),
     ord          = c(2, 1, 1, 2, 3, 1),
+    # A real samples.tsv carries these, and they are MACHINE columns -- which
+    # is exactly why ordering by one has to keep working.
+    series_index = c(11, 10, 20, 21, 22, 30),
+    series_name  = c("s11", "s10", "s20", "s21", "s22", "s30"),
     # A's sections are 500 um, B's largest is 1000 um -- so a per-GROUP scale
     # and a per-RUN scale are genuinely different numbers here.
     size_x       = c(1000, 1000, 2000, 1000, 2000, 10),
@@ -117,6 +121,28 @@ test_that("a missing image still occupies a labelled cell", {
   expect_identical(sort(b$col), 1:3)
 })
 
+test_that("a group whose images are ALL missing still gets a montage", {
+  # Found while fixing --order_by on a machine column: grouping by series_index
+  # puts B_s0003 -- the row whose image is absent -- alone in its own group, and
+  # the scale was being computed only from panels that had turned up. An empty
+  # group then had nothing to scale to and the whole run died. The sheet knows a
+  # sample's physical size whether or not its PNG exists, so the scale comes
+  # from there and the group gets a montage of placeholders, which is the entire
+  # point of drawing missing images.
+  fx <- gm_fixture()
+  out <- file.path(fx$dir, "allmissing")
+  idx <- suppressMessages(suppressWarnings(group_montage_cli(c(
+    "--sample_sheet", fx$sheet, "--group_by", "series_index",
+    "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
+    "--outdir", out, "--cell_height", "150"))))
+
+  gone <- idx[idx$prefix == "B_s0003", ]
+  expect_identical(nrow(gone), 1L)
+  expect_identical(gone$status, "missing")
+  expect_true(is.finite(gone$um_per_px))
+  expect_true(file.exists(file.path(out, gone$montage)))
+})
+
 test_that("--on_missing error refuses rather than drawing a placeholder", {
   fx <- gm_fixture()
   expect_error(
@@ -139,6 +165,43 @@ test_that("the index records the grid position and the files written", {
   a <- r$idx[r$idx$group == "A", ]
   expect_identical(a$prefix[1], "A_s0002")
   expect_true(all(file.exists(file.path(r$out, unique(r$idx$montage)))))
+})
+
+test_that("--order_by works on a MACHINE column, e.g. series_index", {
+  # The reader drops machine columns so they cannot land on an output row, and
+  # the CLI has to ask for the ones it needs by name. It asked only for the four
+  # physical-size columns, so "--order_by series_index" -- the obvious thing to
+  # want, since with serial sections the order IS the information -- failed with
+  # "--order_by names no column of the sample sheet".
+  fx <- gm_fixture()
+  r <- gm_run(fx, c("--order_by", "series_index"))
+  a <- r$idx[r$idx$group == "A", ]
+  # A_s0002 carries series_index 10 and A_s0001 carries 11, so ordering by it
+  # reverses the sheet order -- which sheet order alone could not show.
+  expect_identical(a$prefix, c("A_s0002", "A_s0001"))
+})
+
+test_that("--label_by and --group_by also accept a machine column", {
+  fx <- gm_fixture()
+  r <- gm_run(fx, c("--label_by", "series_name"))
+  expect_identical(sum(r$idx$status == "ok"), 4L)
+
+  # Called directly: gm_run() already supplies --group_by, and argparser
+  # refuses the flag twice.
+  out2 <- file.path(fx$dir, "bymachine")
+  idx2 <- suppressMessages(suppressWarnings(group_montage_cli(c(
+    "--sample_sheet", fx$sheet, "--group_by", "series_index",
+    "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
+    "--outdir", out2, "--cell_height", "150"))))
+  # one group per row, since series_index is unique
+  expect_length(unique(idx2$group), 5L)
+})
+
+test_that("--order_by on a column that is in no sheet still fails, and says what is there", {
+  fx <- gm_fixture()
+  expect_error(gm_run(fx, c("--order_by", "not_a_column")),
+               "names no column of the sample sheet")
+  expect_error(gm_run(fx, c("--order_by", "not_a_column")), "available: ")
 })
 
 test_that("--um_per_px run gives every montage one scale; group does not", {
