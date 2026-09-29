@@ -513,6 +513,10 @@ sizes — this dataset holds 0.2227 and 0.4456 µm pixels — and drawing them e
 makes one follicle look like two different ones. A row with no usable
 `pixel_width` is an error rather than a quiet fall back to pixel scaling.
 
+`--cell_max_px` bounds the cell's **longest** side; the cell itself is the
+bounding box of the panels the group actually holds, so it is square only when
+they are. `cell_px_w`/`cell_px_h` in the index record what was used.
+
 `--um_per_px group` (the default) fits each group's largest panel to the cell;
 `run` uses one scale for every montage, so two of them can be compared with each
 other. Because `group` means two montages are **not** comparable, the scale bar

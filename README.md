@@ -312,6 +312,10 @@ montage:
   same pixel dimensions can be different physical sizes, so equal-pixel scaling
   would draw one follicle at two sizes in the same picture. A row with no
   `pixel_width` is an error, never a quiet fall back.
+- **An image that is not the shape the sheet describes is fitted, not
+  stretched**, and reported once per run. Under `--scale physical` only — that
+  is the one mode that consults the sheet's dimensions, so the one mode where a
+  mismatch matters.
 
 A group holding a **single** image is drawn like any other: a section that
 yielded one series still belongs beside its neighbours, and passing `--ncol`
@@ -319,6 +323,13 @@ explicitly gives every montage the same width so they line up. But if *every*
 group holds one sample the run warns, because then each montage is one image
 under a new name and nothing is being placed beside anything — usually a column
 was named that is unique per row.
+
+`--cell_max_px` is the cell's **longest** side, not its height: under
+`--scale pixel` each image's longest side becomes that, and under
+`--scale physical` only the largest panel's does, with the rest proportionally
+smaller. The cell is then the bounding box of the panels the group actually
+has — a group of wide sections gets a wide cell, not a square one with white
+above and below.
 
 By default each group gets its own scale, so its largest section fills a cell —
 which means two montages are *not* comparable with each other. That is why the

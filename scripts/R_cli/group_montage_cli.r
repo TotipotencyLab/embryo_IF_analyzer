@@ -112,8 +112,11 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = "sheet column(s) for the per-panel label [default: the prefix]")
   p <- add_argument(p, "--ncol", short = "-n", type = "integer", default = 0L,
                     help = "grid columns [default: about the square root of the group size]")
-  p <- add_argument(p, "--cell_height", short = "-H", type = "integer", default = 500L,
-                    help = "cell side in output pixels [default: 500]")
+  p <- add_argument(p, "--cell_max_px", short = "-C", type = "integer", default = 500L,
+                    help = paste("the cell's LONGEST side, in output pixels [default: 500].",
+                                 "Under --scale pixel each image's longest side becomes this;",
+                                 "under --scale physical only the largest panel's does, and",
+                                 "the rest stay proportionally smaller"))
   p <- add_argument(p, "--scale", short = "-S", type = "character", default = "physical",
                     help = "physical | pixel [default: physical]")
   p <- add_argument(p, "--um_per_px", short = "-U", type = "character", default = "group",
@@ -288,7 +291,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   }
 
   # --- the scale ----------------------------------------------------------------
-  cell_px <- max(50L, as.integer(argv$cell_height))
+  cell_px <- max(50L, as.integer(argv$cell_max_px))
   spec <- tolower(.gm_one(.cli_resolve_arg(argv$um_per_px, "--um_per_px"), "group"))
   run_upp <- NA_real_
   if (scale_mode == "physical") {
@@ -339,18 +342,11 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     upp <- NA_real_
     draw_w <- rep(NA_real_, n)
     draw_h <- rep(NA_real_, n)
-    cell_w <- cell_px
-    cell_h <- cell_px
     if (scale_mode == "physical") {
       longest <- pmax(rows[[".w_um"]], rows[[".h_um"]])
       upp <- if (is.finite(run_upp)) run_upp else mg_um_per_px(longest, cell_px)
       draw_w <- rows[[".w_um"]] / upp
       draw_h <- rows[[".h_um"]] / upp
-      # An explicit --um_per_px can make a panel larger than --cell_height; the
-      # cell grows to hold it rather than the panel being quietly shrunk, which
-      # would break the physical claim to keep a number tidy.
-      cell_w <- max(cell_px, ceiling(max(draw_w[is.finite(draw_w)], 0)))
-      cell_h <- max(cell_px, ceiling(max(draw_h[is.finite(draw_h)], 0)))
     }
 
     labels <- apply(rows[, label_cols, drop = FALSE], 1L,
@@ -392,9 +388,40 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       if (is.finite(draw_w[i]) && is.finite(draw_h[i])) {
         mg_fit(im, draw_w[i], draw_h[i])
       } else {
-        mg_fit(im, cell_w, cell_h)
+        # Pixel mode: no physical size to honour, so each image's LONGEST side
+        # becomes the budget. Fitting inside a square box does exactly that and
+        # keeps the aspect; the cell below is then measured, not assumed.
+        mg_fit(im, cell_px, cell_px)
       }
     })
+
+    # The cell is the bounding box of the panels this group ACTUALLY has, not a
+    # square.
+    #
+    # It used to be floored at the cell size on BOTH axes, which made it square
+    # every time: --um_per_px group picks the scale so the largest panel's
+    # longest side is exactly cell_px, so the other axis was always short and
+    # always got padded back up. A group of wide sections came out ~60% white,
+    # and a set of QC strips worse. Nobody chose that; it is what flooring per
+    # axis does, and it was invisible while every test image was square.
+    #
+    # Measured from the fitted images rather than from the sheet, so an image
+    # that is not the shape the sheet describes -- letterboxed above, warned
+    # about -- still gets a cell that fits it.
+    dims <- lapply(fitted, function(im) {
+      if (is.null(im)) return(c(0L, 0L))
+      info <- magick::image_info(im)
+      c(info$width, info$height)
+    })
+    cell_w <- max(1L, ceiling(max(vapply(dims, `[`, numeric(1), 1))))
+    cell_h <- max(1L, ceiling(max(vapply(dims, `[`, numeric(1), 2))))
+    # A group whose images are all missing has no fitted panel to measure, so
+    # it falls back to the size that was asked for -- a montage of placeholders
+    # is still a montage, and an empty group must not vanish.
+    if (cell_w <= 1L || cell_h <= 1L) {
+      cell_w <- cell_px
+      cell_h <- cell_px
+    }
 
     cells <- lapply(seq_len(n), function(i) {
       mg_pad(fitted[[i]], cell_w = cell_w, cell_h = cell_h,

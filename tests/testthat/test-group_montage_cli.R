@@ -67,7 +67,7 @@ gm_run <- function(fx, extra = character(0), out = NULL) {
   idx <- suppressMessages(suppressWarnings(group_montage_cli(c(
     "--sample_sheet", fx$sheet, "--group_by", "section_id",
     "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
-    "--outdir", out, "--cell_height", "300", "--ncol", "3", extra))))
+    "--outdir", out, "--cell_max_px", "300", "--ncol", "3", extra))))
   list(idx = idx, out = out)
 }
 
@@ -121,7 +121,7 @@ test_that("a shape the sheet does not describe is warned about, in physical mode
         "--sample_sheet", fx$sheet, "--group_by", "section_id",
         "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
         "--outdir", file.path(fx$dir, paste0("w", length(extra))),
-        "--cell_height", "200", extra))),
+        "--cell_max_px", "200", extra))),
       warning = function(cond) {
         seen <<- c(seen, conditionMessage(cond))
         invokeRestart("muffleWarning")
@@ -164,7 +164,7 @@ test_that("a correctly shaped image is not warned about", {
     suppressMessages(group_montage_cli(c(
       "--sample_sheet", fx$sheet, "--group_by", "section_id",
       "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
-      "--outdir", file.path(fx$dir, "ok"), "--cell_height", "200"))),
+      "--outdir", file.path(fx$dir, "ok"), "--cell_max_px", "200"))),
     warning = function(cond) {
       seen <<- c(seen, conditionMessage(cond))
       invokeRestart("muffleWarning")
@@ -190,7 +190,7 @@ test_that("a missing image still occupies a labelled cell", {
     idx <- suppressMessages(group_montage_cli(c(
       "--sample_sheet", fx$sheet, "--group_by", "section_id",
       "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
-      "--outdir", out, "--cell_height", "300", "--ncol", "3"))),
+      "--outdir", out, "--cell_max_px", "300", "--ncol", "3"))),
     "not found")
 
   b <- idx[idx$group == "B", ]
@@ -217,11 +217,42 @@ test_that("a group of one is drawn, and --ncol makes it the same width as the re
 
   files <- file.path(r2$out, unique(r2$idx$montage))
   expect_true(all(file.exists(files)))
-  # An explicit --ncol fixes the width, so the one-panel montage lines up with
-  # the others instead of being a third of their size.
+  # An explicit --ncol fixes the COLUMN COUNT, so the one-panel montage is a
+  # full-width row rather than a third of one.
+  expect_true(all(r2$idx$col <= 3L))
+  expect_identical(unique(r2$idx$cell_px_w[r2$idx$group == "SOLO"]),
+                   unique(r2$idx$cell_px_w[r2$idx$group == "A"]))
+
+  # ...and therefore the same width, HERE. Note what this does and does not
+  # prove: the cell is the bounding box of each group's own panels, so equal
+  # widths follow from these groups holding equally shaped images, not from the
+  # grid forcing it. A group of differently shaped panels gets a different cell
+  # -- asserted separately below -- and so a different width.
   widths <- vapply(files, function(f) magick::image_info(magick::image_read(f))$width,
                    numeric(1))
   expect_length(unique(widths), 1L)
+})
+
+test_that("the cell is the bounding box of the group, not a square", {
+  # The floor used to apply to BOTH axes, which made every cell square: the
+  # scale is chosen so the largest panel's longest side is exactly the budget,
+  # so the other axis was always short and always padded back up. A group of
+  # wide sections came out most of the way white.
+  fx <- gm_fixture()
+  for (p in c("B_s0001", "B_s0002")) {
+    magick::image_write(magick::image_blank(400, 100, color = "steelblue"),
+                        file.path(fx$img, paste0(p, "_overview_ch1.png")))
+  }
+  s <- utils::read.delim(fx$sheet, stringsAsFactors = FALSE)
+  s$size_x[s$prefix %in% c("B_s0001", "B_s0002")] <- 2000   # 1000 um wide
+  s$size_y[s$prefix %in% c("B_s0001", "B_s0002")] <- 500    #  250 um tall
+  utils::write.table(s, fx$sheet, sep = "\t", quote = FALSE, row.names = FALSE)
+
+  r <- gm_run(fx, c("--scale", "pixel"))
+  b <- r$idx[r$idx$group == "B", ]
+  expect_lt(unique(b$cell_px_h), unique(b$cell_px_w))
+  # 4:1 images, so the cell follows them rather than being squared off.
+  expect_equal(unique(b$cell_px_w) / unique(b$cell_px_h), 4, tolerance = 0.05)
 })
 
 test_that("a grouping column that separates nothing is warned about", {
@@ -232,7 +263,7 @@ test_that("a grouping column that separates nothing is warned about", {
     suppressMessages(group_montage_cli(c(
       "--sample_sheet", fx$sheet, "--group_by", "series_index",
       "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
-      "--outdir", file.path(fx$dir, "degen"), "--cell_height", "150"))),
+      "--outdir", file.path(fx$dir, "degen"), "--cell_max_px", "150"))),
     "every sample in its own group")
 
   # ...and a MIXTURE is not warned about. This needs a fixture that ACTUALLY
@@ -255,7 +286,7 @@ test_that("a grouping column that separates nothing is warned about", {
     suppressMessages(group_montage_cli(c(
       "--sample_sheet", fx2$sheet, "--group_by", "section_id",
       "--image_dir", fx2$img, "--image_suffix", "_overview_ch1.png",
-      "--outdir", file.path(fx2$dir, "mixed"), "--cell_height", "150"))),
+      "--outdir", file.path(fx2$dir, "mixed"), "--cell_max_px", "150"))),
     warning = function(cond) {
       seen <<- c(seen, conditionMessage(cond))
       invokeRestart("muffleWarning")
@@ -279,7 +310,7 @@ test_that("a group whose images are ALL missing still gets a montage", {
   idx <- suppressMessages(suppressWarnings(group_montage_cli(c(
     "--sample_sheet", fx$sheet, "--group_by", "series_index",
     "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
-    "--outdir", out, "--cell_height", "150"))))
+    "--outdir", out, "--cell_max_px", "150"))))
 
   gone <- idx[idx$prefix == "B_s0003", ]
   expect_identical(nrow(gone), 1L)
@@ -337,7 +368,7 @@ test_that("--label_by and --group_by also accept a machine column", {
   idx2 <- suppressMessages(suppressWarnings(group_montage_cli(c(
     "--sample_sheet", fx$sheet, "--group_by", "series_index",
     "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
-    "--outdir", out2, "--cell_height", "150"))))
+    "--outdir", out2, "--cell_max_px", "150"))))
   # one group per row, since series_index is unique
   expect_length(unique(idx2$group), 5L)
 })
@@ -401,7 +432,7 @@ test_that("--image_path_by takes paths from the sheet, and excludes the built fo
   out <- file.path(fx$dir, "bycol")
   idx <- suppressMessages(suppressWarnings(group_montage_cli(c(
     "--sample_sheet", fx$sheet, "--group_by", "section_id",
-    "--image_path_by", "img", "--outdir", out, "--cell_height", "200"))))
+    "--image_path_by", "img", "--outdir", out, "--cell_max_px", "200"))))
   expect_identical(sum(idx$status == "ok"), 4L)
 
   expect_error(
