@@ -118,25 +118,47 @@ mg_cell <- function(path, cell_w, cell_h, label = "", draw_w = NULL, draw_h = NU
 
 #' Lay cells out in a grid
 #'
-#' Rows are appended left to right, then padded to the full grid width and
-#' stacked -- padding each row explicitly rather than letting image_append
-#' decide, so the fill colour is the one that was asked for.
+#' Rows are appended left to right, then padded to the width of the widest row
+#' and stacked -- padding explicitly rather than letting image_append decide,
+#' so the fill colour is the one that was asked for rather than whatever the
+#' library defaults to.
 #'
-#' @param cells list of magick images, all the same size
+#' Cells need NOT all be the same size. The group montage pads every cell to a
+#' common square before calling this; montage_qc_cli.r does not, because its
+#' three panels are three renderings of ONE image scaled to a common height, and
+#' padding them to a common width would put gaps between panels that are meant
+#' to be read as a strip. A single row of equal-height cells therefore passes
+#' through unchanged, which is what lets that CLI adopt this function without
+#' its output moving a pixel.
+#'
+#' @param cells list of magick images
 #' @param ncol columns
 #' @param bg pad colour
+#' @param full_width pad every row to exactly this width. Given by a caller that
+#'   knows the grid it wants -- the group montage passes cell_width * ncol so a
+#'   half-empty last row, or a group holding one image, still comes out the same
+#'   width as every other montage in the run. NULL means "as wide as the widest
+#'   row", which is what a single strip of unequal panels needs. Inferring this
+#'   from the first cell was wrong in both directions: it padded a strip that
+#'   should not be padded, and it silently assumed every cell was uniform.
 #' @return a magick image
-mg_grid <- function(cells, ncol, bg = "white") {
+mg_grid <- function(cells, ncol, bg = "white", full_width = NULL) {
   if (!length(cells)) {
     stop("A montage of no cells is not a montage.", call. = FALSE)
   }
   ncol <- max(1L, as.integer(ncol))
-  info <- magick::image_info(cells[[1]])
-  full_w <- info$width * ncol
   rows <- split(seq_along(cells), ceiling(seq_along(cells) / ncol))
-  strips <- lapply(rows, function(ix) {
-    strip <- magick::image_append(do.call(c, cells[ix]))
-    magick::image_extent(strip, paste0(full_w, "x", magick::image_info(strip)$height),
+  strips <- lapply(rows, function(ix) magick::image_append(do.call(c, cells[ix])))
+  full_w <- if (is.null(full_width)) {
+    max(vapply(strips, function(s) magick::image_info(s)$width, numeric(1)))
+  } else {
+    as.numeric(full_width)
+  }
+  strips <- lapply(strips, function(s) {
+    if (magick::image_info(s)$width == full_w) {
+      return(s)
+    }
+    magick::image_extent(s, paste0(full_w, "x", magick::image_info(s)$height),
                          gravity = "northwest", color = bg)
   })
   return(magick::image_append(do.call(c, strips), stack = TRUE))
@@ -205,4 +227,27 @@ mg_scale_bar <- function(img, um_per_px, frac = 0.18, color = "black",
   }
   return(magick::image_composite(img, plate,
                                  offset = paste0("+", off_x, "+", off_y)))
+}
+
+#' Write a montage, at a stated bit depth
+#'
+#' ⚠️ magick composes in 16 bits internally, and a montage whose pixels all fit
+#' in 8 is nonetheless written as 16-bit once a blank is appended to it -- which
+#' is what adding a title band does. Measured on the QC montage: 8-bit without a
+#' title, 16-bit with one, the file about twice the size, and every flat grey
+#' shifted by 1/255 on the way back out. Invisible, and still a changed file for
+#' no gain.
+#'
+#' Both callers build their montages from 8-bit PNGs (Fiji's overviews, and a
+#' ggplot panel rendered to PNG), so 8 is not a downgrade here -- it is the
+#' depth the inputs already had. Stated rather than left to the library, so the
+#' output does not depend on whether a band happened to be added.
+#'
+#' @param img a magick image
+#' @param path file to write
+#' @param depth bits per channel
+#' @return path, invisibly
+mg_write <- function(img, path, depth = 8L) {
+  magick::image_write(magick::image_convert(img, depth = depth), path)
+  return(invisible(path))
 }

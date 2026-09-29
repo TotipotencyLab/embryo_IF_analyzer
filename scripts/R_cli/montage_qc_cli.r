@@ -59,9 +59,26 @@ suppressPackageStartupMessages({
 })()
 
 .montage_source_helpers <- function() {
-  if (exists(".cli_resolve_arg", mode = "function")) return(invisible(NULL))
-  if (is.na(.THIS_DIR)) stop("cannot locate cli_helpers.r", call. = FALSE)
-  sys.source(file.path(.THIS_DIR, "cli_helpers.r"), envir = globalenv())
+  if (!exists(".cli_resolve_arg", mode = "function")) {
+    if (is.na(.THIS_DIR)) stop("cannot locate cli_helpers.r", call. = FALSE)
+    sys.source(file.path(.THIS_DIR, "cli_helpers.r"), envir = globalenv())
+  }
+  # The compositing, shared with group_montage_cli.r. Named with a symbol it
+  # must supply, so an omission shows up where this list is edited rather than
+  # at the point of use -- the failure count_features_cli had.
+  if (!exists("mg_grid", mode = "function")) {
+    f <- file.path(.THIS_DIR, "..", "R", "montage_grid.r")
+    if (!file.exists(f)) {
+      stop("cannot locate montage_grid.r; pass --rlib_path", call. = FALSE)
+    }
+    sys.source(f, envir = globalenv())
+  }
+}
+
+#' One value, or a default. See group_montage_cli.r's .gm_one for why.
+.mqc_one <- function(v, default = NA_character_) {
+  if (length(v) == 0L) return(default)
+  return(as.character(v)[1])
 }
 
 # ------------------------------------------------------------------------------
@@ -109,6 +126,10 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = "height in px each panel is scaled to")
   p <- add_argument(p, "--no_labels", short = "-N", flag = TRUE,
                     help = "omit the panel captions")
+  p <- add_argument(p, "--title", short = "-t", type = "character", default = NA,
+                    help = "montage title [default: the sample name]")
+  p <- add_argument(p, "--no_title", short = "-Z", flag = TRUE,
+                    help = "omit the title band")
   p <- add_argument(p, "--rlib_path", short = "-R", type = "character",
                     help = "path to scripts/R [default: alongside this script]")
 
@@ -272,6 +293,13 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   }
 
   # --- compose ----------------------------------------------------------------
+  # Layout and title come from scripts/R/montage_grid.r, shared with
+  # group_montage_cli.r. The panels are NOT padded to a common width here: they
+  # are three renderings of one image scaled to a common height, and padding
+  # them apart would put gaps into a strip meant to be read across. mg_grid()
+  # takes no full_width for that reason, and a single row of equal-height cells
+  # passes through it unchanged -- verified byte-identical to the
+  # image_append() this replaced.
   h <- argv$panel_height
   imgs <- lapply(names(panels), function(nm) {
     im <- magick::image_scale(panels[[nm]], paste0("x", h))
@@ -282,8 +310,17 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     }
     im
   })
-  montage <- magick::image_append(do.call(c, imgs))
-  magick::image_write(montage, argv$output)
+  montage <- mg_grid(imgs, ncol = length(imgs))
+
+  # A title, because a QC montage on its own says nothing about WHICH sample it
+  # is: the panel captions name the panels, and the filename is only visible
+  # from outside the picture. Opened from a folder of them, or pasted into a
+  # note, an untitled montage is unattributable.
+  ttl <- .mqc_one(.cli_resolve_arg(argv$title, "--title"), sample_name)
+  if (!argv$no_title && nzchar(ttl)) {
+    montage <- mg_title(montage, ttl)
+  }
+  mg_write(montage, argv$output)
 
   info <- magick::image_info(montage)
   message("Wrote ", argv$output, " (", info$width, "x", info$height, ", ",

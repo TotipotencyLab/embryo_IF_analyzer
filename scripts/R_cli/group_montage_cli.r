@@ -359,7 +359,10 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
               bg = bg)
     })
 
-    img <- mg_grid(cells, ncol = ncol, bg = bg)
+    # full_width stated, not inferred: a group of one, or a half-empty last
+    # row, still comes out the width of a full grid, so every montage in the
+    # run lines up when they are read side by side.
+    img <- mg_grid(cells, ncol = ncol, bg = bg, full_width = cell_w * ncol)
     if (scale_mode == "physical" && !argv$no_scale_bar) {
       img <- mg_scale_bar(img, upp)
     }
@@ -371,7 +374,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     img <- mg_title(img, ttl, bg = bg)
 
     f <- file.path(outdir, paste0(out_prefix, .gm_safe(g), "_montage.png"))
-    magick::image_write(img, f)
+    mg_write(img, f)
     written <- c(written, f)
     info <- magick::image_info(img)
     message("  ", g, ": ", n, " panel(s), ", ncol, " col -> ", basename(f),
