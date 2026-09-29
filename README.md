@@ -138,6 +138,11 @@ the outlines come from DNA and drawing them over the other channels is how you
 check a signal against the compartment it should be in. Both are wanted at once
 by `montage_qc_cli.r`, which is why they are separate files.
 
+The QC montage is **titled with the sample name** by default (`--title` to
+override, `--no_title` to omit) — three panels and their captions say what each
+panel is, but nothing in the picture says which sample it belongs to once it is
+open in a viewer or pasted into a note.
+
 The **projection, output size and contrast** are settings: `max` and 500 px
 wide by default, and a width of `0` means the image's own size (give one of
 width/height and the other follows the aspect ratio). 500 px of a merged tile

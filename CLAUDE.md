@@ -222,6 +222,18 @@ loop, including how to diff.
   vline when it is x and an hline when it is y. That deliberately removes the
   whole question of matching lines to plots by position, and with it the recycle
   / skip / off-by-one failures that come with it.
+  **`scripts/R/montage_grid.r` is the compositing both montage CLIs share** —
+  cell, grid, title, scale bar, and `mg_write()`. Two things it settles. Its
+  `full_width` is *given*, never inferred from the first cell: the group montage
+  passes `cell * ncol` so a group of one still comes out the width of a full
+  grid, while `montage_qc_cli.r` passes nothing, because its three panels are
+  three renderings of one image scaled to a common height and padding them apart
+  would put gaps into a strip meant to be read across. And `mg_write()` states
+  the bit depth, because magick composes in 16 bits and appending a title band
+  promoted the whole montage to a 16-bit PNG — twice the file, every flat grey
+  shifted by 1/255, for no visible gain. The inputs are 8-bit; the output says
+  so rather than depending on whether a band happened to be added.
+
   **`group_montage_cli.r` tiles one group's images into a single picture**, for
   the case where a count has to be made or checked by eye — an ovary is cut into
   serial sections imaged as separate series, so one specimen's sections are

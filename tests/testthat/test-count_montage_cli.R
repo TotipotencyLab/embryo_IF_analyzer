@@ -114,8 +114,83 @@ test_that("montage_qc_cli composes one panel per input plus the R panel", {
 
   expect_true(file.exists(out))
   info <- magick::image_info(magick::image_read(out))
-  expect_identical(info$height, 200L)
+  # 200 of panel plus the title band. The band is the only thing between the
+  # panel height asked for and the height written.
+  expect_gt(info$height, 200L)
   expect_gt(info$width, 400L)             # three panels side by side
+})
+
+test_that("the montage is titled with the sample, and --no_title restores the old shape", {
+  # A QC montage on its own does not say WHICH sample it is: the captions name
+  # the panels and the filename is only visible from outside the picture.
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  source_cli("montage_qc_cli.r")
+
+  feat_dir <- annotated_fixture()
+  rds <- file.path(feat_dir, "GRV_Position010_features.rds")
+  d <- withr::local_tempdir()
+  for (f in c("proj.png", "overlay.png")) {
+    magick::image_write(magick::image_blank(300, 300, color = "gray30"), file.path(d, f))
+  }
+  run <- function(name, extra = character(0)) {
+    o <- file.path(d, name)
+    suppressWarnings(suppressMessages(montage_qc_cli(c(
+      "--features", rds, "--feature", "nucleus",
+      "--projection", file.path(d, "proj.png"),
+      "--overlay", file.path(d, "overlay.png"),
+      "--output", o, "--panel_height", "200", extra))))
+    o
+  }
+  titled <- run("titled.png")
+  plain <- run("plain.png", "--no_title")
+
+  ti <- magick::image_info(magick::image_read(titled))
+  pi <- magick::image_info(magick::image_read(plain))
+  expect_identical(pi$height, 200L)            # unchanged from before the title
+  expect_gt(ti$height, pi$height)
+  expect_identical(ti$width, pi$width)         # the band adds height only
+
+  # The band is ALL that changed: crop it off and the rest must be identical,
+  # pixel for pixel. Without this, "it got taller" is equally consistent with
+  # the panels having been rescaled or reordered underneath.
+  band <- ti$height - pi$height
+  body <- magick::image_crop(magick::image_read(titled),
+                             paste0(pi$width, "x", pi$height, "+0+", band))
+  expect_identical(sum(as.vector(grDevices::as.raster(body)) !=
+                       as.vector(grDevices::as.raster(magick::image_read(plain)))), 0L)
+})
+
+test_that("the montage is written 8-bit, whether or not it has a title", {
+  # magick composes in 16 bits, and appending a blank band promoted the whole
+  # montage to a 16-bit PNG -- about twice the file, every flat grey shifted by
+  # 1/255 on the way back out, for no visible gain. The inputs are 8-bit, so
+  # the output says so rather than depending on whether a band was added.
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  source_cli("montage_qc_cli.r")
+
+  feat_dir <- annotated_fixture()
+  d <- withr::local_tempdir()
+  for (f in c("proj.png", "overlay.png")) {
+    magick::image_write(magick::image_blank(300, 300, color = "gray30"), file.path(d, f))
+  }
+  depth_of <- function(path) {
+    as.integer(readBin(path, "raw", 26)[25])   # IHDR bit depth
+  }
+  for (nm in c("d_title.png", "d_plain.png")) {
+    o <- file.path(d, nm)
+    suppressWarnings(suppressMessages(montage_qc_cli(c(
+      "--features", file.path(feat_dir, "GRV_Position010_features.rds"),
+      "--feature", "nucleus",
+      "--projection", file.path(d, "proj.png"),
+      "--overlay", file.path(d, "overlay.png"),
+      "--output", o, "--panel_height", "200",
+      if (nm == "d_plain.png") "--no_title" else character(0)))))
+    expect_identical(depth_of(o), 8L)
+  }
 })
 
 test_that("montage_qc_cli warns loudly when the image extent is unknown", {
