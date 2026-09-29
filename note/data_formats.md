@@ -494,7 +494,7 @@ cells and a count taken from the picture has to be reconcilable with the table:
 | `status` | `ok`, or `missing` when the image was not there |
 | `row`, `col` | 1-based position in the grid, so a cell in the picture can be named |
 | `um_per_px` | micrometres per output pixel for that montage; blank under `--scale pixel` |
-| `cell_px_w`, `cell_px_h` | the cell, in output pixels |
+| `cell_px_w`, `cell_px_h` | that cell's own slot, in output pixels — **per cell, not per montage**: the layout is a table, so column `j` is as wide as its widest cell and row `i` as tall as its tallest |
 | `width_um`, `height_um` | the sample's physical size, `size_x * pixel_width` |
 | `montage` | the file this row was drawn into |
 
@@ -513,9 +513,14 @@ sizes — this dataset holds 0.2227 and 0.4456 µm pixels — and drawing them e
 makes one follicle look like two different ones. A row with no usable
 `pixel_width` is an error rather than a quiet fall back to pixel scaling.
 
-`--cell_max_px` bounds the cell's **longest** side; the cell itself is the
-bounding box of the panels the group actually holds, so it is square only when
-they are. `cell_px_w`/`cell_px_h` in the index record what was used.
+`--cell_max_px` bounds a panel's **longest** side. Cells are then laid out as a
+**table**: column `j` takes the width of its widest cell, row `i` the height of
+its tallest, and each cell is padded top-left to its own column and row. A
+column holding no cell at all — `--ncol 3` with two panels — is worth no width,
+so a montage is as wide as the columns it actually fills and two montages of
+different sizes no longer match. Padding never carried size information: the
+drawn pixels do, at a scale that is constant across the montage and stated by
+the scale bar.
 
 `--um_per_px group` (the default) fits each group's largest panel to the cell;
 `run` uses one scale for every montage, so two of them can be compared with each

@@ -395,43 +395,78 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       }
     })
 
-    # The cell is the bounding box of the panels this group ACTUALLY has, not a
-    # square.
+    # A TABLE, not a uniform grid: each column is as wide as its widest cell and
+    # each row as tall as its tallest, and a cell is padded only to its own
+    # column and row.
     #
-    # It used to be floored at the cell size on BOTH axes, which made it square
-    # every time: --um_per_px group picks the scale so the largest panel's
-    # longest side is exactly cell_px, so the other axis was always short and
-    # always got padded back up. A group of wide sections came out ~60% white,
-    # and a set of QC strips worse. Nobody chose that; it is what flooring per
-    # axis does, and it was invisible while every test image was square.
+    # One cell size for the whole group is what a uniform grid forces, and it
+    # spends the difference on blank space: a group holding one tall panel and
+    # two short ones gave all three the tall panel's height, so two thirds of
+    # the montage was white below the content. Sizing per column and per row
+    # removes exactly that and nothing else.
     #
-    # Measured from the fitted images rather than from the sheet, so an image
-    # that is not the shape the sheet describes -- letterboxed above, warned
-    # about -- still gets a cell that fits it.
-    dims <- lapply(fitted, function(im) {
-      if (is.null(im)) return(c(0L, 0L))
-      info <- magick::image_info(im)
-      c(info$width, info$height)
-    })
-    cell_w <- max(1L, ceiling(max(vapply(dims, `[`, numeric(1), 1))))
-    cell_h <- max(1L, ceiling(max(vapply(dims, `[`, numeric(1), 2))))
-    # A group whose images are all missing has no fitted panel to measure, so
-    # it falls back to the size that was asked for -- a montage of placeholders
-    # is still a montage, and an empty group must not vanish.
-    if (cell_w <= 1L || cell_h <= 1L) {
-      cell_w <- cell_px
-      cell_h <- cell_px
+    # Horizontal blank does NOT all go away, and cannot: the output is a
+    # rectangle, so a row narrower than the widest row is padded out to it. What
+    # goes is the vertical waste, which is the larger share whenever panels
+    # differ in height.
+    #
+    # Padding is top-left, so cells share an origin and a column can be scanned
+    # down. Centring would look tidier and would cost that.
+    #
+    # NB padding never carried size information -- the DRAWN pixels do, at a
+    # scale that is constant across the montage and stated by the scale bar. So
+    # letting cells differ in size does not make panels less comparable.
+    row_of <- ((seq_len(n) - 1L) %/% ncol) + 1L
+    col_of <- ((seq_len(n) - 1L) %% ncol) + 1L
+
+    # The slot a cell asks for. A MISSING image still asks for one: in physical
+    # mode the sheet knows the size it would have been, so its placeholder sits
+    # in a slot the size of its neighbours rather than collapsing the row.
+    slot_w <- vapply(seq_len(n), function(i) {
+      if (!is.null(fitted[[i]])) return(as.numeric(magick::image_info(fitted[[i]])$width))
+      if (is.finite(draw_w[i])) return(as.numeric(draw_w[i]))
+      return(NA_real_)
+    }, numeric(1))
+    slot_h <- vapply(seq_len(n), function(i) {
+      if (!is.null(fitted[[i]])) return(as.numeric(magick::image_info(fitted[[i]])$height))
+      if (is.finite(draw_h[i])) return(as.numeric(draw_h[i]))
+      return(NA_real_)
+    }, numeric(1))
+
+    # Two different emptinesses, and they do not get the same answer.
+    #
+    # A column that holds NO CELL AT ALL -- ncol 3 with two panels in the group
+    # -- is worth no width. Reserving space for it would put back exactly the
+    # blank this change removes, to hold a column that does not exist.
+    #
+    # A column that holds cells but nothing MEASURABLE -- every image missing,
+    # and no declared size to fall back on -- takes the budget instead, because
+    # a montage of placeholders is still a montage and must not collapse to
+    # nothing.
+    span <- function(v, key, k) {
+      out <- vapply(seq_len(k), function(j) {
+        here <- v[key == j]
+        if (!length(here)) return(0)            # no cell in this column/row
+        got <- here[is.finite(here)]
+        if (!length(got)) return(as.numeric(cell_px))
+        max(got)
+      }, numeric(1))
+      return(ceiling(out))
     }
+    col_w <- span(slot_w, col_of, ncol)
+    row_h <- span(slot_h, row_of, max(row_of))
 
     cells <- lapply(seq_len(n), function(i) {
-      mg_pad(fitted[[i]], cell_w = cell_w, cell_h = cell_h,
+      mg_pad(fitted[[i]], cell_w = col_w[col_of[i]], cell_h = row_h[row_of[i]],
              label = labels[i], bg = bg)
     })
 
     # full_width stated, not inferred: a group of one, or a half-empty last
     # row, still comes out the width of a full grid, so every montage in the
     # run lines up when they are read side by side.
-    img <- mg_grid(cells, ncol = ncol, bg = bg, full_width = cell_w * ncol)
+    # Every row is already sum(col_w) wide by construction, except a last row
+    # holding fewer than ncol cells -- which full_width pads out, as before.
+    img <- mg_grid(cells, ncol = ncol, bg = bg, full_width = sum(col_w))
     if (scale_mode == "physical" && !argv$no_scale_bar) {
       img <- mg_scale_bar(img, upp)
     }
@@ -454,7 +489,10 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       status = ifelse(rows[[".found"]], "ok", "missing"),
       row = ((seq_len(n) - 1L) %/% ncol) + 1L,
       col = ((seq_len(n) - 1L) %% ncol) + 1L,
-      um_per_px = upp, cell_px_w = cell_w, cell_px_h = cell_h,
+      # Per CELL now, not per group: with a table layout a montage no longer has
+      # one cell size, and a reader matching a picture back to a row needs the
+      # slot that row was actually given.
+      um_per_px = upp, cell_px_w = col_w[col_of], cell_px_h = row_h[row_of],
       width_um = rows[[".w_um"]], height_um = rows[[".h_um"]],
       montage = basename(f), stringsAsFactors = FALSE)
   }

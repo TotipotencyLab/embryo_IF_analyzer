@@ -248,7 +248,13 @@ loop, including how to diff.
   `keep_machine=`, which names them one at a time so a caller carrying a machine
   column into its output has had to say which and why. `montage_index.tsv` is
   itself a valid input to the next run, which is the provenance answer instead
-  of writing resolved paths back into `samples.tsv`.
+  of writing resolved paths back into `samples.tsv`. Cells are laid out as a
+  **table** — each column as wide as its widest cell, each row as tall as its
+  tallest — because one cell size for a group spends the difference on blank
+  space, and a column holding no cell at all is worth no width. So a montage is
+  as wide as the columns it fills, and two montages no longer match in size.
+  That costs nothing: padding never carried size information, the drawn pixels
+  do, at a scale the scale bar states.
 
   `cli_helpers.r` is shared by all three. Conventions — the testable
   `<name>_cli(args)` function, the run guard, argparser's traps — are in the

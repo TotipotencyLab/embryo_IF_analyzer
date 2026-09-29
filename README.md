@@ -324,12 +324,12 @@ group holds one sample the run warns, because then each montage is one image
 under a new name and nothing is being placed beside anything — usually a column
 was named that is unique per row.
 
-`--cell_max_px` is the cell's **longest** side, not its height: under
+`--cell_max_px` is a panel's **longest** side, not its height: under
 `--scale pixel` each image's longest side becomes that, and under
 `--scale physical` only the largest panel's does, with the rest proportionally
-smaller. The cell is then the bounding box of the panels the group actually
-has — a group of wide sections gets a wide cell, not a square one with white
-above and below.
+smaller. Cells are then laid out as a table — each column as wide as its widest
+cell, each row as tall as its tallest — so a group of wide sections gets wide
+cells rather than square ones with white above and below.
 
 By default each group gets its own scale, so its largest section fills a cell —
 which means two montages are *not* comparable with each other. That is why the

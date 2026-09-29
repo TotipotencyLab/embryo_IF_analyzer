@@ -223,14 +223,114 @@ test_that("a group of one is drawn, and --ncol makes it the same width as the re
   expect_identical(unique(r2$idx$cell_px_w[r2$idx$group == "SOLO"]),
                    unique(r2$idx$cell_px_w[r2$idx$group == "A"]))
 
-  # ...and therefore the same width, HERE. Note what this does and does not
-  # prove: the cell is the bounding box of each group's own panels, so equal
-  # widths follow from these groups holding equally shaped images, not from the
-  # grid forcing it. A group of differently shaped panels gets a different cell
-  # -- asserted separately below -- and so a different width.
-  widths <- vapply(files, function(f) magick::image_info(magick::image_read(f))$width,
-                   numeric(1))
-  expect_length(unique(widths), 1L)
+  # Montage width is now the sum of the COLUMNS THAT HOLD SOMETHING, so a group
+  # with fewer panels than --ncol is genuinely narrower. That is the cost of a
+  # table layout and is deliberate: reserving width for a column that holds no
+  # cell would put back exactly the blank space the layout removes.
+  width_of <- function(grp) {
+    magick::image_info(magick::image_read(
+      file.path(r2$out, unique(r2$idx$montage[r2$idx$group == grp]))))$width
+  }
+  # B holds three panels and so fills all three columns; SOLO holds one and is
+  # one column wide. (Group A is also a singleton here -- A_s0001 moved to
+  # SOLO -- so comparing against it would prove nothing.)
+  expect_identical(sum(r2$idx$group == "B"), 3L)
+  expect_lt(width_of("SOLO"), width_of("B"))
+  # ...and it is exactly one column, not a third of a fixed grid.
+  expect_equal(width_of("SOLO"), unique(r2$idx$cell_px_w[r2$idx$group == "SOLO"]))
+})
+
+test_that("cells are sized per column and per row, not one size for the group", {
+  # A table: column j is as wide as its widest cell, row i as tall as its
+  # tallest, and a cell is padded only to its own column and row. One size for
+  # the whole group spends the difference on blank space.
+  skip_if_no_pkg(c("argparser", "magick"))
+  d <- withr::local_tempdir()
+  img <- file.path(d, "img")
+  dir.create(img)
+  dims <- list(c(200, 100), c(100, 200), c(200, 50))
+  pre <- sprintf("S%02d", seq_along(dims))
+  for (k in seq_along(dims)) {
+    magick::image_write(magick::image_blank(dims[[k]][1], dims[[k]][2], "steelblue"),
+                        file.path(img, paste0(pre[k], "_overview_ch1.png")))
+  }
+  sheet <- data.frame(prefix = pre, include = "true", section_id = "G",
+                      size_x = vapply(dims, `[`, 0, 1), size_y = vapply(dims, `[`, 0, 2),
+                      pixel_width = 1, pixel_height = 1, stringsAsFactors = FALSE)
+  sp <- file.path(d, "s.tsv")
+  utils::write.table(sheet, sp, sep = "\t", quote = FALSE, row.names = FALSE)
+
+  run <- function(ncol) {
+    o <- file.path(d, paste0("n", ncol))
+    suppressMessages(suppressWarnings(group_montage_cli(c(
+      "--sample_sheet", sp, "--group_by", "section_id", "--image_dir", img,
+      "--image_suffix", "_overview_ch1.png", "--outdir", o,
+      "--ncol", as.character(ncol), "--cell_max_px", "100", "--no_scale_bar"))))
+  }
+
+  # ncol = 1: fitted 100x50, 50x100, 100x25. One column, width 100; each row
+  # its own height. The 50-wide panel is padded left/right to 100 -- which is
+  # unavoidable, the output being a rectangle.
+  one <- run(1)
+  expect_equal(one$cell_px_w, c(100, 100, 100))
+  expect_equal(one$cell_px_h, c(50, 100, 25))
+
+  # ncol = 2: columns are (100, 50) and rows are (100, 25).
+  two <- run(2)
+  expect_equal(two$cell_px_w, c(100, 50, 100))
+  expect_equal(two$cell_px_h, c(100, 100, 25))
+  expect_equal(two$row, c(1, 1, 2))
+  expect_equal(two$col, c(1, 2, 1))
+
+  # ...and the IMAGE agrees with the index. Without this the index could report
+  # a table while the montage was drawn with one cell size for the group --
+  # verified: making the cells uniform fails nothing above.
+  #
+  # The title band is not hard-coded. Its height is the same in both runs, so
+  # asserting that (height - content) matches across them pins the layout
+  # without pinning the band: content is 50+100+25 at ncol 1 and 100+25 at
+  # ncol 2.
+  h1 <- magick::image_info(magick::image_read(
+    file.path(d, "n1", unique(one$montage))))$height
+  h2 <- magick::image_info(magick::image_read(
+    file.path(d, "n2", unique(two$montage))))$height
+  expect_identical(h1 - 175L, h2 - 125L)
+  # And the widths, which the band does not touch at all.
+  expect_identical(magick::image_info(magick::image_read(
+    file.path(d, "n1", unique(one$montage))))$width, 100L)
+  expect_identical(magick::image_info(magick::image_read(
+    file.path(d, "n2", unique(two$montage))))$width, 150L)
+})
+
+test_that("a missing image still claims the slot the sheet says it would fill", {
+  # Its placeholder has to sit in a slot the size of its neighbours, or a row
+  # collapses around the gap and the montage stops being readable as a grid.
+  # The fixture's own missing row cannot show this -- its declared size happens
+  # to equal the fallback -- so the size is made distinct here.
+  fx <- gm_fixture()
+  s <- utils::read.delim(fx$sheet, stringsAsFactors = FALSE)
+  s$size_x[s$prefix == "B_s0003"] <- 1000      # 500 um, vs 1000 um for B_s0001
+  s$size_y[s$prefix == "B_s0003"] <- 1000
+  utils::write.table(s, fx$sheet, sep = "\t", quote = FALSE, row.names = FALSE)
+
+  r <- gm_run(fx)                               # --ncol 3, so B_s0003 is alone in column 3
+  gone <- r$idx[r$idx$prefix == "B_s0003", ]
+  expect_identical(gone$status, "missing")
+  # Half the size of B_s0001's 1000 um, at the same scale -- NOT the --cell_max_px
+  # fallback, which is what it would get if a missing row claimed nothing.
+  big <- r$idx[r$idx$prefix == "B_s0001", ]
+  expect_equal(gone$cell_px_w, big$cell_px_w / 2, tolerance = 0.02)
+})
+
+test_that("a column holding no cell at all is worth no width", {
+  # --ncol 3 with two panels must not reserve a third column: that would put
+  # back exactly the blank space the table layout removes.
+  fx <- gm_fixture()
+  r <- gm_run(fx)                                  # gm_run fixes --ncol 3
+  a <- r$idx[r$idx$group == "A", ]
+  expect_identical(nrow(a), 2L)
+  w <- magick::image_info(magick::image_read(file.path(r$out, unique(a$montage))))$width
+  expect_equal(w, sum(unique(data.frame(c = a$col, w = a$cell_px_w))$w))
 })
 
 test_that("the cell is the bounding box of the group, not a square", {
