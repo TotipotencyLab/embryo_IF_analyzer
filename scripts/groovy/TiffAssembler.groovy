@@ -114,7 +114,7 @@ class TiffAssembler {
         String format = checkFormat(opts.format as String)
         int resize    = Math.max(1, (opts.resize ?: 1) as int)
         def first     = rows[0]
-        def name      = outputName(first.output_path as String, resize, format)
+        def name      = outputName(first.target_output_path as String, resize, format)
         def summary   = [output_path: name, series_id: first.series_id,
                          position_id: first.position_id, t: first.t,
                          channels: rows.size(), format: format, resize: resize,
@@ -131,6 +131,23 @@ class TiffAssembler {
             summary.status = "skipped"
             summary.reason = "include=false"
             return summary
+        }
+
+        // The name is the whole check, and it is enough BECAUSE the name carries
+        // the two things that change the pixels: _ds<N> and the extension. It
+        // is not enough on its own to say the file is complete, so the
+        // provenance file -- written only after a successful assemble -- has to
+        // be there too. A run killed mid-write leaves the .tif without it and
+        // is redone rather than silently kept.
+        if (opts.skipExisting) {
+            def existing = new File(outDir, name)
+            def prov     = new File(outDir, name.replaceAll(/\.(ome\.)?tiff?$/, "") + "_gather.txt")
+            if (existing.isFile() && prov.isFile()) {
+                summary.status = "skipped"
+                summary.reason = "already assembled"
+                summary.bytes  = existing.length()
+                return summary
+            }
         }
 
         long predicted = predictBytes(rows, resize)
@@ -211,12 +228,19 @@ class TiffAssembler {
 
         def groups = groupByOutput(rows)
         log?.call("  " + groups.size() + " output(s), format=" + format +
-                  (resize > 1 ? (", resize=" + resize) : "") + (verify ? ", verifying" : ""))
+                  (resize > 1 ? (", resize=" + resize) : "") +
+                  (opts.skipExisting ? ", skipping ones already assembled" : "") +
+                  (verify ? ", verifying" : ""))
 
         // Say what will not fit BEFORE writing anything, so a person can choose
         // the format rather than discover it after twenty minutes of writing.
         if (format == TIFF) {
-            def over = groups.findAll { k, v -> !fitsClassicTiff(predictBytes(v, resize)) }
+            // Only outputs this run will actually attempt. Warning about a
+            // position the operator already set include=false on is noise, and
+            // noise is what stops warnings being read.
+            def over = groups.findAll { k, v ->
+                v.every { isIncluded(it.include) } && !fitsClassicTiff(predictBytes(v, resize))
+            }
             if (over) {
                 log?.call("WARNING: " + over.size() + " output(s) exceed the classic TIFF limit " +
                           "and will be recorded as failed; use format=bigtiff:")
@@ -256,7 +280,7 @@ class TiffAssembler {
         def m = new LinkedHashMap()
         rows.sort(false) { a, b ->
             (a.position_id <=> b.position_id) ?: (a.t <=> b.t) ?: (a.channel <=> b.channel)
-        }.each { r -> m.computeIfAbsent(r.output_path, { [] }) << r }
+        }.each { r -> m.computeIfAbsent(r.target_output_path, { [] }) << r }
         return m
     }
 

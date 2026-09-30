@@ -13,7 +13,7 @@
 // path is used only to find the files.
 //
 // The manifest is RECTANGULAR: one row per SOURCE file, carrying the output it
-// feeds. Rows sharing an `output_path` are the channels of one output, and
+// feeds. Rows sharing a `target_output_path` are the channels of one output, and
 // together they "name every source file" the plan asks for -- a single row with
 // a variable-length list of sources would not survive being a TSV.
 //
@@ -110,24 +110,24 @@ class LuxendoScan {
                 def serId = RX.sanitize(posId + "_" + String.format(TIME_FORMAT, tp))
 
                 rows << [
-                    output_path      : serId + ".tif",
-                    series_id        : serId,
-                    position_id      : posId,
-                    t                : tp,
-                    channel          : ch,
-                    channel_name     : (info.channel_description ?: ""),
-                    source_path      : relative(dir, f),
-                    source_bytes     : f.length(),
-                    size_x           : lf.sizeX,
-                    size_y           : lf.sizeY,
-                    size_z           : lf.sizeZ,
-                    pixel_width      : lf.pixelWidth,
-                    pixel_height     : lf.pixelHeight,
+                    target_output_path: serId + ".tif",
+                    series_id         : serId,
+                    position_id       : posId,
+                    t                 : tp,
+                    channel           : ch,
+                    channel_name      : (info.channel_description ?: ""),
+                    source_path       : relative(dir, f),
+                    source_bytes      : f.length(),
+                    size_x            : lf.sizeX,
+                    size_y            : lf.sizeY,
+                    size_z            : lf.sizeZ,
+                    pixel_width       : lf.pixelWidth,
+                    pixel_height      : lf.pixelHeight,
                     // null, not 1.0, for a single plane -- see LuxendoFile
-                    pixel_depth      : lf.pixelDepth,
-                    pixel_unit       : (lf.pixelWidth != null ? "micron" : null),
-                    stack_description: (info.stack_description ?: ""),
-                    include          : "true",
+                    pixel_depth       : lf.pixelDepth,
+                    pixel_unit        : (lf.pixelWidth != null ? "micron" : null),
+                    stack_description : (info.stack_description ?: ""),
+                    include           : "true",
                 ]
             } finally {
                 lf.close()
@@ -150,7 +150,7 @@ class LuxendoScan {
 
         // Two sources claiming the same channel of the same output would
         // overwrite each other in the assembled stack, silently.
-        def byKey = rows.groupBy { [it.output_path, it.channel] }
+        def byKey = rows.groupBy { [it.target_output_path, it.channel] }
         def dupes = byKey.findAll { k, v -> v.size() > 1 }
         if (dupes) {
             throw new IllegalArgumentException(
@@ -160,7 +160,7 @@ class LuxendoScan {
                 }.join("\n  "))
         }
 
-        def byOutput = rows.groupBy { it.output_path }
+        def byOutput = rows.groupBy { it.target_output_path }
 
         // Every output must have the same channel set, or one assembled stack
         // has channel 2 where another has channel 3 and nothing says so.
@@ -232,7 +232,7 @@ class LuxendoScan {
     static Map<String, List<Map>> byOutput(List<Map> rows) {
         def m = new LinkedHashMap()
         sortRows(rows).each { r ->
-            m.computeIfAbsent(r.output_path, { [] }) << r
+            m.computeIfAbsent(r.target_output_path, { [] }) << r
         }
         return m
     }

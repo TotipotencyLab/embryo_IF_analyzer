@@ -19,7 +19,7 @@ samples	pixel_height	machine	double	no	physical pixel size in y
 samples	pixel_depth	machine	double	no	z step; BLANK for a single plane, where there is no z axis to measure
 samples	pixel_unit	machine	string	no	unit of the three sizes above
 samples	file_size	machine	integer	yes	bytes; with the basename this is the fingerprint that spots a copied or replaced file
-manifest	output_path	machine	string	yes	image file to write; relative to the output directory. Rows sharing one value describe one output file, one row per channel
+manifest	target_output_path	machine	string	yes	image file this row's pixels go into, relative to the output directory. Rows sharing one value describe one output file, one row per channel. It is the name ASKED FOR: what is written adds _ds<N> when downscaled and the format's own extension
 manifest	series_id	machine	string	yes	identity of the output series; sanitise(<position_id>_t<TTTT>)
 manifest	position_id	machine	string	yes	the field of view, the same across time points; sanitise(s<NNNN>_<stack_description>)
 manifest	t	machine	integer	yes	0-based time point within the position, from the source metadata
@@ -35,4 +35,4 @@ manifest	pixel_height	machine	double	no	physical pixel size in y
 manifest	pixel_depth	machine	double	no	z step; BLANK for a single plane, where there is no z axis to measure
 manifest	pixel_unit	machine	string	no	unit of the three sizes above
 manifest	stack_description	machine	string	no	what the acquisition called this position, before sanitising
-manifest	include	seeded	boolean	no	whether to assemble this output; all rows of one output_path must agree
+manifest	include	seeded	boolean	no	whether to assemble this output; all rows of one target_output_path must agree

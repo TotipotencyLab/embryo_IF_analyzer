@@ -46,7 +46,7 @@ println "=== the tree scans into a manifest ==="
 def logLines = []
 def rows = scanner.scan(root) { logLines << it }
 check("rows = positions x channels x t", rows.size(), 2 * 3 * 2)
-check("outputs = positions x t",         rows.collect { it.output_path }.unique().size(), 4)
+check("outputs = positions x t",         rows.collect { it.target_output_path }.unique().size(), 4)
 check("positions",                       rows.collect { it.position_id }.unique().size(), 2)
 
 println "\n=== the link-only index file is skipped, and says so ==="
@@ -57,7 +57,7 @@ println "\n=== identity comes from the metadata, not the path ==="
 def r0 = rows.find { it.position_id.contains("L26A") && it.t == 0 && it.channel == 1 }
 check("position_id",       r0.position_id, "s0000_L26A_pos1")
 check("series_id",         r0.series_id,   "s0000_L26A_pos1_t0000")
-check("output_path",       r0.output_path, "s0000_L26A_pos1_t0000.tif")
+check("target_output_path", r0.target_output_path, "s0000_L26A_pos1_t0000.tif")
 check("stack_description", r0.stack_description, "L26A pos1")
 check("channel_name",      r0.channel_name, "GFP")
 check("unnamed channel stays blank",

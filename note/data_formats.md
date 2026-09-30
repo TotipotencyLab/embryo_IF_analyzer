@@ -10,7 +10,7 @@ Column names below are exact, including case.
 
 ---
 
-## 1. The two sheets
+## 1. The sheets
 
 `files.tsv` (one row per **file**) → `Make_SampleSheet.groovy` → `samples.tsv`
 (one row per **series**) → the batch runner, and the R CLIs' `--sample_sheet`.
@@ -21,7 +21,9 @@ machine-read columns alongside. Nothing about `--sample_sheet` changed.
 
 The column list both are checked against is
 [`schema/sheet_columns.tsv`](../schema/sheet_columns.tsv) — internal, read by
-both languages, and the reason there is no second copy to drift.
+both languages, and the reason there is no second copy to drift. Its first
+column says which sheet a row describes, so one file declares them all; a third,
+`manifest`, is at the end of this section.
 
 ### Who owns a column
 
@@ -163,6 +165,68 @@ dropping it.
   repo is built to avoid)
 
 Accepted extensions: `.tsv` / `.txt` (tab-delimited), `.csv`, `.xlsx` / `.xls`.
+
+### `manifest.tsv` — the Luxendo conversion plan
+
+A third sheet, declared in the same `schema/sheet_columns.tsv` under sheet
+`manifest`. It is not a sample sheet and is never given to a CLI: it is the
+table that sits between a Luxendo acquisition and the TIFFs made from it.
+
+`Make_LuxendoTiff.groovy` **always writes it, into the output directory, before
+it reads a single plane** — so the plan exists whether or not the conversion
+then runs, and whatever happens to the run afterwards. Hand the same file back
+through `manifestFile` to convert exactly what you read, with `include=false` on
+the rows you do not want.
+
+**One row per source file, not per output.** A Luxendo `.lux.h5` holds one
+channel of one position at one time point, so three channels of one time point
+are three rows that share a `target_output_path` and differ in `channel`.
+
+| Column | Required | Meaning |
+|---|---|---|
+| `target_output_path` | **yes** | the image file this row's pixels go into, relative to the output directory. Rows sharing one value are the channels of one output |
+| `series_id` | **yes** | identity of that output — `sanitise(<position_id>_t<TTTT>)` |
+| `position_id` | **yes** | the field of view, constant across time points — `sanitise(s<NNNN>_<stack_description>)` |
+| `t` | **yes** | 0-based time point within the position |
+| `channel` | **yes** | 0-based channel index **in the output** |
+| `channel_name` | no | what the acquisition called it; blank when it did not |
+| `source_path` | **yes** | the `.lux.h5` supplying this channel, relative to `luxDir` |
+| `source_bytes` | **yes** | with the basename, the fingerprint that spots a replaced source |
+| `size_x`, `size_y`, `size_z` | **yes** | pixels |
+| `pixel_width`, `pixel_height`, `pixel_depth` | no | physical sizes; `pixel_depth` **blank for a single plane** |
+| `pixel_unit` | no | unit of those three |
+| `stack_description` | no | the acquisition's own name for the position, before sanitising |
+| `include` | no | `seeded` — whether to assemble this output |
+
+⚠️ **`target_output_path` is the name asked for, not the name written.** The
+written name adds `_ds<N>` when downscaled and the format's own extension
+(`.tif` for `tiff`, `.ome.tif` for `bigtiff`), so it is `output_path` in
+`gather_summary.tsv` and in `_gather.txt` that records what actually landed on
+disk. Two different facts, deliberately two different column names.
+
+**`include` is read per output, not per row.** All rows of one
+`target_output_path` must agree: half a file's channels is a question, not an
+instruction, and is recorded as a **failed** output rather than assembled
+without its missing channel. The vocabulary is `BatchRunner.isIncluded()`'s, the
+same as the sample sheet's.
+
+**Identity comes from each file's own `/metadata`, never from its path.** The
+directory names in a Luxendo tree are a convenience; the JSON inside each file
+is the record. See [`luxendo_file_format.md`](luxendo_file_format.md).
+
+#### What the conversion writes beside the images
+
+```
+manifest.tsv                        the plan, always, written before any pixels
+gather_summary.tsv                  one row per OUTPUT: status, reason, bytes, checksum, verified
+<output>_gather.txt                 per output: its sources, checksum and VERSION
+```
+
+`gather_summary.tsv` is **rectangular whatever happened** — same contract as
+`batch_summary.tsv`. A `status` of `written` / `skipped` / `failed` with a
+`reason`, so a half-completed run is legible. `checksum` is a CRC32 over the
+pixels **as written** (after any downscale), and `verified=yes` means the file
+was read back off disk and its pixels recomputed to the same value.
 
 ---
 

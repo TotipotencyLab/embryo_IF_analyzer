@@ -150,10 +150,27 @@ loop, including how to diff.
   regeneration, `seeded` written once then yours, `user` never touched). It is
   not in `config/` because that folder's contract is "copy one out and edit it;
   nothing here is read automatically".
-- Script name prefixes are a contract: **`Run_*`** does the analysis, **`Inspect_*`**
-  are read-only diagnostics (written to be read as well as run — they carry the
-  Groovy/ImageJ API notes), **`Make_*`** writes a table the pipeline then
-  consumes. Do not invent a fourth verb without adding it here.
+- Script name prefixes are a contract, but a loose one — **none of these verbs
+  has a strict meaning, and trying to give them one is how you end up with a
+  name nobody would choose.**
+
+  - **`Make_*`** — *you can expect these files at the end.* The name says what
+    comes out. Usually the pipeline then consumes it (`Make_SampleSheet`), but
+    it does not have to: `Make_LuxendoTiff` makes TIFFs you may simply look at
+    and be happy with. The promise is the artifact, not the consumer.
+  - **`Run_*`** — *executes something.* The vaguest term here, and deliberately
+    so: it began as "a wrapper that runs some library function", and it is what
+    a script gets called when naming its output would undersell it.
+    `Run_NucleusSelector` could have been `Make_NuclearOutline` — it does write
+    outlines — but it does more than that, and the narrower name would be a
+    worse description.
+  - **`Inspect_*`** — read-only diagnostics, written to be read as well as run;
+    they carry the Groovy/ImageJ API notes.
+  - **`Open_*`** — opens one thing into a window for a human to look at.
+    Inherently interactive, never part of a batch.
+
+  The line between `Make_` and `Run_` is judgement, not rule. Do not invent a
+  fifth verb without adding it here.
 - `Inspect_ImageFile.groovy` lists what is inside a file without opening it —
   series, dimensions, calibration — and with `checkPixels` reports the
   percentage of non-zero pixels per series. That last one matters: a series that
@@ -162,6 +179,17 @@ loop, including how to diff.
   series names and says whether they are separate fields of a tile scan or
   genuinely the same image, which the name alone cannot tell you.
   `Open_LifFile.groovy` opens one chosen series into a window, by index or name.
+- **`Make_LuxendoTiff.groovy` converts a Luxendo acquisition into TIFFs the rest
+  of the pipeline already reads.** Bio-Formats cannot read `.lux.h5` correctly —
+  `BDVReader` returns the wrong specimen's pixels — so `LuxendoFile.groovy` reads
+  the HDF5 directly through JHDF5 and `TiffAssembler.groovy` writes one TIFF per
+  (position, time point). **The manifest is the point of the design**: the script
+  always writes `manifest.tsv` before reading a single plane, so the plan you
+  would commit tens of gigabytes to is a table you can open, read and edit first.
+  `manifestOnly` decides only where the run stops. Identity comes from each
+  file's own `/metadata` and never from its path. `note/luxendo_file_format.md`
+  is what the format actually is; `note/data_formats.md` §1 is the manifest's
+  columns.
 - **`Run_Overview_Batch.groovy` is the cheap look at a dataset**: overview PNGs
   for every included sheet row and nothing else. It exists because deciding what
   a slide contains should not cost a segmentation run — detection needs a tuned

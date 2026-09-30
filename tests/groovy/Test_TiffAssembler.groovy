@@ -128,7 +128,7 @@ println "\n=== over the limit is a per-output failure, not an aborted run ==="
 // A manifest claiming a stack too large for classic TIFF. No pixels are read:
 // the refusal happens on the prediction, before anything is opened.
 def huge = (0..2).collect { c ->
-    [output_path: "huge.tif", series_id: "huge", position_id: "p", t: 0, channel: c,
+    [target_output_path: "huge.tif", series_id: "huge", position_id: "p", t: 0, channel: c,
      channel_name: "c" + c, source_path: "nope.lux.h5", size_x: 4096, size_y: 4096,
      size_z: 100, pixel_width: 0.1, pixel_height: 0.1, pixel_depth: 1.0,
      pixel_unit: "micron", include: "true"]
@@ -159,17 +159,51 @@ checkNear("z step",      rB.pixel_depth as Double, 5.0d)
 
 println "\n=== include is honoured, and a half-included output is a question ==="
 def offRows = rows.collect { new LinkedHashMap(it) }
-offRows.findAll { it.output_path == s0.output_path }.each { it.include = "false" }
+offRows.findAll { it.target_output_path == s0.output_path }.each { it.include = "false" }
 def offSum = asm.assembleAll(offRows, root, new File(tmp, "off"), [:]) { }
 check("skipped", offSum.find { it.output_path == s0.output_path }.status, "skipped")
 check("reason",  offSum.find { it.output_path == s0.output_path }.reason, "include=false")
 
 def splitRows = rows.collect { new LinkedHashMap(it) }
-splitRows.find { it.output_path == s0.output_path && it.channel == 1 }.include = "false"
+splitRows.find { it.target_output_path == s0.output_path && it.channel == 1 }.include = "false"
 def splitSum = asm.assembleAll(splitRows, root, new File(tmp, "split"), [:]) { }
 check("disagreement fails", splitSum.find { it.output_path == s0.output_path }.status, "failed")
 check("and says why",
       splitSum.find { it.output_path == s0.output_path }.reason.contains("disagree on include"), true)
+
+println "\n=== skipExisting resumes a run without redoing it ==="
+def skipDir = new File(tmp, "skip")
+def firstPass = asm.assembleAll(rows, root, skipDir, [skipExisting: true]) { }
+check("nothing there yet, so all written", firstPass.collect { it.status }.unique(), ["written"])
+def secondPass = asm.assembleAll(rows, root, skipDir, [skipExisting: true]) { }
+check("second pass skips them all", secondPass.collect { it.status }.unique(), ["skipped"])
+check("and says why",               secondPass.collect { it.reason }.unique(), ["already assembled"])
+// Off, it does the work again -- the proof that the skip is what changed the
+// behaviour and not some other refusal.
+def forced = asm.assembleAll(rows, root, skipDir, [skipExisting: false]) { }
+check("off, they are written again", forced.collect { it.status }.unique(), ["written"])
+check("byte-identical the second time",
+      forced.collect { it.checksum }, firstPass.collect { it.checksum })
+
+// A TIFF without its provenance file is what a run killed mid-write leaves.
+// Keeping that would be keeping a file nobody can vouch for.
+def halfDone = secondPass[0]
+def orphaned = new File(skipDir, halfDone.output_path.replace(".tif", "_gather.txt"))
+check("provenance was there", orphaned.delete(), true)
+def resumed = asm.assembleAll(rows, root, skipDir, [skipExisting: true]) { }
+check("the unvouched-for output is redone",
+      resumed.find { it.output_path == halfDone.output_path }.status, "written")
+check("the complete ones are still skipped",
+      resumed.count { it.status == "skipped" }, secondPass.size() - 1)
+
+// The skip is keyed on the name actually written, and the name carries the
+// resize -- so asking for a downscale in a directory full of full-resolution
+// files must not skip them all.
+def dsPass = asm.assembleAll(rows, root, skipDir, [skipExisting: true, resize: 2]) { }
+check("a downscale is not mistaken for the full-size file",
+      dsPass.collect { it.status }.unique(), ["written"])
+check("and lands under its own name",
+      dsPass.every { it.output_path.contains("_ds2") }, true)
 
 println "\n=== verification catches a changed pixel ==="
 def victim = new File(out, s0.output_path)

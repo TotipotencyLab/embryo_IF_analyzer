@@ -99,7 +99,7 @@ test_that("the sheet column schema is readable and its owners are known", {
   d <- read.delim(f, stringsAsFactors = FALSE)
   expect_identical(colnames(d),
                    c("sheet", "column", "owner", "type", "required", "description"))
-  expect_true(all(d$sheet %in% c("files", "samples")))
+  expect_true(all(d$sheet %in% c("files", "samples", "manifest")))
   expect_true(all(d$owner %in% c("machine", "seeded", "user")))
   expect_true(all(d$type %in% c("string", "integer", "double", "boolean")))
   expect_true(all(d$required %in% c("yes", "no")))
@@ -112,12 +112,26 @@ test_that("the sheet column schema is readable and its owners are known", {
   expect_identical(pre$required, "yes")
   expect_identical(d$owner[d$sheet == "samples" & d$column == "series_index"], "machine")
 
-  # Every samples column has to be described where people look for it.
+  # The manifest is a third sheet in the same file -- the Luxendo conversion
+  # plan, never handed to a CLI. Its output column is deliberately NOT called
+  # output_path: that name belongs to gather_summary.tsv, which records what was
+  # actually written (with _ds<N> and the format's extension), and one name for
+  # both would make "which is this?" unanswerable from the column alone.
+  expect_true("target_output_path" %in% d$column[d$sheet == "manifest"])
+  expect_false("output_path" %in% d$column[d$sheet == "manifest"])
+  expect_identical(d$owner[d$sheet == "manifest" & d$column == "include"], "seeded")
+  # pixel_depth must be optional here for the same reason it is blank in
+  # _config.txt: a single plane has no z step to record.
+  expect_identical(d$required[d$sheet == "manifest" & d$column == "pixel_depth"], "no")
+
+  # Every declared column has to be described where people look for it.
   doc <- paste(readLines(file.path(repo_root(), "note", "data_formats.md"),
                          warn = FALSE), collapse = "\n")
-  undocumented <- setdiff(d$column[d$sheet == "samples"],
-                          unlist(regmatches(doc, gregexpr("[A-Za-z_]+", doc))))
-  expect_identical(undocumented, character(0))
+  words <- unlist(regmatches(doc, gregexpr("[A-Za-z_]+", doc)))
+  for (sh in c("samples", "manifest")) {
+    undocumented <- setdiff(d$column[d$sheet == sh], words)
+    expect_identical(undocumented, character(0))
+  }
 })
 
 test_that("pixel_depth is written by the Groovy side and documented here", {
