@@ -44,20 +44,62 @@ positions or across files that are not one time course.
 
 ## 2. Sequence
 
-| # | milestone | why here |
+Each milestone has a short **alias**. Refer to them by alias, not by number —
+the number says only where it sits in the queue, the alias says what it is. The
+alias is also the branch prefix: `luxendo-<what>`, `time_axis-<what>`.
+
+| # | alias | what | version bump | why here |
+|---|---|---|---|---|
+| 1 | **`luxendo`** | Luxendo input transform | **MINOR** | urgent — a user reads `.lux.h5` by hand today. Independent of the contract. |
+| 2 | **`vocab`** | identity and vocabulary | **MAJOR** | before any *other* schema change; `time_axis` changes the schema too, and one migration beats two. |
+| 3 | **`time_axis`** | time axis through the pipeline | **MINOR** | the groundwork every later step stands on — see below. |
+| 4 | **`tracking`** | linking features across time | **MINOR** | needs `t`. Small, because TrackMate does the linking. |
+| 5 | **`QoL`** | inspection round trip | **PATCH** | convenience. Lowest priority. |
+| 6 | **`container`** | the R container | **MINOR** | last: see the shape of a working pipeline before building a container for it. |
+
+**Why `time_axis` stays at 3, despite not being needed for the Luxendo path.**
+A review pass established that under one file per (position, timepoint), `t`
+reaches feature rows from the series table with no Fiji change at all, so
+`tracking` could run without it. That is true and is *not* the reason to defer
+it. The input shape is not fixed — a multi-frame `.lif` will arrive — and if
+`time_axis` comes later, `tracking` has to support **two sources of `t`**: a
+sheet column now, an outline column afterwards. With `time_axis` first, `t` is
+always a column on the feature table whatever the input shape, and `tracking`
+has one code path instead of two.
+
+⚠️ **Consequence for testing:** the primary Luxendo workflow will never exercise
+the multi-frame path, so nothing real will catch a regression in it. Every
+multi-frame behaviour needs a synthesised test — `tests/groovy/` already
+synthesises its images — and per `CLAUDE.md` the pair must be told apart:
+prove it changes nothing on a single-frame image, and *separately* prove it does
+something on a synthesised multi-frame one.
+
+### Version bumps
+
+`VERSION` is read at run time by `RoiExport.repoVersion()` and recorded in
+`_config.txt`, so the number's job is to let a reader of an old results
+directory know what made it. **Bump `VERSION` in the same commit you tag**, and
+judge the class by what a reader of an old config or results folder would find —
+not by how much code moved.
+
+| alias | class | why |
 |---|---|---|
-| 1 | **M1** Luxendo input transform | urgent — a user reads `.lux.h5` by hand today. Independent of the contract. |
-| 2 | **V** identity and vocabulary | before any *other* schema change; M2 changes the schema too, and one migration beats two. |
-| 3 | **M2** time axis through the pipeline | the contract changes. The milestone that matters most. |
-| 4 | **M3** linking across time | needs `t`. Small — TrackMate does the linking. |
-| 5 | **M4** inspection round trip | QoL. Lowest priority. |
-| 6 | **S3** R container | last: see the shape of a working pipeline before building a container for it. |
+| `luxendo` | **MINOR** | a key new capability — a second instrument's data becomes readable — but it touches no existing output. Every old config still runs and every old results directory still reads. |
+| `vocab` | **MAJOR** | existing series tables stop working (`prefix` dropped outright, `samples.tsv` renamed) and the `name` column in existing results changes meaning. This is the definition of a schema change large enough to break existing data. |
+| `time_axis` | **MINOR** | new columns appear and the ROI id gains a field, but only on multi-frame input; single-frame output is unchanged and absent `t` still means one frame, so nothing old breaks. Not a patch: a `_config.txt` and an `_outline.txt` from the new code carry fields the tagged version never wrote. |
+| `tracking` | **MINOR** | a key new capability, additive only — a new table and a new column. |
+| `QoL` | **PATCH** | three new scripts, no contract change, nothing existing breaks. |
+| `container` | **MINOR** | new persisted tables and a changed CLI input contract, of limited scope. ⚠️ Note `CLAUDE.md` records that the rule says nothing about command-line surface, so the CLI change alone would fall through to patch; the new tables are what make this minor. |
+
+⚠️ If `time_axis` were ever to land **before** `vocab`, reconsider: on its own
+the 4-field ROI id makes `feature_roi_prefix()` return `NA` for new data read by
+old code, which is closer to a break. The order above avoids the question.
 
 Two constraints cut across the order:
 
-- 🔒 **Do not run the full 33 GB conversion until M2's contract is settled**, or
-  it gets done twice. M1 is written and tested on a few positions first.
-- 🔒 **M1's manifest uses `series_id` from day one**, anticipating V, so V does
+- 🔒 **Do not run the full 33 GB conversion until `time_axis`'s contract is settled**, or
+  it gets done twice. `luxendo` is written and tested on a few positions first.
+- 🔒 **`luxendo`'s manifest uses `series_id` from day one**, anticipating `vocab`, so `vocab` does
   not revisit it.
 
 ---
@@ -80,7 +122,7 @@ is not an accident — see §6.2 for why.
 | `position_id` | one physical field of view — **the same across timepoints** | the series table | the gatherer (seeded) |
 | `t` | which timepoint, within a position | a `position_id` | the gatherer (seeded) |
 | `feature_id` | one object **at one timepoint** | a `series_id` | `define_feature_group()` |
-| `track_id` | one object **through time** | a `position_id` | M3 (TrackMate) |
+| `track_id` | one object **through time** | a `position_id` | `tracking` (TrackMate) |
 
 🔒 `feature_id` = `<feature_type>_<NNNN>`, numbered **globally within a series**
 across all timepoints it contains. Four-digit padding.
@@ -164,7 +206,7 @@ table's `t` column when the gatherer wrote one file per timepoint (the default).
 
 ## 4. Milestones
 
-### M1 — Luxendo input transform
+### `luxendo` — Luxendo input transform
 
 Read `.lux.h5` and write files the existing pipeline accepts. Format facts are
 in `note/luxendo_file_format.md`; do not duplicate them here.
@@ -211,12 +253,35 @@ in `note/luxendo_file_format.md`; do not duplicate them here.
 **Verification.** Assemble two positions including `L26A pos3` (z=1), checksum
 against source, and open one in Fiji by drag-and-drop.
 
-### V — identity and vocabulary
+### `vocab` — identity and vocabulary
 
 One schema migration, so §3.1 and §3.2 land together.
 
 - [ ] `series_id` as the one word; `sample` and `prefix` both retired.
-- [ ] Both entry points write the same thing into it (see §6.3).
+- [ ] 🔒 **`Run_NucleusSelector` gains a `series_id` source control**, because
+      the interactive path has no series table to read an id from. One `String`
+      field whose meaning depends on the mode:
+
+      | mode | the String means | behaviour |
+      |---|---|---|
+      | `derive` | a pattern to find in the slice label or title | today's `resolveImageId()`, minus the `output_prefix` |
+      | `explicit` | the `series_id` itself | used verbatim |
+
+      ⚠️ **Validate the mode in code, not in the dialog.** A `#@ String` with
+      `choices={...}` is *not* validated on the command line — SciJava passes any
+      string straight through, as `BatchRunner.OPEN_MODES` already documents.
+      ⚠️ **`explicit` must not persist.** It names one image, so inheriting it
+      into the next run would silently mislabel that run's output — the same
+      category as `nucleus_threshold_range`, and the same treatment.
+- [ ] 🔒 **`position_id` and `t` reach the series table through `files.tsv`.**
+      The gatherer writes them as columns there, one row per output file, and
+      `Make_SampleSheet`'s existing `inherit` mechanism seeds them onto each
+      series row ([SampleSheet.groovy:270](../scripts/groovy/SampleSheet.groovy)).
+      No new code in `SampleSheet.build()`.
+      ⚠️ They must be declared **`seeded`**, not `machine`.
+      `.cli_read_sample_sheet()` *drops* machine columns, so declaring them
+      machine would silently remove them before they ever reach a feature row,
+      and `tracking` would have nothing to track on.
 - [ ] `samples.tsv` → `series.tsv`.
 - [ ] `position_id`, `t` added to the series table.
 - [ ] `feature_id` numbered globally within a series; `track_id` reserved.
@@ -233,7 +298,7 @@ identical **after dropping `name`**, and that `name` differs only by the removed
 `output_prefix`. That fails if anything else moved. Regenerate the fixture
 deliberately, and say so in the commit.
 
-### M2 — time axis through the pipeline
+### `time_axis` — time axis through the pipeline
 
 - [ ] Groovy: frame loop in `RoiDetect` / `NucleusPipeline`. Frames are
       hardcoded to 1 in three places: [NucleusPipeline.groovy:314](../scripts/groovy/NucleusPipeline.groovy),
@@ -256,6 +321,14 @@ deliberately, and say so in the commit.
       `(roi, ch, t)`; join becomes `by = c("roi", "t")`.
 - [ ] ⚠️ `saveRoiZip()` leaves a **189-byte partial zip** when it throws.
       Write to a temp path and rename on success.
+- [ ] ⚠️ 🔒 **Any new run parameter must land in four places at once**, and four
+      set-difference assertions enforce it: `PARAM_TYPES` ↔ the `#@` dialog
+      variables, the dialog's literal `value=` ↔ `DEFAULTS`, `PARAM_TYPES` ↔
+      `config/nucleus_config_template.txt` (all three in `Test_RunConfig`), and
+      `PARAM_TYPES` ↔ what `saveRunConfig()` actually writes
+      (`Test_NucleusPipeline`). `CLAUDE.md` records this breaking three times;
+      a parameter the run forgets to write silently becomes its DEFAULT on the
+      next run. The time source of §3.8 is such a parameter.
 
 **Verification.** Two runs that must be told apart: a single-frame image
 produces byte-identical output to before (correctly did nothing), and a
@@ -263,7 +336,7 @@ synthesised 4-frame stack produces four times the ROIs with distinct ids
 (actually ran). `tests/groovy/` synthesises its own images, so this needs no
 data.
 
-### M3 — linking across time
+### `tracking` — linking across time
 
 🔒 **Outsourced to TrackMate.** See §5.2.
 
@@ -272,9 +345,13 @@ data.
       carrying `(position_id, series_id, feature_id, t, track_id)`.
 - [ ] R joins `tracks.tsv` onto the feature table.
 - [ ] Record the tracker settings used, as `_config.txt` records everything else.
-- [ ] ❓ Centroids in calibrated units or pixels, and does `z` go in calibrated
-      or as the slice index? Settle against real data before trusting
-      `LINKING_MAX_DISTANCE`.
+- [ ] 🔒 **Calibrated units, never pixels.** In pixels `LINKING_MAX_DISTANCE`
+      stops meaning a physical distance, and pixel size varies fourfold inside
+      one `.lif` here, so a cut-off tuned on one dataset would be wrong on the
+      next. See §5.4.
+- [ ] ❓ **PENDING DECISION — does `z` take part in the distance?** Cannot be
+      settled without real data; revisit at implementation and **ask rather than
+      pick**. First thing to try: `z = 0`, link on xy. See §5.4.
 - [ ] 🔒 Time-linking belongs in **`annotate_features_cli.r`** — another
       annotation on the feature table, alongside containment, not a separate
       product.
@@ -289,7 +366,7 @@ data.
 two tracks, not one and not four. Then a dividing object; assert the split is
 recorded rather than becoming two unrelated tracks.
 
-### M4 — inspection round trip
+### `QoL` — inspection round trip
 
 🔒 `Open_*` is the verb — `Open_LifFile.groovy` already establishes it as "opens
 something into the Fiji GUI for a human", interactive-only by nature. No fourth
@@ -301,25 +378,26 @@ a library class and the `Open_*` script is a thin caller — same division as
 
 - [ ] `Inspect_AnnotatedFeatures.groovy` — inputs: series table, R feature
       table, ROI directory. No side effect; prints `filename`, `series_name`,
-      `series_index`, `position_id`, `t`, `n_<feature>`. After V the join is
+      `series_index`, `position_id`, `t`, `n_<feature>`. After `vocab` the join is
       `series_id` on both sides with no prefix to strip.
 - [ ] `Open_AnnotatedFeatures.groovy` — same inputs plus a series selector
       (number or `series_id`, default 1, `persist=false`) and an optional
       feature filter (blank = all). Opens the series via `BatchRunner`'s open
       path, loads the zip with `RoiExport.loadRoiZip()`, filters, renames with
       the `feature_id` prefix, adds to the ROI Manager.
-- [ ] `Open_SampleSheetRow.groovy` — open row N of a series table.
+- [ ] `Open_SeriesRow.groovy` — open row N of a series table. (Named for
+      `series.tsv`, not the retired "sample sheet".)
       🔒 **1-based** (it is a table row; `series_index` stays 0-based because
       Bio-Formats owns it — the dialog says which is which).
       🔒 **Does not honour `include`**, so the row number indexes the
       **unfiltered** table, and the script **prints** the row's `include` value.
 
-### S3 — the R container
+### `container` — the R container
 
 🔒 **S3, not S4.** A plain list, so `$` keeps working and nothing downstream
 changes on day one — a CLI can build one and ignore it, which makes it adoptable
 incrementally rather than as a rewrite. No methods required up front;
-`print.feature_set()` and `[.feature_set` can arrive later. S4 would be the only
+`print.image_region()` and `[.image_region` can arrive later. S4 would be the only
 object system in a repo whose idiom is tables and functions.
 
 🔒 **One element per grain.** Mixing grains is what produces the duplicated-row
@@ -340,7 +418,7 @@ structure(list(
                        #   n_frames, t_first, t_last, split/merge flags
   meta    = <list>     # run_id (run_id_from() exists), input fingerprint,
                        #   join report, dropped columns
-), class = "feature_set")   # name open
+), class = "image_region")
 ```
 
 The constructor asserts, once, in one place:
@@ -359,7 +437,7 @@ The constructor asserts, once, in one place:
       directory.
 - [ ] row counts reported, not assumed
 
-🔒 **Persistence is TSV; `.rds` is at most a cache.** M4's Groovy scripts cannot
+🔒 **Persistence is TSV; `.rds` is at most a cache.** `QoL`'s Groovy scripts cannot
 read an R serialisation, and a format only one language opens would undo what
 `schema/sheet_columns.tsv` exists to guarantee. Precedent:
 `feature_scatter_cli.r` deliberately reads `feature_stats.tsv`, not the `.rds`.
@@ -458,7 +536,41 @@ Luxendo data contains. This is why §3.4 writes our own columns.
 A string column added to our `ResultsTable` survives `rt.save()`; ours append
 after ImageJ's.
 
-### 5.4 Regex behaviour under a 4-field ROI id
+### 5.4 Coordinate units change which tracks survive
+
+Two spots, one nucleus, xy-stationary, z centroid moving by one slice between
+frames. Luxendo calibration: xy 0.208 µm, z 5.0 µm.
+
+```
+cut-off 3 units, one slice of z wobble:
+  calibrated µm (z step 5.0)     dz=5.000  -> NOT LINKED    <- the track breaks
+  slice index  (z step 1)        dz=1.000  -> linked
+
+real xy motion of 2 µm, no z change:
+  calibrated µm                  dx=2.000  -> linked
+  pixels (9.6 px at 0.208 µm)    dx=9.600  -> NOT LINKED
+```
+
+Pixels fail the second case, so 🔒 calibrated.
+
+But calibrated exposes the anisotropy: **24x between xy and z**. One slice of
+z-centroid wobble costs 5 µm, which swamps a cut-off tuned for a couple of µm of
+real xy motion and breaks the track of a nucleus that never moved. With ~20 µm
+nuclei at 5 µm steps the z centroid is resolved to about four samples, so much
+of that wobble is sampling noise rather than motion.
+
+Three ways out, in the order to try them:
+
+1. **`z = 0`, link on xy only.** Likeliest right here — xy is the informative
+   axis and z is coarse.
+2. Full 3D with `LINKING_MAX_DISTANCE` at or above the z step. Safe, but the xy
+   tolerance becomes >= 5 µm too, which may over-link a dense field.
+3. Scale z by the anisotropy before passing it. Tunable, and arbitrary.
+
+❓ Which one is a **pending decision** needing a real dataset. Do not pick
+silently.
+
+### 5.5 Regex behaviour under a 4-field ROI id
 
 | id | `feature_roi_prefix()` |
 |---|---|
@@ -505,7 +617,7 @@ are not redundant: `series_index` and `series_name` are unique *within a file*
 (which is exactly why neither can be the identity across a batch — a Leica
 `Series001` recurs in every file), while `series_id` is unique across the table.
 
-Note the underlying problem V fixes is not naming: **one column holds two
+Note the underlying problem `vocab` fixes is not naming: **one column holds two
 compositions today.** Batch passes the sheet's `prefix` as `basename`, so `name`
 = the per-series id with no `output_prefix`; interactive falls back to
 `(output_prefix ?: "") + resolveImageId(...)`
@@ -524,7 +636,7 @@ id shapes; and the outline table already made this split for z.
 
 ### 6.5 `<feature>_t0001_SSSS-NNNN-YYYY` instead of `TTTT-`
 
-**Rejected: fails silently.** See §5.4. Prefer the id that returns `NA` and
+**Rejected: fails silently.** See §5.5. Prefer the id that returns `NA` and
 warns over the one that returns a plausible wrong feature type.
 
 ### 6.6 No `z` in `_res.txt`
@@ -554,17 +666,37 @@ S3-classed list gets the whole value — one object, keys checked in one place.
 
 **Rejected: it is a fork.** `CLAUDE.md` says add the option to the library
 rather than fork a script. The safeguard moves to the provenance record, a
-filename token, and the calibration test in M1.
+filename token, and the calibration test in `luxendo`.
 
-### 6.10 Building S3 before M3
+### 6.10 Building `container` before `tracking`
 
 **Rejected: see the shape of a working pipeline first.** Not for the reason the
 review gave — the `BatchRunner.runEach()` precedent is a weak analogy, since
 nothing was anticipated then because nothing was planned that far ahead. The
-real merit is narrower: whatever the container holds should be what M3 turned
+real merit is narrower: whatever the container holds should be what `tracking` turned
 out to need, not what it was guessed to need.
 
 ---
+
+### 6.11 `feature_set` / `analysis_set` / `particle_feature` as the class name
+
+**Rejected in favour of `image_region`.** `feature_set` names the container
+after one of its own grains, which is confusing exactly where the object is
+meant to remove confusion. `particle_feature` reproduces that flaw — it contains
+`feature`, a grain — even though "particle" is good, familiar vocabulary from
+`Analyze Particles`. `analysis_set` avoids every collision but says nothing: it
+could hold anything.
+
+`image_region` says what the object is a collection of, collides with no grain,
+and is singular in the way R class names conventionally are (`data.frame`,
+`tbl_df`, `sf`).
+
+⚠️ **This is the class name only.** The `roi` grain keeps its name. `roi` is in
+the output contract — the `_outline.txt` column, the `_res.txt` column after
+`time_axis`, the `\d{4}-\d{4}-\d{4}` id — and in `RoiExport`, `RoiDetect`,
+`loadRoiZip` and the ROI Manager. It is also standard ImageJ vocabulary. Renaming
+it on the R side alone would create a second word for one concept, which is what
+`vocab` exists to remove.
 
 ## 7. `find_overlap_roi_features()` — review, and what replaces it
 
@@ -597,7 +729,7 @@ this repo's hazard is silent row multiplication.
 `/Volumes/pool-toti-imaging/...` path. Confirmed a live-testing scratchpad —
 delete it.
 
-🔒 **M3 extracts `relate_features.r`'s containment core** and gives it a
+🔒 **`tracking` extracts `relate_features.r`'s containment core** and gives it a
 directional denominator, retained scores, one-to-one resolution with ties
 recorded, and partition keys as an argument. One core, two callers
 (parent/child and frame-to-frame). `find_overlap_roi_features()` is then
@@ -626,15 +758,19 @@ position tested.
 `.ims` files permute channel order relative to the directory names. Identity
 comes from the manifest, never from an index alone.
 
-**H5 — `feature_stats.r` silently keeps only the first timepoint.** §M2.
+**H5 — `feature_stats.r` silently keeps only the first timepoint.** the `time_axis` milestone.
 
 **H6 — a failed ROI-zip write leaves a partial file.** Verified: 189 bytes on
-disk after the exception, which `loadRoiZip` would read. §M2.
+disk after the exception, which `loadRoiZip` would read. the `time_axis` milestone.
 
 ---
 
 ## 9. Open questions
 
-1. ❓ TrackMate centroids: calibrated units or pixels, and `z` calibrated or as
-   slice index? (M3)
-2. ❓ The `feature_set` class name. (S3)
+1. ❓ **PENDING DECISION — does `z` take part in the TrackMate distance?**
+   Calibrated units are locked (§5.4); whether `z` participates cannot be
+   settled without a real dataset. Try `z = 0` first, and **ask rather than
+   pick**. (`tracking`)
+
+That is the only one left. The container class name was settled as
+🔒 **`image_region`** — see §6.11.
