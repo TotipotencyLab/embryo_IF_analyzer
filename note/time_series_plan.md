@@ -2,16 +2,19 @@
 
 **Status: design. Nothing implemented.**
 
-Scrutinised end to end on 2026-09-30; the findings are folded in rather than
-appended, so the decisions below are post-review. The largest was that
-`feature_id` and "the object through time" were the same word — see "Identity:
-what is unique, and in what scope".
+Scrutinised end to end on 2026-09-30, then reviewed in line; both rounds are
+folded in rather than appended, so the decisions below are current. Two changed
+the shape of the plan: `feature_id` and "the object through time" were the same
+word (see "Identity: what is unique, and in what scope"), and the container
+choice that would have forced a `position_id` axis turned out not to be forced
+(see "Do we need `position_id`?").
 
 Working note for tracking progress and holding decisions that must survive a
-context compaction. **Delete when all milestones land — but migrate the
-surviving decisions first** (into `CLAUDE.md`, `note/data_formats.md` or
-`note/luxendo_file_format.md`), because the rationale is the part worth keeping
-and deleting the file is how it gets lost.
+context compaction. **Delete when all milestones land — but migrate the surviving decisions first.**
+Default target is `note/data_formats.md` (shapes) or
+`note/luxendo_file_format.md` (that format's facts). `CLAUDE.md` only for the
+few that are standing hazards someone must know *before* touching the code —
+most of what is here is situational and would just make that file longer.
 
 Format facts about the input live in `note/luxendo_file_format.md`, not here.
 
@@ -19,13 +22,23 @@ Format facts about the input live in `note/luxendo_file_format.md`, not here.
 
 Make the repo able to ask time-resolved questions — how one nucleus's volume,
 cross-sectional area, circularity or signal intensity changes over time —
-rather than analysing each timepoint as an unrelated image. Luxendo TruLive3D
-is the first dataset that needs it and the driving case throughout.
+rather than analysing each timepoint as an unrelated image.
+
+**The driver is the shape of the data, not this dataset.** Luxendo TruLive3D is
+the first instance to arrive; anything with a time axis should fall out of the
+same design. Nothing here should be written so that it only works for a
+TruLive3D.
 
 The alternative considered and rejected: treat each (position, timepoint) as an
 independent sheet row and change nothing in the output contract. Cheaper, gives
 per-timepoint statistics, but cannot link a feature to itself across time, so
 every time-resolved question stays out of reach. The linking is the point.
+
+⚠️ **This is in tension with "one TIFF per timepoint", and the tension is
+resolved by BigTIFF — see "Do we need `position_id`?" below.** Short version:
+`position_id` is crucial *if* one file holds one timepoint, and unnecessary if
+one file holds a whole position. BigTIFF has now been verified to work, so the
+recommendation is one file per position and no new axis.
 
 ## Sequence
 
@@ -38,8 +51,8 @@ work, not of importance.
 | **2** | **V** identity/vocabulary unification | before any *other* schema change: M2 changes the schema too, and two migrations is worse than one. M4 and the S3 both key on this column. |
 | **3** | **M2** time axis | the contract decisions. |
 | **4** | **M4** inspection scripts | small, and they give a way to *eyeball* M2's output — worth something at the verify step. |
-| **5** | **S3** container | after `t` exists. Position relative to M3 is **unsettled** — see below. |
-| **6** | **M3** linking across time | needs `t`. Much smaller than first scoped — TrackMate does the linking. |
+| **5** | **M3** linking across time | needs `t`. Much smaller than first scoped — TrackMate does the linking. |
+| **6** | **S3** container | last, deliberately: see the shape of a working pipeline before building a container for it. |
 
 Two constraints that cut across the order:
 
@@ -49,12 +62,20 @@ Two constraints that cut across the order:
   does not have to revisit it. M1 is otherwise unaffected by V because it writes
   its own table and feeds `Make_SampleSheet` unchanged.
 
-⚠️ **Open: S3 before or after M3?** The plan puts the container first because M3
-consumes it. The scrutiny pass called that a contradiction of the repo's own
-precedent — `BatchRunner.runEach()` was extracted *because a second caller
-appeared*, not in anticipation of one — and argued for writing M3 against plain
-tables and extracting the container once its shape is known. That argument got
-stronger when M3 shrank to a TrackMate call. Not yet decided.
+✅ **Resolved: S3 comes after M3**, as the table above now shows.
+
+The reason is *not* the one the scrutiny pass gave. It argued from the
+`BatchRunner.runEach()` precedent — extracted because a second caller appeared —
+but that is a weak analogy: nothing was anticipated back then because nothing
+was planned that far ahead, whereas here there *is* a goal and thinking about
+the problem up front is the point. The precedent describes how that extraction
+happened to occur, not a rule against planning.
+
+The real merit is narrower and still decisive: **see the shape of a pipeline
+that works before building a container for it.** Writing M3 against plain tables
+costs little, and whatever the container ends up holding will be what M3 turned
+out to need rather than what it was guessed to need. That is over-engineering
+avoidance, not precedent-following.
 
 ## Milestones
 
@@ -64,8 +85,12 @@ stronger when M3 shrank to a TrackMate call. Not yet decided.
 - [ ] Build an assembly manifest from a Luxendo run folder: one row per
       **output file**, naming every source file and plane that feeds it.
       Identity column named `image_id` from the start.
-- [ ] Generic assembler: manifest -> TIFF. One timepoint per file by default.
-- [ ] Luxendo wrapper running both end to end.
+- [ ] Generic assembler: manifest -> OME-TIFF (BigTIFF), one file per position
+      with all timepoints by default — see "Do we need `position_id`?".
+- [ ] **Three entry modes, agreed:** (i) end to end from a Luxendo directory,
+      (ii) **manifest only** — so a look at the plan costs nothing before
+      committing to 33 GB, (iii) assemble from an existing manifest. (ii) is the
+      one that earns the manifest its keep.
 - [ ] Per-output provenance record (source paths, checksums, gatherer version).
 - [ ] Honour `include`, with exactly `BatchRunner.isIncluded()`'s vocabulary.
 - [ ] Verification mode: re-read output planes, compare to source by checksum.
@@ -77,6 +102,10 @@ stronger when M3 shrank to a TrackMate call. Not yet decided.
 See "The identity problem" and "Identity: what is unique, and in what scope"
 below. This is not only a rename; it is the one schema migration, so the
 `image_id`, `feature_id` and `track_id` decisions all ride together.
+
+Whether a `position_id` joins them depends on the container choice — see
+"Do we need `position_id`?". If one file holds a whole position, it does not.
+
 
 - [ ] Decide `image_id` as the one word, retire `sample`.
 - [ ] Make both entry points write the same thing into it.
@@ -96,10 +125,14 @@ trade-off is visible rather than forgotten.
 
 ### M2 — time axis through the pipeline
 
+*Agreed: the milestone that matters most; everything else is either input to it
+or built on it.*
+
 - [ ] Groovy: frame loop in `RoiDetect` / `NucleusPipeline`.
 - [ ] `t` column in `_outline.txt`.
-- [ ] `roi`, `t`, `ch` as **explicit columns** in `_res.txt`; no `z` there
-      (decision 4).
+- [ ] `roi`, `z`, `t`, `ch` as **explicit columns** in `_res.txt` (decision 4);
+      `z` is for human eyes and is safe because R takes `res` through an
+      allow-list.
 - [ ] ROI id gains `TTTT-` when frames > 1 (decision 5) — forced by the ROI zip.
 - [ ] R: `t` honoured in grouping; absent `t` means one frame.
 - [ ] Join on `(roi, t)` (decision 4).
@@ -109,10 +142,6 @@ trade-off is visible rather than forgotten.
 - [ ] `Inspect_AnnotatedFeatures.groovy` — read-only feature-count table.
 - [ ] `Open_AnnotatedFeatures.groovy` — one image's ROIs into the ROI Manager.
 - [ ] `Open_SampleSheetRow.groovy` — open row N (1-based, unfiltered) of a sheet.
-
-### S3 — the container
-
-See "The S3 container" below.
 
 ### M3 — linking features across time
 
@@ -126,6 +155,10 @@ See "The S3 container" below.
       everything else.
 - [ ] *Low priority:* a primitive in-house overlap linker as a fallback and a
       cross-check. Not on the critical path now.
+
+### S3 — the container
+
+See "The S3 container" below.
 
 ## Design decisions
 
@@ -171,8 +204,8 @@ contain changes with it:
 
 So `Slice` means z, or t, or the channel, depending on shape; `Ch` and `Frame`
 vanish in cases the Luxendo data actually contains (`3c 1z 4t` is `L26A pos3`
-gathered across time). Label parsing and stack-position columns are *both*
-unreliable. `measureRois()` already knows the true `ch`, `slices[i]` and (once
+gathered across time). Label parsing and stack-position columns are *both* unreliable. 
+`measureRois()` already knows the true `ch`, `slices[i]` and (once
 it loops) the frame, and `rt` is our own `ResultsTable` — so writing them
 ourselves is authoritative, shape-independent and about four lines.
 
@@ -195,11 +228,21 @@ and the answer is not the parsimonious one. Three reasons:
   already made exactly this split for z — an explicit `z` column despite `SSSS`
   being in the id — and that precedent is the one to follow.
 
-**No `z` in `_res.txt` at all.** Nothing on the measurement path groups by z —
-`CLAUDE.md` is explicit that the unit is the feature, not the ROI, and adjacent
-z-slices are not replicates — so it would be a column nothing reads. Its
-agreement is also implied transitively, since the roi id encodes z and `roi` is
-a key.
+**`z` IS written, for eyeballing — and it costs nothing.** An earlier draft said
+to leave it out, on the grounds that nothing on the measurement path groups by z
+and a duplicated `z` would collide on the join. The first half is true; the
+second turns out not to be a problem, because `summarise_feature_stats()`
+already subsets `res` through an **allow-list**:
+
+```r
+keep <- c("roi", "ch", "mean", intersect(c("median", "circ"), colnames(res_df)))
+```
+
+Anything else in `_res.txt` is discarded before the join ever happens. So `z`
+can sit in the file for a human reading it, with no join risk at all. Write it.
+
+The rule this generalises to: extra columns in `_res.txt` are free, because the
+R side takes what it names rather than everything it finds.
 
 **The join is `by = c("roi", "t")`.** Both are keys, so nothing is a duplicated
 non-key column and the worry about accumulating join columns goes away: the only
@@ -230,16 +273,33 @@ Of the two ways to add `t`, the evidence favours the prefix:
 
 Prefer the option that fails loudly.
 
-**6. Container: TIFF, one timepoint per file.** Full resolution, lossless.
-Classic TIFF's 4 GB cap is real — one position x 4 timepoints is 3.93 GB — and
-per-timepoint files are ~981 MB. If combined files are ever wanted,
-`OMETiffWriter.setBigTiff()` and its companion mode are both available; Zarr and
-N5 are not (see the format note).
+**6. Container: OME-TIFF, BigTIFF, one file per position with all timepoints.**
+*Revised — an earlier draft said one timepoint per file, on the assumption that
+classic TIFF's 4 GB cap forced it. BigTIFF has since been verified to work
+through every path that matters. See "Do we need `position_id`?" for the full
+argument; the short version is that this choice removes an entire axis.*
+Zarr and N5 remain unavailable (see the format note).
 
-**7. Gathering for analysis and gathering for eyeballing stay separate.** The
-analysis gather is lossless, full-resolution, checksum-verified. Any downsampled
-browse-in-Fiji stack is a different entry point with different output naming, so
-nobody can measure from a preview without noticing.
+**7. One assembler with a resize option — not two entry points.** Reversed from
+an earlier draft, and the repo's own rule is the reason: *"If a new assay needs
+behaviour the library lacks, add the option to the library — do not fork a
+script."* Two gatherers differing only in scale is a fork.
+
+So: `resize` (non-persistent, default off) and `gatherFrames` as independent
+options, exactly as proposed.
+
+The safeguard moves from "separate functions" to three cheaper things, and the
+third is the one that actually matters:
+
+- the resize factor is recorded in the per-output provenance record;
+- a non-default resize puts a token in the output filename, so a downsampled
+  file cannot be mistaken for full-res at a glance;
+- ⚠️ **resizing must scale the calibration.** Halve the pixels and
+  `pixel_width`/`pixel_height` must double. Get it wrong and every area is out
+  by 4x while the image looks perfect — the exact silent failure this repo is
+  built around. This is the real risk in merging the two, and it is a test, not
+  a comment: assemble the same position at 1x and 2x and assert the physical
+  extent matches.
 
 **8. Do not write a third overlap implementation.** See the review below.
 
@@ -265,7 +325,13 @@ only if the S3 version proves insufficient.
 **This is not only a naming drift. One column currently holds two different
 compositions depending on which entry point ran.**
 
+*Agreed on both counts: one output file per image series is right — detection is
+expensive and a long run must not risk one big file — and the identity must
+travel as file **content**, not as a filename, with the two runners writing the
+same thing. That second half is what this milestone fixes.*
+
 Measured in the code:
+
 
 - **Batch**: `BatchRunner` passes the sheet's `prefix` as `basename`, and
   `basename` is what `saveOutlineCoords()` writes into `name`. So
@@ -291,6 +357,7 @@ So there are three concepts and they need three words:
 | the per-series identity (`Position010`, `alias_s0000_series`) | `samples.tsv.prefix`, `basename` | **`image_id`** |
 | what is actually written into `name` / called `sample` in R | `name`, `sample` | **`image_id`** — i.e. make it the same thing |
 
+
 **Recommendation: `image_id`, and make the third concept *be* the second.**
 Stop baking `output_prefix` into the identity. Then the join to `samples.tsv` is
 direct with no prefix to strip, and `--output_prefix` goes back to doing only
@@ -307,14 +374,45 @@ Why `image_id` and not the alternatives:
   `roi`, `parent_feature_id` and `run_id`.
 - `image_id` is the word the prose docs already reach for.
 
+### `series_id` was considered and is the better *literal* description
+
+The argument for it is real: `samples.tsv` is one row per Bio-Formats series by
+construction, so `series_id` says exactly what the row is, and it would sit
+consistently beside the existing `series_index` and `series_name`.
+
+**Recommend `image_id` anyway**, for two reasons:
+
+- **After M1 the analysed unit is a TIFF with one series.** "Series" is a
+  container concept — which sub-image inside a `.lif` — and once the gatherer
+  has written a standalone file, calling it a series imports a distinction that
+  no longer exists. A user opening `L26A_pos1.tif` is not thinking about series.
+- **It keeps two jobs apart.** `series_index` / `series_name` stay as `machine`
+  columns saying *where this image came from* — provenance. `image_id` says
+  *what this image is* — identity. Naming the identity `series_id` would put
+  three near-identical `series_*` names in one table, two of which are
+  provenance and one of which is the key.
+
+Weak preference, not a strong one. If `series_id` is chosen instead, nothing
+else in this plan changes — substitute it throughout.
+
 The cost is the honest part: adopting it means the interactive path stops
 writing `output_prefix` into `name`, which **changes an output file**. That is a
 reference-run-and-diff change, and the diff is expected to be non-empty — the
 one case where `CLAUDE.md`'s "re-run a reference and diff" is used to confirm a
 change rather than to confirm the absence of one.
 
-Migration: accept `prefix` in a sheet as a deprecated alias for `image_id` and
-warn. Loud, not silent, and cheap.
+**And it can be checked better than "trust the author".** A byte-identical diff
+is impossible, but the *expected* diff is exactly one column: re-run the
+reference, then assert that the old and new outputs are identical after dropping
+`name`, and that `name` differs only by the `output_prefix` that was removed.
+That fails if anything else moved, which is the whole point. The fixture is then
+regenerated deliberately, with the commit saying so.
+
+Migration: **drop `prefix` outright, no alias and no warning.** Agreed — the
+sample sheet postdates the repo's only user, so there are no third-party sheets
+to keep working, and an alias would be a reserved word carried forever for a
+migration nobody needs. An old sheet then fails on a missing required column,
+which is loud and correct.
 
 If the behaviour change is unwanted, the fallback is to name the third concept
 `output_id` and keep it distinct — but then every join has to know the prefix,
@@ -357,7 +455,14 @@ What the constructor checks, once, in one place — this is the whole point:
 - every `measure` key exists in `roi` — the join that "can be perfectly correct
   while matching nothing"
 - every non-`NA` `roi$feature_id` exists in `feature`
+- **referential integrity in both directions** — asked for, and yes. Every
+  `image_id` appearing in `roi`, `measure` or `feature` must exist in `image`,
+  and an `image` row with no ROIs is reported rather than assumed empty. A
+  stray `image_id` is the signature of a partial read — one `_config.txt`
+  missing from a results directory — and it is exactly the kind of thing that
+  otherwise shows up as a quietly short table.
 - row counts reported, not assumed
+
 
 **S3 rather than S4**, and rather than nothing:
 
@@ -373,6 +478,26 @@ What the constructor checks, once, in one place — this is the whole point:
 The object is **multi-image** — `image_id` is a column in every element — because
 that is already how the CLIs work (read many files, bind, aggregate). One object
 per image would push the binding back onto every caller.
+
+### Yes, it changes the CLI contract — and that is most of the benefit
+
+Today every CLI re-scans an output directory and re-derives identity from
+filenames. With one gathered object, everything after the first
+annotation step takes *one* input instead of a directory plus a set of
+pattern flags. That removes a whole class of "which files did it actually
+pick up" ambiguity.
+
+⚠️ **But persistence must not be `.rds`.** M4's `Inspect_*` and `Open_*` scripts
+are Groovy and cannot read an R serialisation, and a format only one of the two
+languages can open would undo the thing `schema/sheet_columns.tsv` exists to
+guarantee.
+
+**So: TSV is the artifact, `.rds` is at most a cache.** One TSV per grain
+(`image`, `roi`, `measure`, `feature`, `track`) plus the constructor that binds
+them. There is already precedent for exactly this split —
+`feature_scatter_cli.r` deliberately reads `feature_stats.tsv` and not the
+`.rds`, so that the expensive step happens once while the exploring end stays
+cheap and re-runnable. Same reasoning, one layer up.
 
 ## Identity: what is unique, and in what scope
 
@@ -436,6 +561,77 @@ Revisit only if a *stable* id is later needed — one that survives re-running
 with different parameters, which would have to be content-derived (a hash, like
 `run_id_from()`) and genuinely unreadable. Then an alias earns its place.
 
+## Do we need `position_id`?
+
+Asked for scrutiny, and it is the sharpest question in the round, because the
+answer flips on a container choice that was made for a reason that turns out not
+to hold.
+
+### Why the question arises
+
+With **one file per (position, timepoint)**, every timepoint is its own sheet
+row and gets its own `image_id`. Nothing then says that rows 1..4 are the same
+physical field of view in time order — `image_id` is a key, not a grouping. To
+reconstruct a time series you would need two new sheet columns, `position_id`
+and `t`, and tracking would have to run *across* rows.
+
+So: **given that container choice, `position_id` is crucial, not optional.** The
+only alternative would be parsing the position back out of `image_id`
+(`L26A_pos1_t0000` → position `L26A_pos1`), which is precisely the
+filename-parsing failure this repo already documents — a greedy prefix that
+mis-split `S1_growing_oocyte` and lost a sample name silently.
+
+### But the choice that creates the need does not hold
+
+The per-timepoint split was justified by classic TIFF's 4 GB cap: one Luxendo
+position across 4 timepoints is 3.93 GB, uncomfortably close. **BigTIFF removes
+that cap, and it has now been tested rather than assumed** (2026-09-30):
+
+```
+wrote big.ome.tiff        TIFF magic number = 43  -> BigTIFF
+Bio-Formats read back:    OMETiffReader  256x256 z=5 c=3 t=4  px=0.208µm  pz=5.0µm
+ImageJ IJ.openImage():    opened 256x256  nC=3 nZ=5 nT=4  cal=0.208 micron
+```
+
+Written via `OMETiffWriter.setBigTiff(true)`, and — the part that mattered —
+opened by **ImageJ's own opener** as a correctly calibrated 3c/5z/4t hyperstack.
+That was the open risk: that BigTIFF would write fine and then not open by
+drag-and-drop.
+
+### The two options, and what each costs
+
+| | **A. one file per (position, t)** | **B. one file per position, BigTIFF** |
+|---|---|---|
+| new axis | **`position_id` required** | none — `image_id` *is* the position |
+| where `t` lives | a sheet column | frames inside the file |
+| `track_id` scope | spans `image_id`s, so keyed on `(position_id, track_id)` | `(image_id, track_id)` — stays clean |
+| file size | ~981 MB | ~3.9 GB for this dataset |
+| classic-TIFF safe | yes | no, needs BigTIFF (verified) |
+| partial acquisition | a timepoint at a time | whole position or nothing |
+
+**The `track_id` row is the structural argument.** Under A, a track spans
+several `image_id`s, so it cannot be keyed within one — the S3 container would
+need `track` keyed on `(position_id, track_id)` while `feature` is keyed on
+`(image_id, feature_id)`, and joins between them would have to route through
+`position_id`. Under B, everything is keyed within an image and the container
+stays as designed. Option A does not just add a column; it adds a second
+identity scope.
+
+### Recommendation: B, and no `position_id`
+
+Both decision 3 ("time arrives two ways") and decision 2 (absent `t` means one
+frame) survive unchanged — a single-timepoint image is still just a file with
+one frame, and a sheet column remains a legal way to carry `t` for data that
+arrives pre-split. What goes away is the *need* to invent an axis for the common
+case.
+
+**The honest counter-argument** is the last row of the table: per-timepoint files
+let you analyse t=0 while t=3 is still being acquired, and let one corrupt
+timepoint cost one file instead of a position. If live, incremental analysis
+during acquisition is a real requirement rather than a hypothetical, that
+reopens A — and with it `position_id`. It is worth answering before M1 is
+written, because it is the one thing here that would change M1's output shape.
+
 ## Linking: TrackMate, verified
 
 Outsourcing agreed. What follows was measured, because the obvious integration
@@ -493,6 +689,10 @@ Asked for directly. 303 lines, used by `PLA_analysis/test_PLA.R` and
 the scoring is why it never felt satisfying.** Five findings, roughly in order
 of how much they matter.
 
+*Asked: can the two overlap functions be merged into one? Yes — that is exactly
+what the extraction at the end of this section is. One directional-containment
+core, two callers (parent/child and frame-to-frame).*
+
 **R1 — the denominator is symmetric, so the score is not a consistent
 quantity.** `min_area = pmin(area_1, area_2)` and
 `int_ratio = int_area / min_area`. For nucleolus-in-nucleus the child is always
@@ -532,20 +732,45 @@ applied *after* the geometric predicate rather than before it; and the
 per-pair loop does a linear `F1_df$roi == ...` scan inside the loop. Fine at
 70x70, quadratic-on-quadratic across four timepoints.
 
-Also: `reframe()` is used where every expression is scalar and `summarise()` is
-meant, and the `if(F){...}` block carries a hardcoded
-`/Volumes/pool-toti-imaging/...` path while being the only documentation of
-intended use.
+**On `reframe()` — the nit was overstated, and the mental model is right.**
+Asked directly, so it was tested rather than asserted (dplyr 1.2.1, R 4.6.1):
+
+```
+scalar expressions:   summarise -> 2 rows, 1 group   reframe -> 2 rows, 1 group
+                      identical values? TRUE
+non-scalar (range(x)): summarise -> ERROR
+                       reframe   -> 4 rows, silently
+```
+
+So "`reframe` is `summarise` with automatic ungrouping" is accurate for scalar
+expressions — the outputs are identical. The *only* difference that matters:
+`summarise()` **errors** when an expression unexpectedly returns more than one
+value, and `reframe()` silently returns extra rows. In a repo whose named hazard
+is silent row multiplication, that argues mildly for `summarise()` where the
+expressions are meant to be scalar. Mildly. It is not a bug in the existing
+code.
+
+Also: the `if(F){...}` block carries a hardcoded `/Volumes/pool-toti-imaging/...`
+path. **Confirmed as a live-testing scratchpad — delete it** when the file is
+next touched.
 
 **So M3 extracts `relate_features.r`'s containment core and gives it: a
 directional denominator, retained scores, one-to-one resolution with ties
-recorded, and partition keys (`t`) as an argument.** `find_overlap_roi_features()`
-stays where it is for `PLA_analysis/`, or is retired once the new utility
-covers its test.
+recorded, and partition keys (`t`) as an argument.**
+
+`find_overlap_roi_features()` is then **retired**. Two callers must be handled
+first: `PLA_analysis/test_PLA.R` sources it, and `tests/testthat/test-spatial.R`
+exercises it — the test migrates to the new utility, and the PLA script either
+migrates or pins what it needs. Retiring it is the point; leaving a second
+overlap implementation in place is how a third one eventually gets written.
 
 ## M4 — the inspection scripts, as specified
 
 Both feasible; nothing here needs a capability the repo lacks.
+
+*The S3 work may change what these read, so the inputs below are provisional.
+The cross-language friction is already settled in that section: the persisted
+artifact is TSV, never `.rds`, precisely so these Groovy scripts can read it.*
 
 `Inspect_AnnotatedFeatures.groovy` — inputs: sample sheet, R feature table, ROI
 directory. Side effect: none, prints `filename`, `series_name`, `series_index`,
@@ -573,15 +798,19 @@ Manager.
 
 ## Remaining open questions
 
-1. Does the assembly manifest get a `schema/` entry like `sheet_columns.tsv`, or
-   stay internal to the gatherer? A `schema/` entry means one source of truth
-   read at run time by both languages, which is the repo's stated preference.
+1. ~~Does the assembly manifest get a `schema/` entry?~~ **Resolved: yes.** One
+   source of truth read at run time by both languages, as `sheet_columns.tsv`
+   already is — and the manifest is read by the assembler and written by the
+   Luxendo wrapper, so it has two readers from day one.
 2. ~~Linking rule: overlap or nearest centroid?~~ **Resolved:** outsourced to
    TrackMate's LAP tracker, which does both cost models properly and handles
    splitting and gap closing. See "Linking: TrackMate, verified".
-3. Does time-linking belong in `annotate_features_cli.r` or its own CLI?
-4. Storage: conversion doubles 33 GB on the external SSD. Convert only
-   `include=true` rows? Keep `raw/` afterwards?
+3. ~~Does time-linking belong in `annotate_features_cli.r` or its own CLI?~~
+   **Resolved: `annotate_features_cli.r`.** It is another annotation on the
+   feature table, alongside containment — not a separate product.
+4. ~~Convert only `include=true` rows?~~ **Resolved: yes**, the gatherer honours
+   `include` like everything else. Still open: whether `raw/` is kept after a
+   verified conversion.
 5. ~~Does anything downstream read `res_df$z`?~~ **Resolved: no.**
    `summarise_feature_stats()` requires only `roi, ch, mean` from `res`
    ([feature_stats.r:128](../scripts/R/feature_stats.r)) and its `keep` vector
@@ -596,9 +825,29 @@ Manager.
 Already true in z (`CLAUDE.md`). Across t the same mechanism removes a frame and
 breaks a track, which is harder to see than a split object.
 
-**H3 — z varies per position in the Luxendo data** (16..39, one at z=1). `z=1`
-must produce a blank `pixel_depth`, and `3c 1z 4t` is the worst case in the
-decision-4 table.
+**H3 — z varies per position, and a single-plane position is the sharp edge.**
+Rewritten, because the original was too terse to be useful.
+
+`pixel_depth` is the **z step** — the physical distance between slices. It is a
+field in `_config.txt` and a column in `samples.tsv`
+(`schema/sheet_columns.tsv` describes it), and the repo has a standing rule
+about it: *blank for a single plane, never ImageJ's default of 1.0*, because a z
+step that does not exist must not arrive as a usable-looking number. Something
+downstream would multiply by it.
+
+So the hazard is two things, not one:
+
+1. **Outputs will differ in dimensions** — z is 16..39 across the Luxendo
+   positions, and in general x, y, c and t can differ too. Nothing in the
+   assembler or the batch may assume one shape for a run. That is what the
+   sheet's per-row `size_*` columns are for, and the batch already tolerates it;
+   the gatherer must not undo that by, say, sizing a stack from the first row.
+2. **`L26A pos3` has z = 1**, so its `pixel_depth` must be written blank. And
+   whichever container choice is made, that position lands on one of the rows of
+   the decision-4 table where ImageJ's own columns go missing: `3c 1z 1t` is not
+   a hyperstack and reports *the channel* in `Slice` with no `Ch` column at all,
+   while `3c 1z 4t` has no `Slice` column. It is the single position most likely
+   to break something quietly, and it is worth being the first one tested.
 
 **H5 — `feature_stats.r` silently keeps only the first timepoint.**
 [feature_stats.r:134](../scripts/R/feature_stats.r) dedups on `(roi, ch)` and
