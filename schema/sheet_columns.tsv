@@ -19,3 +19,20 @@ samples	pixel_height	machine	double	no	physical pixel size in y
 samples	pixel_depth	machine	double	no	z step; BLANK for a single plane, where there is no z axis to measure
 samples	pixel_unit	machine	string	no	unit of the three sizes above
 samples	file_size	machine	integer	yes	bytes; with the basename this is the fingerprint that spots a copied or replaced file
+manifest	output_path	machine	string	yes	image file to write; relative to the output directory. Rows sharing one value describe one output file, one row per channel
+manifest	series_id	machine	string	yes	identity of the output series; sanitise(<position_id>_t<TTTT>)
+manifest	position_id	machine	string	yes	the field of view, the same across time points; sanitise(s<NNNN>_<stack_description>)
+manifest	t	machine	integer	yes	0-based time point within the position, from the source metadata
+manifest	channel	machine	integer	yes	0-based channel index IN THE OUTPUT, taken from the source metadata rather than from directory order
+manifest	channel_name	machine	string	no	channel_description from the source; BLANK when the acquisition did not name it
+manifest	source_path	machine	string	yes	the file supplying this channel, relative to the scanned directory
+manifest	source_bytes	machine	integer	yes	bytes; with the basename this is the fingerprint that spots a replaced source
+manifest	size_x	machine	integer	yes	width in pixels
+manifest	size_y	machine	integer	yes	height in pixels
+manifest	size_z	machine	integer	yes	slices
+manifest	pixel_width	machine	double	no	physical pixel size in x
+manifest	pixel_height	machine	double	no	physical pixel size in y
+manifest	pixel_depth	machine	double	no	z step; BLANK for a single plane, where there is no z axis to measure
+manifest	pixel_unit	machine	string	no	unit of the three sizes above
+manifest	stack_description	machine	string	no	what the acquisition called this position, before sanitising
+manifest	include	seeded	boolean	no	whether to assemble this output; all rows of one output_path must agree

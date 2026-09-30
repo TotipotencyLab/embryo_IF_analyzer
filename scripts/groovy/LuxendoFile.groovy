@@ -42,6 +42,28 @@ class LuxendoFile implements Closeable {
     /** The subset of processingInformation the gatherer needs. */
     Map info = [:]
 
+    /**
+     * Does this file hold pixels, or is it one of the link-only index files?
+     *
+     * A Luxendo tree contains `main_raw.lux.h5` beside the real stacks: a few
+     * hundred KB of HDF5 external links with no `/Data` at its root. It matches
+     * *.lux.h5 like everything else, so a scan has to tell them apart by
+     * content -- which is the same rule the rest of this milestone follows.
+     */
+    static boolean holdsPixels(File f) {
+        if (!f.isFile()) return false
+        def r = null
+        try {
+            r = HDF5Factory.openForReading(f)
+            return r.object().exists(DATA) &&
+                   r.object().getDataSetInformation(DATA).getDimensions().length == 3
+        } catch (Throwable ignored) {
+            return false
+        } finally {
+            if (r != null) { try { r.close() } catch (ignored2) { } }
+        }
+    }
+
     static LuxendoFile open(File f) {
         if (!f.isFile()) throw new IllegalArgumentException("No such .lux.h5: " + f.getAbsolutePath())
         def lf = new LuxendoFile(file: f)

@@ -14,14 +14,14 @@
 // vague memory of what the format was.
 
 import ch.systemsx.cisd.hdf5.HDF5Factory
-import ch.systemsx.cisd.base.mdarray.MDShortArray
-import groovy.json.JsonOutput
 
 def LIBDIR = new File("scripts/groovy").getAbsolutePath()
 if (!new File(LIBDIR, "LuxendoFile.groovy").exists()) {
     throw new IllegalStateException("run from the repository root; no scripts/groovy at " + LIBDIR)
 }
-def LF = new GroovyClassLoader().parseClass(new File(LIBDIR + "/LuxendoFile.groovy"))
+def gcl = new GroovyClassLoader()
+def LF  = gcl.parseClass(new File(LIBDIR + "/LuxendoFile.groovy"))
+def FIX = gcl.parseClass(new File("tests/groovy/LuxFixture.groovy"))
 
 int passed = 0, failed = 0
 def check = { String what, Object got, Object want ->
@@ -48,52 +48,13 @@ def throwsWith = { String what, String fragment, Closure body ->
 def tmp = new File(System.getProperty("java.io.tmpdir"), "test_luxendofile_" + System.nanoTime())
 tmp.mkdirs()
 
-/**
- * Write a synthetic .lux.h5 with exactly the shape a TruLive3D emits:
- * /Data as uint16 [z][y][x] with an element_size_um attribute in [z, y, x]
- * order, and /metadata holding the acquisition JSON.
- *
- * Pixel value at (z, y, x) is z*10000 + y*100 + x, so a plane read back
- * identifies which plane it came from -- a transposed or off-by-one read shows
- * up as a wrong number rather than as a plausible one.
- */
-def writeLux = { File f, int nz, int ny, int nx, Map opts = [:] ->
-    f.getParentFile()?.mkdirs()
-    f.delete()
-    def w = HDF5Factory.open(f)
-    short[] flat = new short[nz * ny * nx]
-    for (int z = 0; z < nz; z++)
-        for (int y = 0; y < ny; y++)
-            for (int x = 0; x < nx; x++)
-                flat[(z * ny + y) * nx + x] = (short) (z * 10000 + y * 100 + x)
-    w.uint16().writeMDArray("/Data", new MDShortArray(flat, [nz, ny, nx] as int[]))
-    if (opts.get("elementSize", true)) {
-        def el = (opts.el ?: [5.0f, 0.208f, 0.208f]) as float[]
-        w.float32().setArrayAttr("/Data", "element_size_um", el)
-    }
-    if (opts.get("metadata", true)) {
-        def vox = opts.containsKey("vox") ? opts.vox : [width: 0.208, height: 0.208, depth: 5.0]
-        w.string().write("/metadata", JsonOutput.toJson([
-            processingInformation: [
-                image_id           : "2026-09-10T17:47:37.268Z-test",
-                stack              : "0",
-                stack_description  : (opts.stackDesc ?: "L26A pos1"),
-                channel            : "1",
-                channel_description: opts.containsKey("chanDesc") ? opts.chanDesc : "GFP",
-                time_point         : (opts.tp ?: "0"),
-                objective          : "bottom",
-                camera             : "long",
-                voxel_size_um      : vox,
-                image_size_vx      : [width: nx, height: ny, depth: nz],
-            ]
-        ]))
-    }
-    w.close()
-    return f
-}
+// The synthetic .lux.h5 writer is shared with Test_LuxendoScan -- see
+// tests/groovy/LuxFixture.groovy, which is also where the format expectation is
+// written down. Pixel value at (z, y, x) is z*10000 + y*100 + x.
+def writeLux = { File f, int nz, int ny, int nx, Map opts = [:] -> FIX.writeLux(f, nz, ny, nx, opts) }
 
 println "=== LuxendoFile: header of a normal stack ==="
-def f1 = writeLux(new File(tmp, "Cam_long_00000.lux.h5"), 4, 8, 6)
+def f1 = writeLux(new File(tmp, "Cam_long_00000.lux.h5"), 4, 8, 6, [chanDesc: "GFP"])
 def lf = LF.open(f1)
 check("sizeZ",        lf.sizeZ, 4)
 check("sizeY",        lf.sizeY, 8)
