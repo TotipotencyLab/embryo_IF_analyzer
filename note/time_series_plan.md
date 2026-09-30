@@ -273,15 +273,24 @@ One schema migration, so §3.1 and §3.2 land together.
       ⚠️ **`explicit` must not persist.** It names one image, so inheriting it
       into the next run would silently mislabel that run's output — the same
       category as `nucleus_threshold_range`, and the same treatment.
-- [ ] 🔒 **`position_id` and `t` reach the series table through `files.tsv`.**
-      The gatherer writes them as columns there, one row per output file, and
-      `Make_SampleSheet`'s existing `inherit` mechanism seeds them onto each
-      series row ([SampleSheet.groovy:270](../scripts/groovy/SampleSheet.groovy)).
-      No new code in `SampleSheet.build()`.
+- [ ] 🔒 **`position_id` and `t` reach the series table from `files.tsv`**, one
+      row per output file, seeded onto each series row.
       ⚠️ They must be declared **`seeded`**, not `machine`.
       `.cli_read_sample_sheet()` *drops* machine columns, so declaring them
       machine would silently remove them before they ever reach a feature row,
       and `tracking` would have nothing to track on.
+- [ ] ⚠️ **Seed them explicitly in `SampleSheet.build()`, the way `include`
+      already is.** Do not rely on the default `inherit`. `Make_SampleSheet`
+      computes its default as *"every `files.tsv` column that is not already a
+      declared series column"*
+      ([Make_SampleSheet.groovy:95](../scripts/groovy/Make_SampleSheet.groovy)),
+      so the moment `position_id` and `t` are added to
+      `schema/sheet_columns.tsv` the default `inherit` **stops carrying them**
+      and they arrive blank. Declared-and-explicitly-seeded is exactly the
+      pattern `include` follows
+      ([SampleSheet.groovy:270](../scripts/groovy/SampleSheet.groovy)); follow it.
+      A run-time `inherit` list would also work but puts the guarantee in the
+      operator's hands, where it will eventually be forgotten.
 - [ ] `samples.tsv` → `series.tsv`.
 - [ ] `position_id`, `t` added to the series table.
 - [ ] `feature_id` numbered globally within a series; `track_id` reserved.
