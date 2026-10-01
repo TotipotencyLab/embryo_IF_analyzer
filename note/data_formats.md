@@ -182,10 +182,24 @@ the rows you do not want.
 channel of one position at one time point, so three channels of one time point
 are three rows that share a `target_output_path` and differ in `channel`.
 
+**How the rows group into files is decided at SCAN time and written into the
+table**, not chosen later by the assembler — a table that did not describe its
+own output would not be a plan:
+
+| `gatherFrames` | one output is | `target_output_path` | `series_id` |
+|---|---|---|---|
+| off (default) | one position at one time point | `s0002_L26A_pos3_t0000.tif` | `s0002_L26A_pos3_t0000` |
+| on | one position, every time point | `s0002_L26A_pos3.tif` | `s0002_L26A_pos3` |
+
+Gathered, the rows of one output span several `t` and the written file carries a
+real time axis (`nT` frames). `t` stays on every row either way. Passing an
+existing manifest back ignores the `gatherFrames` checkbox and says so: the
+table already says how it is grouped.
+
 | Column | Required | Meaning |
 |---|---|---|
-| `target_output_path` | **yes** | the image file this row's pixels go into, relative to the output directory. Rows sharing one value are the channels of one output |
-| `series_id` | **yes** | identity of that output — `sanitise(<position_id>_t<TTTT>)` |
+| `target_output_path` | **yes** | the image file this row's pixels go into, relative to the output directory. Rows sharing one value are one output — its channels, and its time points when gathered |
+| `series_id` | **yes** | identity of that output — `sanitise(<position_id>_t<TTTT>)`, or just `<position_id>` when gathered |
 | `position_id` | **yes** | the field of view, constant across time points — `sanitise(s<NNNN>_<stack_description>)` |
 | `t` | **yes** | 0-based time point within the position |
 | `channel` | **yes** | 0-based channel index **in the output** |
@@ -199,10 +213,19 @@ are three rows that share a `target_output_path` and differ in `channel`.
 | `include` | no | `seeded` — whether to assemble this output |
 
 ⚠️ **`target_output_path` is the name asked for, not the name written.** The
-written name adds `_ds<N>` when downscaled and the format's own extension
-(`.tif` for `tiff`, `.ome.tif` for `bigtiff`), so it is `output_path` in
-`gather_summary.tsv` and in `_gather.txt` that records what actually landed on
-disk. Two different facts, deliberately two different column names.
+written name adds `_downscale<PC>pc` when downscaled and the format's own
+extension (`.tif` for `tiff`, `.ome.tif` for `bigtiff`), so it is `output_path`
+in `gather_summary.tsv` and in `_gather.txt` that records what actually landed
+on disk. Two different facts, deliberately two different column names.
+
+**The scale is a percentage of the original, 1–100.** 100 is full resolution,
+50 is half the width and half the height. The calibration is scaled by the
+ratio **achieved**, never the one requested — the pixel count is rounded, so
+33% of 2048 is 676 pixels, a ratio of 3.0296 and not 3.0303. Measured on the
+real acquisition: the achieved ratio reproduces the full-resolution physical
+width of 425.98402 µm to five decimals, where the requested ratio would have
+recorded 426.08488. Downscaling is **for looking, not for measuring**, but a
+file that misstates its own extent is a different kind of wrong.
 
 **`include` is read per output, not per row.** All rows of one
 `target_output_path` must agree: half a file's channels is a question, not an
@@ -223,10 +246,25 @@ gather_summary.tsv                  one row per OUTPUT: status, reason, bytes, c
 ```
 
 `gather_summary.tsv` is **rectangular whatever happened** — same contract as
-`batch_summary.tsv`. A `status` of `written` / `skipped` / `failed` with a
-`reason`, so a half-completed run is legible. `checksum` is a CRC32 over the
-pixels **as written** (after any downscale), and `verified=yes` means the file
-was read back off disk and its pixels recomputed to the same value.
+`batch_summary.tsv`. One row per output, with
+`output_path, series_id, position_id, t, frames, channels, format,
+scale_percent, status, reason, bytes, checksum, verified`. A `status` of
+`written` / `skipped` / `failed` with a `reason`, so a half-completed run is
+legible. `frames` is 1 unless the manifest gathered a position.
+
+`checksum` is a CRC32 over the pixels **as written** — after any downscale, so
+it cannot pass a scaling bug off as a correct downscale — and `verified=yes`
+means the file was read back off disk and its pixels recomputed to the same
+value. ⚠️ **It verifies the writer, not the reader.** Both sides of the
+comparison come from the same `LuxendoFile` read, so a plane fetched wrongly
+from the HDF5 would match itself. What it does catch is the round trip: a
+truncated write, or channels, slices and frames transposed — "39 slices, 3
+channels, 4 frames" passes happily while the planes behind it are in the wrong
+order.
+
+`_gather.txt` names **every** source: one `channel_<c>_source` line per channel,
+or `t<N>_channel_<c>_source` when the output gathered several frames, so a
+gathered position's twelve sources are twelve lines rather than three.
 
 ---
 

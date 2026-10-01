@@ -68,10 +68,15 @@ class LuxendoScan {
      *
      * One open per file, header only -- no pixels are touched.
      *
-     * @param dir  the acquisition directory (the one holding raw/)
-     * @param log  called with progress lines
+     * @param dir   the acquisition directory (the one holding raw/)
+     * @param opts  `gatherFrames` true puts every timepoint of a position into
+     *              one output; false (the default) is one output per timepoint
+     * @param log   called with progress lines
      */
-    List<Map> scan(File dir, Closure log = null) {
+    List<Map> scan(File dir, Closure log = null) { return scan(dir, [:], log) }
+
+    List<Map> scan(File dir, Map opts, Closure log = null) {
+        boolean gatherFrames = (opts?.gatherFrames ?: false) as boolean
         def files = findLuxFiles(dir)
         if (!files) {
             throw new IllegalArgumentException(
@@ -107,7 +112,13 @@ class LuxendoScan {
                 int ch    = info.channel as int
                 def posId = RX.sanitize(String.format(POSITION_FORMAT, stack) +
                                         "_" + (info.stack_description ?: ""))
-                def serId = RX.sanitize(posId + "_" + String.format(TIME_FORMAT, tp))
+                // THE MANIFEST DECIDES, NOT THE ASSEMBLER. Gathering is settled
+                // here so the table says what will be written -- the whole point
+                // of the manifest is that you can read the plan. An assembler
+                // that silently regrouped rows would make the table a
+                // description of the inputs and nothing more.
+                def serId = gatherFrames ? posId
+                                         : RX.sanitize(posId + "_" + String.format(TIME_FORMAT, tp))
 
                 rows << [
                     target_output_path: serId + ".tif",
@@ -148,46 +159,57 @@ class LuxendoScan {
     List<String> validate(List<Map> rows, Closure log = null) {
         def warnings = []
 
-        // Two sources claiming the same channel of the same output would
-        // overwrite each other in the assembled stack, silently.
-        def byKey = rows.groupBy { [it.target_output_path, it.channel] }
+        // Two sources claiming the same channel of the same output FRAME would
+        // overwrite each other in the assembled stack, silently. Keyed on the
+        // timepoint as well, because under gatherFrames one output legitimately
+        // holds channel 0 many times -- once per frame.
+        def byKey = rows.groupBy { [it.target_output_path, it.t, it.channel] }
         def dupes = byKey.findAll { k, v -> v.size() > 1 }
         if (dupes) {
             throw new IllegalArgumentException(
                 "Two sources claim the same output channel:\n  " +
                 dupes.collect { k, v ->
-                    k[0] + " channel " + k[1] + " <- " + v.collect { it.source_path }.join(" AND ")
+                    k[0] + " t=" + k[1] + " channel " + k[2] + " <- " +
+                    v.collect { it.source_path }.join(" AND ")
                 }.join("\n  "))
         }
 
         def byOutput = rows.groupBy { it.target_output_path }
 
-        // Every output must have the same channel set, or one assembled stack
-        // has channel 2 where another has channel 3 and nothing says so.
-        def channelSets = byOutput.collectEntries { k, v -> [k, v.collect { it.channel }.sort()] }
+        // Every FRAME must have the same channel set, or one assembled stack
+        // has channel 2 where another has channel 3 and nothing says so. Per
+        // frame rather than per output, so a gathered position missing one
+        // channel at one timepoint is still caught.
+        def channelSets = rows.groupBy { [it.target_output_path, it.t] }
+                              .collectEntries { k, v -> [k, v.collect { it.channel }.sort()] }
         def expected = channelSets.values().first()
         def odd = channelSets.findAll { k, v -> v != expected }
         if (odd) {
-            warnings << ("Not every output has the same channels; expected " + expected + " -- " +
-                         odd.collect { k, v -> k + " has " + v }.join(", "))
+            warnings << ("Not every frame has the same channels; expected " + expected + " -- " +
+                         odd.collect { k, v -> k[0] + " t=" + k[1] + " has " + v }.join(", "))
         }
 
-        // Within ONE output the channels must agree on dimensions, or they
-        // cannot go into one stack at all.
+        // Within ONE output every source must agree on dimensions, or they
+        // cannot go into one stack at all. Under gatherFrames this is also
+        // where z changing between timepoints becomes FATAL rather than a
+        // warning -- and rightly so, because there is then no single volume
+        // shape to build the hyperstack from.
         byOutput.each { String out, List<Map> v ->
             def shapes = v.collect { [it.size_x, it.size_y, it.size_z] }.unique()
             if (shapes.size() > 1) {
                 throw new IllegalArgumentException(
-                    out + ": its channels disagree on dimensions: " +
-                    v.collect { "ch" + it.channel + "=" + it.size_x + "x" + it.size_y + "x" + it.size_z }.join(", "))
+                    out + ": its sources disagree on dimensions: " +
+                    v.collect { "t" + it.t + "/ch" + it.channel + "=" +
+                                it.size_x + "x" + it.size_y + "x" + it.size_z }.unique().join(", "))
             }
         }
 
         // LOCKED: z uniform across the time points of ONE position. It is NOT
         // uniform across positions -- the real dataset runs 16..39, with one at
         // z=1 -- so this is deliberately per position and not global.
-        byOutput.values().groupBy { it[0].position_id }.each { String pos, List<List<Map>> outs ->
-            def zs = outs.collect { it[0].size_z }.unique()
+        def byPosition = rows.groupBy { it.position_id }
+        byPosition.each { String pos, List<Map> v ->
+            def zs = v.collect { it.size_z }.unique()
             if (zs.size() > 1) {
                 warnings << ("Position " + pos + " changes z between time points: " + zs.sort() +
                              " -- the time course is not a single volume")
@@ -196,8 +218,8 @@ class LuxendoScan {
 
         // Time points should be a run from 0. A gap means a file is missing,
         // which is worth knowing BEFORE the tracking step reports a broken track.
-        byOutput.values().groupBy { it[0].position_id }.each { String pos, List<List<Map>> outs ->
-            def ts = outs.collect { it[0].t }.sort()
+        byPosition.each { String pos, List<Map> v ->
+            def ts = v.collect { it.t }.unique().sort()
             if (ts != (0..<ts.size()).toList()) {
                 warnings << ("Position " + pos + " has time points " + ts + ", not a run from 0")
             }

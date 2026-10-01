@@ -211,47 +211,71 @@ table's `t` column when the gatherer wrote one file per timepoint (the default).
 Read `.lux.h5` and write files the existing pipeline accepts. Format facts are
 in `note/luxendo_file_format.md`; do not duplicate them here.
 
-- [ ] Read `.lux.h5` with **JHDF5** (`ch.systemsx.cisd.hdf5`). Bio-Formats
+- [x] Read `.lux.h5` with **JHDF5** (`ch.systemsx.cisd.hdf5`). Bio-Formats
       cannot read them at all, and `BDVReader` on `bdv.xml` returns the wrong
       specimen silently — both verified, both in the format note.
-- [ ] **Assembly manifest**: one row per *output file*, naming every source file
-      and plane feeding it. Identity column `series_id`; also `position_id`, `t`.
-- [ ] 🔒 **Manifest gets a `schema/` entry**, like `sheet_columns.tsv` — read at
+- [x] **Assembly manifest**: one row per *source file*, carrying the output it
+      feeds — a single row with a variable-length list of sources would not
+      survive being a TSV. Identity column `series_id`; also `position_id`, `t`.
+- [x] 🔒 **Manifest gets a `schema/` entry**, like `sheet_columns.tsv` — read at
       run time by both languages, two readers from day one.
-- [ ] **Generic assembler**: manifest → TIFF.
-- [ ] 🔒 **Three entry modes**: (i) end to end from a Luxendo directory,
+- [x] **Generic assembler**: manifest → TIFF.
+- [x] 🔒 **Three entry modes**: (i) end to end from a Luxendo directory,
       (ii) **manifest only**, (iii) assemble from an existing manifest.
       (ii) is what lets a person see the plan before committing to 33 GB.
-- [ ] 🔒 **One file per (position, timepoint), classic TIFF by default**;
+- [x] 🔒 **One file per (position, timepoint), classic TIFF by default**;
       `--format bigtiff` as an explicit alternative. See §5.1 and §6.1.
-- [ ] ⚠️ 🔒 **`setCanDetectBigTiff(false)`, always.** Otherwise Bio-Formats
+- [x] ⚠️ 🔒 **`setCanDetectBigTiff(false)`, always.** Otherwise Bio-Formats
       silently upgrades to BigTIFF above the ceiling and the drag-and-drop
       guarantee is gone with no error. See §5.1.
-- [ ] Predict output size from the manifest and **warn before writing**.
+- [x] Predict output size from the manifest and **warn before writing**.
       Over-limit for the chosen format is a **per-row failure recorded in the
       summary, not an abort** — `BatchRunner.runEach()`'s contract. The message
       names `--format bigtiff`.
-- [ ] 🔒 **One assembler with a `resize` option**, not two entry points. Two
+- [x] 🔒 **One assembler with a scale option**, not two entry points. Two
       gatherers differing only in scale is the fork `CLAUDE.md` forbids.
-      `resize` and `gatherFrames` are independent, both non-persistent.
-- [ ] ⚠️ **Resizing must scale the calibration.** Halve the pixels and
+      Scale and `gatherFrames` are independent, both non-persistent. Built as
+      `scalePercent`, 1..100 **percent of the original**, not a divisor: a
+      percentage needs no explaining in the dialog, and the divisor's unbounded
+      top end was a footgun (`resize=100000` produced a 1x1 image) rather than a
+      capability.
+- [x] ⚠️ **Resizing must scale the calibration.** Halve the pixels and
       `pixel_width`/`pixel_height` must double, or every area is wrong by the
       square of the factor while the image looks perfect. Test: assemble one
-      position at 1x and 2x, assert the physical extent matches.
-- [ ] A non-default `resize` puts a token in the output filename.
-- [ ] Per-output **provenance record**: source paths, checksums, gatherer
-      version, resize factor.
-- [ ] Honour `include`, with exactly `BatchRunner.isIncluded()`'s vocabulary.
-- [ ] **Verification mode**: re-read output planes and compare to source by
+      position at 100% and 50%, assert the physical extent matches.
+      **By the ratio ACHIEVED, not the one requested** — the pixel count is
+      rounded, so 33% of 2048 is 676 px (ratio 3.0296, not 3.0303). Measured on
+      the real acquisition: achieved reproduces 425.98402 um to five decimals,
+      requested would have recorded 426.08488.
+- [x] A non-default scale puts a token in the output filename:
+      `_downscale<PC>pc`, which cannot be misread as a divisor.
+- [x] Per-output **provenance record**: source paths, checksums, gatherer
+      version, scale. Keyed per (timepoint, channel) when gathered, or three of
+      a gathered position's twelve sources would be the only ones named.
+- [x] Honour `include`, with exactly `BatchRunner.isIncluded()`'s vocabulary.
+- [x] **Verification mode**: re-read output planes and compare to source by
       checksum. "39 slices, 3 channels" passes happily while channels are
       transposed — this is the only check that can fail correctly.
-- [ ] ⚠️ Assert z uniform **across timepoints of one position**. It is *not*
-      uniform across positions (16..39, one at z=1).
-- [ ] 🔒 `raw/` — the Luxendo acquisition directory — **is never modified or
+- [x] ⚠️ Assert z uniform **across timepoints of one position**. It is *not*
+      uniform across positions (16..39, one at z=1). A **warning** when writing
+      one file per timepoint, where the run is still well defined; **fatal**
+      under `gatherFrames`, where there is no single volume shape to build the
+      hyperstack from.
+- [x] 🔒 `raw/` — the Luxendo acquisition directory — **is never modified or
       deleted.** Converted TIFFs are derived and may be regenerated.
 
 **Verification.** Assemble two positions including `L26A pos3` (z=1), checksum
 against source, and open one in Fiji by drag-and-drop.
+
+**Done**, on branch `luxendo-input_transform`. 175 Groovy checks across
+`Test_LuxendoFile`, `Test_LuxendoScan` and `Test_TiffAssembler`, all synthesising
+their own `.lux.h5` through `tests/groovy/LuxFixture.groovy`, plus the real
+33 GB acquisition end to end. Two things were added that this list did not ask
+for and that the work showed were needed: `skipExisting`, which resumes an
+interrupted run and requires the provenance file as well as the image so a
+half-written output is redone; and the manifest being written **before** any
+pixels and unconditionally, because a plan that only survives a successful run
+is not a plan.
 
 ### `vocab` — identity and vocabulary
 

@@ -39,6 +39,9 @@ class TiffAssembler {
      */
     static final long CLASSIC_TIFF_MAX = 4183818240L
 
+    /** Scale, as a percentage of the original. 100 is full resolution. */
+    static final int FULL = 100
+
     static final String TIFF    = "tiff"
     static final String BIGTIFF = "bigtiff"
     static final List<String> FORMATS = [TIFF, BIGTIFF]
@@ -61,16 +64,55 @@ class TiffAssembler {
      * Bytes of pixel payload one output will hold. Exact, from the manifest --
      * no trial write, so a whole run can be judged before anything is written.
      */
-    static long predictBytes(List<Map> rows, int resize = 1) {
+    static long predictBytes(List<Map> rows, int scalePercent = FULL) {
         if (!rows) return 0L
         def r = rows[0]
-        long x = scaled(r.size_x as int, resize)
-        long y = scaled(r.size_y as int, resize)
+        long x = scaled(r.size_x as int, scalePercent)
+        long y = scaled(r.size_y as int, scalePercent)
+        // One row per (channel, timepoint), so gathering frames needs no special
+        // case here: the row count already carries both axes.
         return 2L * x * y * (r.size_z as int) * rows.size()
     }
 
-    static int scaled(int n, int resize) {
-        return (resize <= 1) ? n : Math.max(1, (int) Math.floor(n / (double) resize))
+    /**
+     * A dimension at the requested scale.
+     *
+     * ROUNDED, not floored. The percentage is a ratio being asked for, and
+     * floor would bias every output a little small -- 33% of 2048 is 675.84,
+     * which is 676 pixels, not 675.
+     */
+    static int scaled(int n, int scalePercent) {
+        if (scalePercent >= FULL) return n
+        return Math.max(1, (int) Math.round(n * scalePercent / 100.0d))
+    }
+
+    /**
+     * Validate a scale in code, for the same reason checkFormat exists: a `#@`
+     * parameter's bounds are a dialog affordance, not a guarantee, and nothing
+     * validates a value handed in on the command line.
+     *
+     * Accepts 1..100 as a PERCENTAGE OF THE ORIGINAL. 100 is full resolution.
+     * The upper bound is deliberate: this scales down for looking at, it does
+     * not interpolate up, and an output larger than its source would be
+     * invented pixels wearing a real calibration.
+     */
+    static int checkScalePercent(Object v) {
+        if (v == null) return FULL
+        def s = v.toString().trim()
+        if (!s) return FULL
+        int pct
+        try {
+            pct = (s as Double).intValue()
+        } catch (Throwable e) {
+            throw new IllegalArgumentException(
+                "scale must be a number of percent between 1 and 100; got >>>" + v + "<<<")
+        }
+        if (pct < 1 || pct > FULL) {
+            throw new IllegalArgumentException(
+                "scale must be between 1 and 100 percent of the original; got " + pct +
+                (pct > FULL ? " -- this downscales only, it does not enlarge" : ""))
+        }
+        return pct
     }
 
     static boolean fitsClassicTiff(long bytes) { return bytes < CLASSIC_TIFF_MAX }
@@ -93,10 +135,17 @@ class TiffAssembler {
         return s in ["true", "yes", "1", "t", "y"]
     }
 
-    /** Output filename, carrying a token when the pixels are not full resolution. */
-    static String outputName(String base, int resize, String format) {
+    /**
+     * Output filename, carrying a token when the pixels are not full resolution.
+     *
+     * `_downscale<PC>pc` reads as what it is -- 50 percent of the original --
+     * where a bare number could be read as either a percentage or a divisor.
+     * A downscaled file must not be mistakable for a full-resolution one by
+     * anybody who meets it later without the manifest.
+     */
+    static String outputName(String base, int scalePercent, String format) {
         def stem = base.replaceAll(/(?i)\.(ome\.)?tiff?$/, "")
-        if (resize > 1) stem += "_ds" + resize
+        if (scalePercent < FULL) stem += "_downscale" + scalePercent + "pc"
         return stem + (format == BIGTIFF ? ".ome.tif" : ".tif")
     }
 
@@ -112,12 +161,18 @@ class TiffAssembler {
      */
     Map assembleOne(List<Map> rows, File srcRoot, File outDir, Map opts = [:]) {
         String format = checkFormat(opts.format as String)
-        int resize    = Math.max(1, (opts.resize ?: 1) as int)
+        int pct       = checkScalePercent(opts.scalePercent)
         def first     = rows[0]
-        def name      = outputName(first.target_output_path as String, resize, format)
+        def name      = outputName(first.target_output_path as String, pct, format)
+        // One row per (channel, timepoint). When the manifest gathered a whole
+        // position into one output these are many timepoints; when it did not,
+        // `frames` is 1 and every loop below collapses to what it was.
+        def frames    = rows.collect { it.t }.unique().sort()
+        def chans     = rows.collect { it.channel as int }.unique().sort()
         def summary   = [output_path: name, series_id: first.series_id,
                          position_id: first.position_id, t: first.t,
-                         channels: rows.size(), format: format, resize: resize,
+                         frames: frames.size(), channels: chans.size(),
+                         format: format, scale_percent: pct,
                          status: "", reason: "", bytes: 0L, checksum: ""]
 
         if (!rows.every { isIncluded(it.include) }) {
@@ -134,7 +189,8 @@ class TiffAssembler {
         }
 
         // The name is the whole check, and it is enough BECAUSE the name carries
-        // the two things that change the pixels: _ds<N> and the extension. It
+        // the two things that change the pixels: the scale token and the
+        // extension. It
         // is not enough on its own to say the file is complete, so the
         // provenance file -- written only after a successful assemble -- has to
         // be there too. A run killed mid-write leaves the .tif without it and
@@ -150,7 +206,7 @@ class TiffAssembler {
             }
         }
 
-        long predicted = predictBytes(rows, resize)
+        long predicted = predictBytes(rows, pct)
         if (format == TIFF && !fitsClassicTiff(predicted)) {
             // One row's failure must not cost the rest of the run.
             summary.status = "failed"
@@ -160,42 +216,62 @@ class TiffAssembler {
         }
 
         int nz = first.size_z as int
-        int nc = rows.size()
-        int outX = scaled(first.size_x as int, resize)
-        int outY = scaled(first.size_y as int, resize)
+        int nc = chans.size()
+        int nt = frames.size()
+        int outX = scaled(first.size_x as int, pct)
+        int outY = scaled(first.size_y as int, pct)
+
+        // Every frame must bring every channel, or the hyperstack would be
+        // ragged and ImageJ would read the planes that follow as the wrong
+        // (c, z, t) without complaining.
+        def byFrame = rows.groupBy { it.t }
+        def ragged = byFrame.findAll { t, v -> v.collect { it.channel as int }.sort() != chans }
+        if (ragged) {
+            summary.status = "failed"
+            summary.reason = "frame(s) " + ragged.keySet().sort() + " do not have channels " + chans
+            return summary
+        }
 
         // Channels in manifest order, which is the source metadata's own channel
         // index -- never directory order, which the .ims files show can differ.
-        def ordered = rows.sort(false) { a, b -> (a.channel as int) <=> (b.channel as int) }
-        def files = ordered.collect { new File(srcRoot, it.source_path as String) }
+        // Frames in time order, for the same reason.
+        def ordered = []
+        frames.each { tp -> ordered.addAll(byFrame[tp].sort(false) { a, b -> (a.channel as int) <=> (b.channel as int) }) }
         def open  = []
         def crc   = new CRC32()
         try {
-            files.each { open << LFC.open(it) }
+            ordered.each { open << LFC.open(new File(srcRoot, it.source_path as String)) }
             open.eachWithIndex { lf, i ->
                 if (lf.sizeZ != nz) {
                     throw new IllegalStateException(
-                        name + ": channel " + i + " has " + lf.sizeZ + " slices, expected " + nz)
+                        name + ": " + ordered[i].source_path + " has " + lf.sizeZ +
+                        " slices, expected " + nz +
+                        " -- a gathered position must hold one volume shape, not several")
                 }
             }
-            // XYCZT: channel fastest, matching setDimensions(c, z, t) below.
+            // XYCZT: channel fastest, then z, then t -- matching
+            // setDimensions(c, z, t) below. Getting this order wrong produces a
+            // perfectly well-formed stack of the wrong planes.
             def stack = new ImageStack(outX, outY)
-            for (int z = 0; z < nz; z++) {
-                for (int c = 0; c < nc; c++) {
-                    short[] px = open[c].plane(z)
-                    def sp = new ShortProcessor(first.size_x as int, first.size_y as int, px, null)
-                    if (resize > 1) sp = (ShortProcessor) sp.resize(outX, outY, true)
-                    // Checksum what is WRITTEN, not what was read. At resize=1
-                    // the two are the same; above it they are not, and a
-                    // checksum of the source could not tell a resize bug from a
-                    // correct downscale.
-                    crc.update(toBytes((short[]) sp.getPixels()))
-                    stack.addSlice(sliceLabel(ordered[c], z, nz, c, nc), sp)
+            for (int t = 0; t < nt; t++) {
+                for (int z = 0; z < nz; z++) {
+                    for (int c = 0; c < nc; c++) {
+                        def row = ordered[t * nc + c]
+                        short[] px = open[t * nc + c].plane(z)
+                        def sp = new ShortProcessor(first.size_x as int, first.size_y as int, px, null)
+                        if (pct < FULL) sp = (ShortProcessor) sp.resize(outX, outY, true)
+                        // Checksum what is WRITTEN, not what was read. At 100%
+                        // the two are the same; below it they are not, and a
+                        // checksum of the source could not tell a scaling bug
+                        // from a correct downscale.
+                        crc.update(toBytes((short[]) sp.getPixels()))
+                        stack.addSlice(sliceLabel(row, z, nz, c, nc, t, nt), sp)
+                    }
                 }
             }
             def imp = new ImagePlus(name.replaceAll(/\.(ome\.)?tiff?$/, ""), stack)
-            imp.setDimensions(nc, nz, 1)
-            applyCalibration(imp, first, resize)
+            imp.setDimensions(nc, nz, nt)
+            applyCalibration(imp, first, outX, outY)
 
             outDir.mkdirs()
             def out = new File(outDir, name)
@@ -223,12 +299,12 @@ class TiffAssembler {
      */
     List<Map> assembleAll(List<Map> rows, File srcRoot, File outDir, Map opts = [:], Closure log = null) {
         String format = checkFormat(opts.format as String)
-        int resize    = Math.max(1, (opts.resize ?: 1) as int)
+        int pct        = checkScalePercent(opts.scalePercent)
         boolean verify = (opts.verify ?: false) as boolean
 
         def groups = groupByOutput(rows)
         log?.call("  " + groups.size() + " output(s), format=" + format +
-                  (resize > 1 ? (", resize=" + resize) : "") +
+                  (pct < FULL ? (", downscaled to " + pct + "%") : "") +
                   (opts.skipExisting ? ", skipping ones already assembled" : "") +
                   (verify ? ", verifying" : ""))
 
@@ -239,13 +315,13 @@ class TiffAssembler {
             // position the operator already set include=false on is noise, and
             // noise is what stops warnings being read.
             def over = groups.findAll { k, v ->
-                v.every { isIncluded(it.include) } && !fitsClassicTiff(predictBytes(v, resize))
+                v.every { isIncluded(it.include) } && !fitsClassicTiff(predictBytes(v, pct))
             }
             if (over) {
                 log?.call("WARNING: " + over.size() + " output(s) exceed the classic TIFF limit " +
                           "and will be recorded as failed; use format=bigtiff:")
                 over.each { k, v ->
-                    log?.call("           " + k + "  " + predictBytes(v, resize) + " bytes")
+                    log?.call("           " + k + "  " + predictBytes(v, pct) + " bytes")
                 }
             }
         }
@@ -298,17 +374,23 @@ class TiffAssembler {
         put("series_id",     summary.series_id)
         put("position_id",   summary.position_id)
         put("t",             summary.t)
+        put("frames",        summary.frames)
         put("format",        summary.format)
-        put("resize",        summary.resize)
+        put("scale_percent", summary.scale_percent)
         put("pixel_checksum", summary.checksum)
         put("output_bytes",  summary.bytes)
         put("source_root",   srcRoot?.getAbsolutePath())
         put("gatherer_version", RX.repoVersion(libDir))
         put("written_at",    new Date().format("yyyy-MM-dd'T'HH:mm:ss"))
-        rows.eachWithIndex { r, i ->
-            put("channel_" + r.channel + "_name",   r.channel_name)
-            put("channel_" + r.channel + "_source", r.source_path)
-            put("channel_" + r.channel + "_bytes",  r.source_bytes)
+        // Every source, keyed so a gathered position names all of them: one
+        // line per (timepoint, channel) rather than per channel, or three of a
+        // position's twelve sources would be the only ones recorded.
+        boolean gathered = (summary.frames as int) > 1
+        rows.sort(false) { a, b -> (a.t <=> b.t) ?: ((a.channel as int) <=> (b.channel as int)) }.each { r ->
+            def key = gathered ? ("t" + r.t + "_channel_" + r.channel) : ("channel_" + r.channel)
+            put(key + "_name",   r.channel_name)
+            put(key + "_source", r.source_path)
+            put(key + "_bytes",  r.source_bytes)
         }
         new File(outDir, summary.output_path.replaceAll(/\.(ome\.)?tiff?$/, "") + "_gather.txt")
             .setText(sb.toString(), "UTF-8")
@@ -361,26 +443,35 @@ class TiffAssembler {
     }
 
     /** The slice label ImageJ puts on a hyperstack plane, plus the channel's name. */
-    static String sliceLabel(Map row, int z, int nz, int c, int nc) {
+    static String sliceLabel(Map row, int z, int nz, int c, int nc, int t = 0, int nt = 1) {
         def sb = new StringBuilder()
         if (nc > 1) sb.append("c:").append(c + 1).append("/").append(nc).append(" ")
         if (nz > 1) sb.append("z:").append(z + 1).append("/").append(nz).append(" ")
+        if (nt > 1) sb.append("t:").append(t + 1).append("/").append(nt).append(" ")
         sb.append("- ").append(row.channel_name ?: ("channel_" + row.channel))
         return sb.toString()
     }
 
     /**
-     * Calibration, scaled by the resize factor.
+     * Calibration, scaled to match what was actually written.
      *
      * ⚠️ HALVE THE PIXELS AND THE PIXEL SIZE MUST DOUBLE. Miss this and every
      * area is out by the square of the factor while the image looks perfect --
      * exactly the silent failure this repo keeps meeting. pixelDepth is left
      * alone: resizing is in x and y only.
      */
-    static void applyCalibration(ImagePlus imp, Map row, int resize) {
+    static void applyCalibration(ImagePlus imp, Map row, int outX, int outY) {
         def cal = imp.getCalibration()
-        if (row.pixel_width  != null) cal.pixelWidth  = (row.pixel_width  as double) * resize
-        if (row.pixel_height != null) cal.pixelHeight = (row.pixel_height as double) * resize
+        // Scaled by the ratio ACHIEVED, never by the ratio asked for. The pixel
+        // count is rounded, so 33% of 2048 is 676 pixels -- a ratio of 3.0296,
+        // not 3.0303. Using the requested figure would record a physical width
+        // the specimen does not have, and area is that error squared.
+        if (row.pixel_width  != null) {
+            cal.pixelWidth  = (row.pixel_width  as double) * ((row.size_x as double) / outX)
+        }
+        if (row.pixel_height != null) {
+            cal.pixelHeight = (row.pixel_height as double) * ((row.size_y as double) / outY)
+        }
         // blank for a single plane, never a default of 1.0
         if (row.pixel_depth != null)  cal.pixelDepth  = row.pixel_depth as double
         if (row.pixel_unit) cal.setUnit(row.pixel_unit as String)

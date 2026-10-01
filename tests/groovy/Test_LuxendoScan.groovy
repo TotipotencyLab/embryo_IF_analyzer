@@ -118,8 +118,29 @@ println "\n=== channels of one output must agree on dimensions ==="
 def ragged = new File(tmp, "ragged"); ragged.mkdirs()
 FIX.writeLux(new File(ragged, "c0/Cam_long_00000.lux.h5"), 3, 6, 4, [stack: 0, channel: 0, tp: 0])
 FIX.writeLux(new File(ragged, "c1/Cam_long_00000.lux.h5"), 2, 6, 4, [stack: 0, channel: 1, tp: 0])
-throwsWith("channels disagree on z", "channels disagree on dimensions",
+throwsWith("channels disagree on z", "disagree on dimensions",
            { scanner.scan(ragged) { } })
+
+println "\n=== gatherFrames regroups the manifest, and nothing else ==="
+// The gathering decision belongs to the SCAN, so the table describes the file
+// it will produce. Same sources, same count, different grouping.
+def gRows = scanner.scan(root, [gatherFrames: true]) { }
+check("same sources",             gRows.size(), rows.size())
+check("one output per position",  gRows.collect { it.target_output_path }.unique().size(), 2)
+check("was one per timepoint",    rows.collect { it.target_output_path }.unique().size(), 4)
+check("series_id is the position", gRows.every { it.series_id == it.position_id }, true)
+check("no t in the output name",  gRows.every { !it.target_output_path.contains("_t0") }, true)
+check("t is still on every row",  gRows.collect { it.t }.unique().sort(), [0, 1])
+check("position_id is unchanged",
+      gRows.collect { it.position_id }.unique().sort(),
+      rows.collect { it.position_id }.unique().sort())
+check("the sources are the same files",
+      gRows.collect { it.source_path }.sort(), rows.collect { it.source_path }.sort())
+// One output now legitimately holds channel 0 more than once -- once per frame
+// -- so the duplicate check has to key on the timepoint or it would reject a
+// perfectly good gathered manifest.
+check("gathering is not mistaken for a duplicate source",
+      scanner.validate(gRows) { }.findAll { it.contains("same output channel") }, [])
 
 println "\n=== warnings, not errors, for things a person should judge ==="
 // z changing BETWEEN time points of one position: the time course is not one

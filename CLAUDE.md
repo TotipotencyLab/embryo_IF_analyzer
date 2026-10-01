@@ -186,8 +186,14 @@ loop, including how to diff.
   (position, time point). **The manifest is the point of the design**: the script
   always writes `manifest.tsv` before reading a single plane, so the plan you
   would commit tens of gigabytes to is a table you can open, read and edit first.
-  `manifestOnly` decides only where the run stops. Identity comes from each
-  file's own `/metadata` and never from its path. `note/luxendo_file_format.md`
+  `manifestOnly` decides only where the run stops. **Whether a position's time
+  points become one file or many is settled in the manifest, at scan time**, not
+  by the assembler — the table has to describe the file it will produce or it is
+  not a plan. One file per (position, timepoint) is the default because that is
+  what Fiji opens by drag-and-drop. Identity comes from each file's own
+  `/metadata` and never from its path. Downscaling is a **percentage of the
+  original**, and the calibration is scaled by the ratio *achieved* rather than
+  the one requested, because the pixel count is rounded. `note/luxendo_file_format.md`
   is what the format actually is; `note/data_formats.md` §1 is the manifest's
   columns.
 - **`Run_Overview_Batch.groovy` is the cheap look at a dataset**: overview PNGs

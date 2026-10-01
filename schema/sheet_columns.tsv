@@ -19,10 +19,10 @@ samples	pixel_height	machine	double	no	physical pixel size in y
 samples	pixel_depth	machine	double	no	z step; BLANK for a single plane, where there is no z axis to measure
 samples	pixel_unit	machine	string	no	unit of the three sizes above
 samples	file_size	machine	integer	yes	bytes; with the basename this is the fingerprint that spots a copied or replaced file
-manifest	target_output_path	machine	string	yes	image file this row's pixels go into, relative to the output directory. Rows sharing one value describe one output file, one row per channel. It is the name ASKED FOR: what is written adds _ds<N> when downscaled and the format's own extension
-manifest	series_id	machine	string	yes	identity of the output series; sanitise(<position_id>_t<TTTT>)
+manifest	target_output_path	machine	string	yes	image file this row's pixels go into, relative to the output directory. Rows sharing one value describe one output file, one row per (channel, time point). It is the name ASKED FOR: what is written adds _downscale<PC>pc when downscaled and the format's own extension
+manifest	series_id	machine	string	yes	identity of the output series; sanitise(<position_id>_t<TTTT>) for one file per time point, or just <position_id> when the scan gathered every frame of a position into one file
 manifest	position_id	machine	string	yes	the field of view, the same across time points; sanitise(s<NNNN>_<stack_description>)
-manifest	t	machine	integer	yes	0-based time point within the position, from the source metadata
+manifest	t	machine	integer	yes	0-based time point within the position, from the source metadata. It stays on the row whether or not the output gathers several frames
 manifest	channel	machine	integer	yes	0-based channel index IN THE OUTPUT, taken from the source metadata rather than from directory order
 manifest	channel_name	machine	string	no	channel_description from the source; BLANK when the acquisition did not name it
 manifest	source_path	machine	string	yes	the file supplying this channel, relative to the scanned directory

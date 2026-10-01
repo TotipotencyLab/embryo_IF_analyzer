@@ -1,11 +1,16 @@
+#@ String  (visibility=MESSAGE, value="Scan through Luxendo imaging project, build manifest table, and produce TIFF files", required=false) help_title
 #@ File    (persist=true,  label="Luxendo acquisition directory", style="directory") luxDir
 #@ File    (persist=true,  label="Output directory", style="directory") outdir
-#@ File    (persist=false, label="Manifest table (blank = scan the directory now)", style="file", required=false) manifestFile
-#@ Boolean (persist=false, label="Stop after the manifest (write the table, convert nothing)", description="Scan the acquisition and write manifest.tsv, then stop. Edit include= in that table and run again to convert.", value=true) manifestOnly
+#@ String  (visibility=MESSAGE, value="Manifest table: determine how TIFF is generated from which set of images.", required=false) help_msg1
+#@ File    (persist=false, label="Manifest table (blank = new directory scan)", style="file", required=false) manifestFile
+#@ Boolean (persist=false, label="Gather all time frames of a position into one file", description="One output per imaging position holding every time point, instead of one output per time point. Only applies to a new directory scan; an existing manifest already says how it is grouped. A gathered position is several GB and may need BigTIFF.", value=false) gatherFrames
+#@ String  (visibility=MESSAGE, value=" ", required=false) help_sep0
+#@ String  (visibility=MESSAGE, value="Behavior control:", required=false) help_msg2
+#@ Boolean (persist=false, label="Build manifest only (no TIFF produced)", description="Scan the acquisition and write manifest.tsv, then stop. Edit include= in that table and run again to convert.", value=true) manifestOnly
 #@ String  (persist=false, label="Output format", description="TIFF can be reopened easily in ImageJ, but have size limit of ~4GB. BigTIFF can hold larger file, but may not be compatible with ImageJ", value="tiff", choices={"tiff","bigtiff"}) format
-#@ Integer (persist=false, label="Downscale factor (1 = full resolution, 2 = half width and height)", description="Divides both x and y. The pixel size is multiplied to match, and the filename gains _ds<N>. For looking, not for measuring.", value=1) resize
-#@ Boolean (persist=false, label="Skip outputs already assembled here", description="An output whose TIFF and _gather.txt are both already in the output directory is left alone, so an interrupted run can be resumed", value=true) skipExisting
+#@ Integer (persist=false, label="Output scale, % of original (100 = full resolution, 50 = half width & height)", description="Both x and y. The pixel size is scaled to match, so measurements stay in real units, and the filename gains _downscale<PC>pc. For looking, not for measuring.", min="1", max="100", value=100) scalePercent
 #@ Boolean (persist=false, label="Verify output", description="Read each written file back and check its pixels against the checksum taken while writing", value=true) verify
+#@ Boolean (persist=false, label="Skip existing targets", description="An output whose TIFF and _gather.txt are both already in the output directory is left alone, so an interrupted run can be resumed", value=true) skipExisting
 
 // Make_LuxendoTiff.groovy
 //
@@ -40,15 +45,25 @@
 // too large for `tiff` is named before anything is written AND recorded as a
 // FAILED row naming the fix, and the rest of the run still happens.
 //
-// RESIZE is a DIVISOR, not a size: 2 means half the width and half the height.
-// It scales the calibration with the pixels -- halve the pixels and the pixel
-// size doubles -- and puts `_ds<N>` in the filename, so a downscaled file
-// cannot be mistaken for full resolution. It is for looking, not measuring.
+// SCALE is a PERCENTAGE OF THE ORIGINAL: 100 is full resolution, 50 is half the
+// width and half the height. It scales the calibration to match what was
+// actually written -- halve the pixels and the pixel size doubles -- and puts
+// `_downscale<PC>pc` in the filename, so a downscaled file cannot be mistaken
+// for full resolution by anybody who meets it later without the manifest. It is
+// for looking, not measuring.
+//
+// GATHER FRAMES puts every time point of a position into ONE file instead of
+// one file per time point. It is decided at SCAN time, not at assembly time, so
+// the manifest says which you will get -- a table that did not describe its own
+// output would not be a plan. The default is off: a per-timepoint file is the
+// one Fiji opens by drag-and-drop, lets you analyse t=0 while t=3 is still
+// acquiring, and costs one file rather than a whole position when it goes bad.
+// Gathering is for when the time axis has to be IN the image.
 //
 // Headless:
 //   /Applications/Fiji.app/Contents/MacOS/ImageJ-macosx --headless --console \
 //     --run scripts/groovy/Make_LuxendoTiff.groovy \
-//     "luxDir='/path/to/2026-09-10_184731',outdir='/path/out',manifestOnly=false,format='tiff',resize=1,verify=true"
+//     "luxDir='/path/to/2026-09-10_184731',outdir='/path/out',manifestOnly=false,format='tiff',scalePercent=100,verify=true"
 
 import ij.IJ
 
@@ -78,13 +93,13 @@ def SCHEMA = gcl.parseClass(new File(LIBDIR, "SheetSchema.groovy")).loadFromLibD
 // the command line -- SciJava passes any string straight through -- so a stale
 // caller must not be able to select a format by accident.
 def fmt = TA.checkFormat(format)
-int ds  = Math.max(1, (resize ?: 1) as int)
+int pct = TA.checkScalePercent(scalePercent)
 
 IJ.log("=== Luxendo -> TIFF ===")
 IJ.log("  source : " + luxDir.getAbsolutePath())
 IJ.log("  output : " + outdir.getAbsolutePath())
 if (!manifestOnly) {
-    IJ.log("  format : " + fmt + (ds > 1 ? ("  downscale x" + ds) : ""))
+    IJ.log("  format : " + fmt + (pct < 100 ? ("  downscaled to " + pct + "%") : ""))
 }
 
 // ---- 1. the manifest -------------------------------------------------------
@@ -92,6 +107,12 @@ if (!manifestOnly) {
 def rows
 if (manifestFile != null && manifestFile.isFile()) {
     IJ.log("  manifest: reading " + manifestFile.getAbsolutePath())
+    if (gatherFrames) {
+        // The table already says how it is grouped. Honouring the checkbox here
+        // would mean writing something other than what the table describes.
+        IJ.log("  NOTE: 'gather all time frames' is ignored when a manifest is given --" +
+               " the table already says how its rows are grouped.")
+    }
     rows = TSV.read(manifestFile)
     if (!rows) throw new IllegalArgumentException("Manifest has no rows: " + manifestFile)
     def required = SCHEMA.required("manifest")
@@ -111,8 +132,9 @@ if (manifestFile != null && manifestFile.isFile()) {
         dbls.each { k -> r[k] = (r[k] != null && r[k].toString().trim()) ? (r[k].toString().trim() as Double) : null }
     }
 } else {
-    IJ.log("  manifest: none given, scanning now")
-    rows = LS.load(LIBDIR).scan(luxDir) { IJ.log(it) }
+    IJ.log("  manifest: none given, scanning now" +
+           (gatherFrames ? " (gathering every time frame of a position into one output)" : ""))
+    rows = LS.load(LIBDIR).scan(luxDir, [gatherFrames: gatherFrames]) { IJ.log(it) }
     if (!rows) throw new IllegalArgumentException("No .lux.h5 files holding pixels under " + luxDir)
 }
 
@@ -156,13 +178,13 @@ if (manifestOnly) {
 // ---- 2. the pixels ---------------------------------------------------------
 
 def sums = TA.load(LIBDIR).assembleAll(rows, luxDir, outdir,
-                                       [format: fmt, resize: ds, verify: verify,
+                                       [format: fmt, scalePercent: pct, verify: verify,
                                         skipExisting: skipExisting]) { IJ.log(it) }
 
 // Rectangular whatever happened: a skipped or failed output still has a row
 // saying which and why, so a half-completed run is legible.
-def summaryCols = ["output_path", "series_id", "position_id", "t", "channels",
-                   "format", "resize", "status", "reason", "bytes", "checksum", "verified"]
+def summaryCols = ["output_path", "series_id", "position_id", "t", "frames", "channels",
+                   "format", "scale_percent", "status", "reason", "bytes", "checksum", "verified"]
 TSV.write(sums, new File(outdir, "gather_summary.tsv"), summaryCols)
 
 def written = sums.count { it.status == "written" }

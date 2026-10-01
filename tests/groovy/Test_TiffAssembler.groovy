@@ -56,11 +56,25 @@ println "\n=== size is predicted from the manifest, no trial write ==="
 // One real Luxendo position, all four time points in one file, is the case the
 // plan sizes: 2048 x 2048 x 39 x 3 channels x 2 bytes.
 def big = (0..2).collect { [size_x: 2048, size_y: 2048, size_z: 39, channel: it] }
-check("3 channels of 2048x2048x39", TA.predictBytes(big, 1), 2L * 2048 * 2048 * 39 * 3)
-check("that fits classic TIFF",     TA.fitsClassicTiff(TA.predictBytes(big, 1)), true)
-check("halved is a quarter",        TA.predictBytes(big, 2), TA.predictBytes(big, 1) / 4)
-check("scaled dimension",           TA.scaled(2048, 2), 1024)
-check("scaled never reaches zero",  TA.scaled(3, 8), 1)
+check("3 channels of 2048x2048x39", TA.predictBytes(big, 100), 2L * 2048 * 2048 * 39 * 3)
+check("that fits classic TIFF",     TA.fitsClassicTiff(TA.predictBytes(big, 100)), true)
+check("half scale is a quarter",    TA.predictBytes(big, 50), TA.predictBytes(big, 100) / 4)
+check("scaled dimension",           TA.scaled(2048, 50), 1024)
+// ROUNDED, not floored: 33% of 2048 is 675.84, which is 676 pixels.
+check("scale is rounded, not floored", TA.scaled(2048, 33), 676)
+check("scaled never reaches zero",  TA.scaled(3, 1), 1)
+check("100% is untouched",          TA.scaled(2047, 100), 2047)
+
+println "\n=== the scale is validated in code, as a percentage of the original ==="
+check("blank is full resolution", TA.checkScalePercent(null), 100)
+check("empty is full resolution", TA.checkScalePercent(""), 100)
+check("50 is 50",                 TA.checkScalePercent("50"), 50)
+throwsWith("zero refuses",     "between 1 and 100", { TA.checkScalePercent(0) })
+throwsWith("negative refuses", "between 1 and 100", { TA.checkScalePercent(-5) })
+// Refusing to ENLARGE is worth stating on its own: an upscaled output would be
+// invented pixels wearing a real calibration.
+throwsWith("above 100 refuses", "does not enlarge", { TA.checkScalePercent(200) })
+throwsWith("nonsense refuses",  "must be a number", { TA.checkScalePercent("half") })
 
 println "\n=== the format name is validated in code, not by the dialog ==="
 check("default",  TA.checkFormat(null), "tiff")
@@ -71,9 +85,9 @@ throwsWith("an unknown format refuses", "format must be one of", { TA.checkForma
 throwsWith("a stale boolean refuses", "format must be one of", { TA.checkFormat("true") })
 
 println "\n=== output naming says when the pixels are not full resolution ==="
-check("plain",        TA.outputName("a.tif", 1, "tiff"),    "a.tif")
-check("bigtiff ext",  TA.outputName("a.tif", 1, "bigtiff"), "a.ome.tif")
-check("resize token", TA.outputName("a.tif", 4, "tiff"),    "a_ds4.tif")
+check("plain",        TA.outputName("a.tif", 100, "tiff"),    "a.tif")
+check("bigtiff ext",  TA.outputName("a.tif", 100, "bigtiff"), "a.ome.tif")
+check("scale token",  TA.outputName("a.tif", 25, "tiff"),     "a_downscale25pc.tif")
 
 println "\n=== a real assembly round trip ==="
 def root = FIX.buildTree(new File(tmp, "acq"),
@@ -105,7 +119,7 @@ println "\n=== resizing scales the CALIBRATION, not only the pixels ==="
 // Halve the pixels and the pixel size must double, or every area is out by the
 // square of the factor while the image looks perfect.
 def outR = new File(tmp, "out_ds")
-def sR = asm.assembleAll(rows, root, outR, [resize: 2]) { }
+def sR = asm.assembleAll(rows, root, outR, [scalePercent: 50]) { }
 def sR0 = sR.find { it.position_id.contains("pos1") && it.t == 0 }
 def rR = sheet.inspect(new File(outR, sR0.output_path))[0]
 check("width halved",   rR.size_x, 6)
@@ -115,7 +129,7 @@ checkNear("pixel width DOUBLED", rR.pixel_width as Double, 0.416d)
 checkNear("z step unchanged",    rR.pixel_depth as Double, 5.0d)
 check("physical width preserved",
       Math.abs((rR.size_x * (rR.pixel_width as double)) - (r0.size_x * (r0.pixel_width as double))) < 1e-6, true)
-check("filename says it is downscaled", sR0.output_path.contains("_ds2"), true)
+check("filename says it is downscaled", sR0.output_path.contains("_downscale50pc"), true)
 check("and the checksum differs from full resolution", sR0.checksum != s0.checksum, true)
 
 println "\n=== channels go in by their metadata index, not directory order ==="
@@ -171,6 +185,67 @@ check("disagreement fails", splitSum.find { it.output_path == s0.output_path }.s
 check("and says why",
       splitSum.find { it.output_path == s0.output_path }.reason.contains("disagree on include"), true)
 
+println "\n=== gathering every time frame of a position into one file ==="
+// The MANIFEST decides this, not the assembler -- so the gathered plan comes
+// from a second scan, and the assembler just builds what the table describes.
+def gRows = scanner.scan(root, [gatherFrames: true]) { }
+check("same number of sources",   gRows.size(), rows.size())
+check("one output per position",  gRows.collect { it.target_output_path }.unique().size(), 2)
+check("series_id is the position", gRows.every { it.series_id == it.position_id }, true)
+check("the name carries no t",    gRows[0].target_output_path.contains("_t0"), false)
+check("but the rows still do",    gRows.collect { it.t }.unique().sort(), [0, 1])
+
+def outG = new File(tmp, "out_gather")
+def sG = asm.assembleAll(gRows, root, outG, [verify: true]) { }
+check("one output per position", sG.size(), 2)
+check("all written",             sG.collect { it.status }.unique(), ["written"])
+check("all verified",            sG.collect { it.verified }.unique(), ["yes"])
+def sG0 = sG.find { it.position_id.contains("pos1") }
+check("the summary counts the frames", sG0.frames, 2)
+
+def rG = sheet.inspect(new File(outG, sG0.output_path))[0]
+check("channels", rG.size_c, 2)
+check("slices",   rG.size_z, 3)
+check("FRAMES",   rG.size_t, 2)
+checkNear("pixel width survives", rG.pixel_width as Double, 0.208d)
+checkNear("z step survives",      rG.pixel_depth as Double, 5.0d)
+
+// The pixels must be the SAME pixels, in the same order, as the per-timepoint
+// files hold -- a gathered stack of the right shape built from the wrong planes
+// would pass every check above. TA.toBytes is the assembler's own serialiser,
+// so this compares what the two files contain, not how they were written.
+def crcOf = { File f ->
+    def crc = new java.util.zip.CRC32()
+    def imp2 = IJ.openImage(f.getAbsolutePath())
+    try {
+        def stk = imp2.getStack()
+        for (int i = 1; i <= stk.getSize(); i++) {
+            crc.update(TA.toBytes((short[]) stk.getProcessor(i).getPixels()))
+        }
+    } finally { imp2.close(); imp2.flush() }
+    return crc.getValue()
+}
+def joined = crcOf(new File(outG, sG0.output_path))
+def expectCrc = new java.util.zip.CRC32()
+sums.findAll { it.position_id == sG0.position_id }.sort { it.t }.each { st ->
+    def imp2 = IJ.openImage(new File(out, st.output_path).getAbsolutePath())
+    try {
+        def stk = imp2.getStack()
+        for (int i = 1; i <= stk.getSize(); i++) {
+            expectCrc.update(TA.toBytes((short[]) stk.getProcessor(i).getPixels()))
+        }
+    } finally { imp2.close(); imp2.flush() }
+}
+check("gathered pixels are the per-timepoint pixels, in order",
+      Long.toHexString(joined), Long.toHexString(expectCrc.getValue()))
+
+// A position whose z changes between timepoints cannot be one hyperstack, and
+// that is FATAL when gathering where it is only a warning when not.
+def ragged = gRows.collect { new LinkedHashMap(it) }
+ragged.findAll { it.position_id.contains("pos1") && it.t == 1 }.each { it.size_z = 2 }
+throwsWith("z changing between frames refuses", "disagree on dimensions",
+           { scanner.validate(ragged) { } })
+
 println "\n=== skipExisting resumes a run without redoing it ==="
 def skipDir = new File(tmp, "skip")
 def firstPass = asm.assembleAll(rows, root, skipDir, [skipExisting: true]) { }
@@ -197,13 +272,13 @@ check("the complete ones are still skipped",
       resumed.count { it.status == "skipped" }, secondPass.size() - 1)
 
 // The skip is keyed on the name actually written, and the name carries the
-// resize -- so asking for a downscale in a directory full of full-resolution
+// scale -- so asking for a downscale in a directory full of full-resolution
 // files must not skip them all.
-def dsPass = asm.assembleAll(rows, root, skipDir, [skipExisting: true, resize: 2]) { }
+def dsPass = asm.assembleAll(rows, root, skipDir, [skipExisting: true, scalePercent: 50]) { }
 check("a downscale is not mistaken for the full-size file",
       dsPass.collect { it.status }.unique(), ["written"])
 check("and lands under its own name",
-      dsPass.every { it.output_path.contains("_ds2") }, true)
+      dsPass.every { it.output_path.contains("_downscale50pc") }, true)
 
 println "\n=== verification catches a changed pixel ==="
 def victim = new File(out, s0.output_path)
@@ -225,7 +300,8 @@ check("names its own output", pm.output_path, s0.output_path)
 check("records the checksum",  pm.pixel_checksum, s0.checksum)
 check("records the version",   pm.gatherer_version != null && !pm.gatherer_version.isEmpty(), true)
 check("names every source",    (0..1).every { pm["channel_${it}_source"]?.endsWith(".lux.h5") }, true)
-check("records the resize",    pm.resize, "1")
+check("records the scale",     pm.scale_percent, "100")
+check("records the frame count", pm.frames, "1")
 
 tmp.deleteDir()
 println "\n=== ${passed} passed, ${failed} FAILED ==="
