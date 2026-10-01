@@ -201,7 +201,7 @@ true here:
 | column | Luxendo meaning |
 |---|---|
 | `path` | ⚠️ the **acquisition directory** — the root `source_path` resolves against, not a file |
-| `series_index` | the `stack` number from the source metadata |
+| `series_index` | ⚠️ the `stack` number — the **position**, so it repeats once per time point and is **not unique** |
 | `series_name` | `stack_description`, before sanitising |
 | `alias` | a short handle for the acquisition, **the operator's**, defaulting to the folder name |
 
@@ -223,6 +223,17 @@ The alias is a **parameter** on `Make_LuxendoSheets`, blank meaning the folder
 name, exactly as `files.tsv`'s alias defaults to the basename. The point of the
 column is that a run need not be named after whatever the camera called the
 directory.
+
+⚠️ **`series_index` is a known-false label, carried deliberately.** It holds the
+*position*, so `(path, series_index)` — which `SampleSheet.mergeKey()` uses as a
+row's identity across regenerations — is **not unique** for a Luxendo table: 56
+rows collapse to 14 keys. Harmless only because nothing regenerates one of these
+tables. A running counter would restore uniqueness and lose stability, which is
+worse: an acquisition grows while it is being analysed, so every counter after
+the new time points shifts. The identity is two-dimensional and needs two
+columns, which is why `position_id` and `t` arrive on the series table in the
+`vocab` work. **Until then, do not build a rescan that preserves a person's
+edits.** `note/time_series_plan.md` §3.2b has the full reasoning.
 
 #### `sources.tsv` — one row per file
 

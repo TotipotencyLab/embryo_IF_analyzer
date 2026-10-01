@@ -204,15 +204,76 @@ them would weaken the guarantee for every other format; renaming the sheet would
 break `cli_helpers.r`, which reads machine columns with `sheet == "samples"`.
 So they keep their names and are given meanings that are **true** for Luxendo:
 
-| column | Luxendo meaning |
-|---|---|
-| `path` | the acquisition directory — the root the sources table resolves against |
-| `series_index` | the `stack` number from the source metadata |
-| `series_name` | `stack_description`, before sanitising |
-| `alias` | the acquisition folder name |
+| column | Luxendo meaning | honest? |
+|---|---|---|
+| `path` | the acquisition directory — the root the sources table resolves against | yes |
+| `series_index` | the `stack` number from the source metadata | ⚠️ **no** — see below |
+| `series_name` | `stack_description`, before sanitising | yes |
+| `alias` | a short handle for the acquisition, **the operator's**, defaulting to the folder name | yes |
 
-`prefix` then still builds by the existing rule and stays unique by
-construction, and no R CLI changes.
+🔒 **`alias` is a parameter, not the folder name.** The folder name is only its
+default, exactly as `files.tsv`'s alias defaults to the basename — the point of
+the column is that a run need not be named after whatever the camera called the
+directory. `prefix` carries it, built by `SampleSheet.composePrefix()` rather
+than a second copy of the rule, which is what makes a series id unique
+**across** acquisitions and not merely within one. Measured: two real
+acquisitions shared all 14 stack identities, so all 56 of the smaller one's
+series ids collided before the alias was added, and 0 after.
+
+#### ⚠️ `series_index` holds the POSITION index, and is not unique
+
+This one is a known-false label, carried deliberately for one milestone. For
+Luxendo it is the `stack` number, so it repeats once per timepoint — 56 series
+rows, 14 distinct values. Uniqueness of `prefix` survives only because
+`_t<TTTT>` is doing the work `<alias>_s<NNNN>` is supposed to do.
+
+Three things read that column, and none of them is load-bearing *today*:
+
+- **`SampleSheet.mergeKey()` is `[path, series_index]`** — "the identity of a
+  row across regenerations". For Luxendo `path` is the same directory on every
+  row, so the key collapses 56 rows to 14. Nothing regenerates a Luxendo table
+  yet, which is the only reason this costs nothing.
+- **`_config.txt` records it** (`RunConfig.PARAM_TYPES`, written by
+  `NucleusPipeline`), so every Luxendo results folder will state the stack
+  number under a name that says "series".
+- **`group_montage_cli.r --group_by series_index`** would group a position's
+  timepoints. Useful, but by accident.
+
+🔒 **A running counter per row is ruled out, and not merely disliked.** It would
+restore uniqueness and then destroy stability, which is worse. `CLAUDE.md`
+already settled this shape for prefix padding — *"deriving it from the file's
+series count would re-pad every prefix in a file that grew from 999 to 1001,
+which is the same instability as disambiguating only today's collisions"* — and
+a Luxendo acquisition **grows by design**, since §6.1 keeps per-timepoint series
+partly so t=0 can be analysed while t=3 is still acquiring. Scanned at t=0..3,
+position 1's first series is counter 4; rescanned at t=0..95 it is counter 96,
+so 13 of 14 positions change prefix, results folders are orphaned and
+`mergeKey` points at the wrong rows. That is the exact silent-data-loss failure
+the comment at `SampleSheet.groovy:313` records from the last time this went
+wrong.
+
+🔒 **And one integer cannot carry this identity honestly.** `composePrefix()`
+means the prefix's `s<NNNN>` *is* `series_index`, so either the prefix stops
+showing the position, or it stops deriving from the column and
+`composePrefix()`'s documented relationship becomes the next quietly-false
+thing. `stack * 10000 + t` would be stable, unique and content-derived, but
+unreadable and past four digits. The identity is two-dimensional, so it needs
+**two columns** — which is what §3.2 already locks for `vocab`.
+
+⚠️ **The dependency this creates.** Until `position_id` and `t` are real columns
+on the series table, the Luxendo series table has **no stable, non-editable
+match key**: `(path, series_index)` is not unique and `prefix` is editable. So
+**`vocab` must land before any feature that rescans an acquisition while
+preserving a person's edits** — the regeneration discipline H7 asks for cannot
+be built before then.
+
+🔒 **The pattern to notice.** Reinterpreting a required `samples` column leaves
+its documented meaning untrue, and this has now happened twice: `alias` (found
+and fixed) and `series_index` (found, carried knowingly). That is the price of
+borrowing the sheet rather than declaring a new one. ❓ Whether Luxendo
+eventually gets its own sheet is left **open** for `vocab`, not pre-answered
+here — the R side's `sheet == "samples"` lookup in `cli_helpers.r` is the thing
+that would have to change with it.
 
 #### 🔒 One resolver, three callers
 
@@ -409,6 +470,11 @@ loud error: a silent empty run is the failure this repo is built around.
       `SampleSheet.composePrefix()`, so the prefix rule stays in one place.
       This was a bug in Part 2 as first written — `CLAUDE.md`'s "unique by
       construction" rule was broken without anyone noticing.
+
+❓ **Open, for `vocab`: `series_index` is the position index.** §3.2b has the
+reasoning and the dependency; the fix is `position_id` + `t` as real columns,
+which §3.2 already locks for this milestone, after which `series_index` can
+become a genuine series index or go away.
 
 ❓ **Open, for `vocab`: demote `samples.alias` to `required=no`, and rename it.**
 Nothing reads it — grepped across both languages; `.cli_read_sample_sheet()`
@@ -1139,6 +1205,17 @@ step exists. And it saves nothing: reading one sidecar JSON per directory costs
 **~3 s** against **~16 s** for the directory listing it needs anyway. Identity
 stays content-derived for free.
 
+### 6.18 A running counter for Luxendo's `series_index`
+
+**Rejected: it trades uniqueness for instability.** It would make
+`(path, series_index)` unique again, which is tempting because that pair is
+`mergeKey()`. But a counter is derived from the collection, and a Luxendo
+acquisition grows while it is being worked on — so every prefix after the
+inserted timepoints changes on a rescan, orphaning results folders and pointing
+`mergeKey` at the wrong rows. `CLAUDE.md` already rejected the same shape for
+prefix padding, and `SampleSheet.groovy:313` records what it cost last time.
+Full reasoning in §3.2b.
+
 ### 6.17 Dropping "one `series_id` per timepoint" for Luxendo
 
 **Rejected.** The two-sheet design makes it *possible* — a row could be a
@@ -1228,6 +1305,12 @@ position tested.
 comes from the manifest, never from an index alone.
 
 **H5 — `feature_stats.r` silently keeps only the first timepoint.** the `time_axis` milestone.
+
+**H10 — `series_index` is the position index, and `(path, series_index)` is not
+unique.** §3.2b. `SampleSheet.mergeKey()` uses that pair as a row's identity
+across regenerations, and for Luxendo it collapses 56 rows to 14. Harmless only
+while nothing regenerates a Luxendo table. Do not build a rescan that preserves
+edits before `vocab` gives the table `position_id` and `t`. the `vocab` milestone.
 
 **H7 — the two tables can disagree.** The series and sources tables join on
 `series_id`, and a person edits the series table between the scan and the run.
