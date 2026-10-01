@@ -1,6 +1,7 @@
 #@ String  (visibility=MESSAGE, value="Scan a Luxendo acquisition into the two tables the pipeline runs on", required=false) help_title
 #@ File    (persist=true,  label="Luxendo acquisition directory", style="directory") luxDir
 #@ File    (persist=true,  label="Output directory", style="directory") outdir
+#@ String  (persist=false, label="Alias (blank = the acquisition folder name)", description="A short handle for this acquisition. It becomes the first part of every series id, so two acquisitions of the same positions do not collide: without it, both produce s0000_L26A_pos1_t0000. Blank uses the folder name, exactly as files.tsv's alias defaults to the basename.", value="") alias
 #@ String  (visibility=MESSAGE, value=" ", required=false) help_sep0
 #@ String  (visibility=MESSAGE, value="Behavior control:", required=false) help_msg1
 #@ Boolean (persist=false, label="Gather time frames", description="One series per imaging position holding every time point, instead of one series per time point. Off is the default: a per-time-point series is what Fiji opens by drag-and-drop, lets you analyse t=0 while t=3 is still acquiring, and costs one file rather than a whole position when something goes wrong.", value=false) gatherFrames
@@ -28,6 +29,13 @@
 //   columns (condition, genotype, ...), then hand BOTH tables to
 //   Make_LuxendoTiff (to convert a few for tuning) or to the batch runner.
 //
+// THE ALIAS IS YOURS, and the folder name is only its default -- the same
+// contract as `files.tsv`'s alias. It becomes the first part of every series id,
+// which is what makes the id unique ACROSS acquisitions and not merely within
+// one: `s<NNNN>_<stack_description>` repeats between runs (measured: two real
+// acquisitions shared all 14 stack identities), and two runs landing in one
+// output directory would overwrite each other's results without it.
+//
 // IDENTITY COMES FROM EACH FILE'S OWN SIDECAR, never from its path. See
 // LuxendoScan for why, LuxendoSidecar for what it costs, and
 // note/luxendo_file_format.md for the format.
@@ -39,7 +47,7 @@
 // Headless:
 //   /Applications/Fiji.app/Contents/MacOS/ImageJ-macosx --headless --console \
 //     --run scripts/groovy/Make_LuxendoSheets.groovy \
-//     "luxDir='/path/to/2026-09-10_184731',outdir='/path/out',quickScan=true"
+//     "luxDir='/path/to/2026-09-10_184731',outdir='/path/out',alias='fucci_rep2',quickScan=true"
 
 import ij.IJ
 
@@ -67,11 +75,13 @@ def SCHEMA = gcl.parseClass(new File(LIBDIR, "SheetSchema.groovy")).loadFromLibD
 IJ.log("=== Luxendo -> series + sources ===")
 IJ.log("  source : " + luxDir.getAbsolutePath())
 IJ.log("  output : " + outdir.getAbsolutePath())
+IJ.log("  alias  : " + ((alias?.trim()) ?: ("(from the folder name) " + luxDir.getName())))
 IJ.log("  series : " + (gatherFrames ? "one per POSITION, all time points inside"
                                      : "one per (position, time point)"))
 
 long t0 = System.currentTimeMillis()
-def res = LS.load(LIBDIR).scan(luxDir, [gatherFrames: gatherFrames, quickScan: quickScan]) { IJ.log(it) }
+def res = LS.load(LIBDIR).scan(luxDir,
+             [alias: alias, gatherFrames: gatherFrames, quickScan: quickScan]) { IJ.log(it) }
 def series  = res.series
 def sources = res.sources
 

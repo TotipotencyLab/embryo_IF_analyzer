@@ -81,10 +81,10 @@ new File(root, "raw/notes.json").delete()
 
 println "\n=== identity comes from the sidecar, not the path ==="
 def r0 = rows.find { it.series_id.contains("L26A") && it.t == 0 && it.channel == 1 }
-check("series_id",    r0.series_id, "s0000_L26A_pos1_t0000")
+check("series_id",    r0.series_id, "acq_s0000_L26A_pos1_t0000")
 check("channel_name", r0.channel_name, "GFP")
 check("unnamed channel stays blank", rows.find { it.channel == 2 }.channel_name, "")
-def s0 = ser.find { it.prefix == "s0000_L26A_pos1_t0000" }
+def s0 = ser.find { it.prefix == "acq_s0000_L26A_pos1_t0000" }
 check("series_name is the raw description", s0.series_name, "L26A pos1")
 check("series_index is the stack number",   s0.series_index, 0)
 
@@ -101,9 +101,50 @@ check("every required samples column present",
       SCHEMA.required("samples") - ser[0].keySet().toList(), [])
 check("no undeclared series column",
       ser[0].keySet().toList() - SCHEMA.columns("samples"), [])
-check("prefix is the series id",  s0.prefix, "s0000_L26A_pos1_t0000")
+check("prefix is the series id",  s0.prefix, "acq_s0000_L26A_pos1_t0000")
 check("include seeded true",      s0.include, "true")
 check("alias is the acquisition", s0.alias, "acq")
+
+println "\n=== the alias is the OPERATOR'S, and it is part of the series id ==="
+// Without it, `s<NNNN>_<stack_description>` is unique only WITHIN one
+// acquisition. Measured on two real acquisitions: all 14 stack identities were
+// identical, so both produced s0000_L26A_pos1_t0000 and, run separately into
+// one output directory, would overwrite each other's results.
+def named = scanner.scan(root, [alias: "fucci_rep2"]) { }
+check("the given alias leads the series id",
+      named.sources.every { it.series_id.startsWith("fucci_rep2_s") }, true)
+check("and is recorded on the series row", named.series[0].alias, "fucci_rep2")
+check("blank falls back to the folder name",
+      rows.every { it.series_id.startsWith("acq_s") }, true)
+// THE COLLISION THIS FIXES, shown rather than asserted: the same tree scanned
+// under two aliases shares no series id at all, where before it shared all of
+// them.
+check("two aliases share no series id",
+      (named.sources.collect { it.series_id }.toSet()
+       .intersect(rows.collect { it.series_id }.toSet())).toList(), [])
+check("but the same number of them",
+      named.sources.collect { it.series_id }.unique().size(),
+      rows.collect { it.series_id }.unique().size())
+// And it is the repo's own composer, not a second copy of the rule.
+def SSS = gcl.parseClass(new File(LIBDIR + "/SampleSheet.groovy")).load(LIBDIR)
+check("the prefix rule is SampleSheet.composePrefix",
+      SSS.composePrefix("fucci_rep2", 0, "L26A pos1") + "_t0000",
+      named.sources.find { it.t == 0 && it.channel == 0 &&
+                           it.series_id.contains("L26A") }.series_id)
+// Whitespace in a stack description must not survive into a prefix: the outline
+// table is tab-separated and `name` holds this string.
+check("spaces collapse, as sanitize() requires",
+      named.sources.every { !it.series_id.contains(" ") }, true)
+// Whitespace-only is BLANK, so it means "use the folder name" -- the documented
+// behaviour, not an error. (The empty-alias guard in the scanner covers the
+// remaining case of a folder name that itself sanitises away; there is no
+// portable way to create one, so it is belt and braces rather than tested.)
+check("a whitespace alias is blank, not an error",
+      scanner.scan(root, [alias: "   "]) { }.sources.every { it.series_id.startsWith("acq_s") },
+      true)
+// Spaces inside an alias collapse rather than reaching the prefix.
+check("an alias with a space is collapsed",
+      scanner.scan(root, [alias: "rep 2"]) { }.sources[0].series_id.startsWith("rep_2_s"), true)
 // path is the ACQUISITION DIRECTORY here, not a file -- the root source_path
 // resolves against. That is the whole reason the four columns were kept.
 check("path is the directory",    new File(s0.path).isDirectory(), true)
@@ -122,7 +163,7 @@ def keys = rows.collect { it.series_id + "|" + String.format("%04d", it.t as int
 check("already in sorted order", keys, keys.sort(false))
 check("first row is series 0, t 0, channel 0",
       rows[0].series_id + "/t" + rows[0].t + "/c" + rows[0].channel,
-      "s0000_L26A_pos1_t0000/t0/c0")
+      "acq_s0000_L26A_pos1_t0000/t0/c0")
 // and it is reproducible run to run
 def rows2 = scanner.scan(root) { }.sources
 check("second scan gives the same order",

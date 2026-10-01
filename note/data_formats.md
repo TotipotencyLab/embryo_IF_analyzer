@@ -203,12 +203,26 @@ true here:
 | `path` | ⚠️ the **acquisition directory** — the root `source_path` resolves against, not a file |
 | `series_index` | the `stack` number from the source metadata |
 | `series_name` | `stack_description`, before sanitising |
-| `alias` | the acquisition folder name |
+| `alias` | a short handle for the acquisition, **the operator's**, defaulting to the folder name |
 
 Everything else follows from the sources: `size_c` is the channel count,
 `size_t` the frame count (1 per time point, N when gathered), `file_size` the
-sum of the sources, `pixel_type` `uint16`. `prefix` is the series id, so it
-still builds by the repo's existing rule and is unique by construction.
+sum of the sources, `pixel_type` `uint16`.
+
+⚠️ **`prefix` carries the alias, and it has to.** It is
+`sanitise(<alias>_s<NNNN>_<stack_description>)` plus `_t<TTTT>` when not
+gathered — the repo's own `composePrefix()`, not a second copy of the rule.
+`s<NNNN>_<stack_description>` is unique only *within* one acquisition:
+measured on two real acquisitions, **all 14 stack identities were identical**
+(`stack_0-L26A pos1` in both), so without the alias both produce
+`s0000_L26A_pos1_t0000` — all 56 of the smaller run's series ids collided, and
+two runs landing in one output directory would silently overwrite each other's
+`_outline.txt`, `_res.txt` and `_config.txt`. With the alias, 0 collide.
+
+The alias is a **parameter** on `Make_LuxendoSheets`, blank meaning the folder
+name, exactly as `files.tsv`'s alias defaults to the basename. The point of the
+column is that a run need not be named after whatever the camera called the
+directory.
 
 #### `sources.tsv` — one row per file
 

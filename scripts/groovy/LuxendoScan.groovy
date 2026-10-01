@@ -40,15 +40,22 @@
 
 class LuxendoScan {
 
-    /** Padding is fixed, as it is for the sample prefix, and for the same reason. */
-    static final String POSITION_FORMAT = "s%04d"
-    static final String TIME_FORMAT     = "t%04d"
+    /**
+     * Padding is fixed, as it is for the sample prefix, and for the same reason:
+     * deriving it from the count would re-pad every prefix in a run that grew
+     * from 999 timepoints to 1001.
+     *
+     * The POSITION index comes from SampleSheet.INDEX_FORMAT, not from a second
+     * copy here -- it is the same `s%04d` the whole repo uses.
+     */
+    static final String TIME_FORMAT = "t%04d"
 
     static final String PIXEL_TYPE = "uint16"
     static final String PIXEL_UNIT = "micron"
 
     Object SC           // LuxendoSidecar class
     Object RX           // RoiExport class, for sanitize()
+    Object SS           // SampleSheet instance, for composePrefix()
     String libDir
 
     static LuxendoScan load(String libDir) {
@@ -58,6 +65,11 @@ class LuxendoScan {
         s.libDir = libDir
         s.SC = gcl.parseClass(new File(dir, "LuxendoSidecar.groovy"))
         s.RX = gcl.parseClass(new File(dir, "RoiExport.groovy"))
+        // THE PREFIX RULE LIVES IN ONE PLACE. composePrefix() is the repo's
+        // own `sanitise(<alias>_s<NNNN>_<series_name>)`, and Luxendo follows it
+        // rather than reimplementing it -- so a change to the rule lands on
+        // both paths at once.
+        s.SS = gcl.parseClass(new File(dir, "SampleSheet.groovy")).load(libDir)
         return s
     }
 
@@ -141,7 +153,9 @@ class LuxendoScan {
      * Scan an acquisition into the two tables.
      *
      * @param dir   the acquisition directory (the one holding raw/)
-     * @param opts  gatherFrames -- every timepoint of a position in one series
+     * @param opts  alias        -- short handle for this acquisition; blank uses
+     *                              the folder name
+     *              gatherFrames -- every timepoint of a position in one series
      *              quickScan    -- one sidecar per DIRECTORY, not per file (default true)
      * @param log   called with progress lines
      * @return [series: List&lt;Map&gt;, sources: List&lt;Map&gt;, warnings: List&lt;String&gt;]
@@ -154,15 +168,30 @@ class LuxendoScan {
 
         def sizes = new HashMap<String, Long>()
         def files = findPairs(dir, log, sizes)
-        def alias = RX.sanitize(dir.getName())
+        // THE ALIAS IS THE OPERATOR'S, and the folder name is only its DEFAULT
+        // -- exactly as `files.tsv`'s alias defaults to the basename. The whole
+        // point of the column is to let a person name a run something other
+        // than whatever the camera called the directory.
+        def alias = RX.sanitize(((opts?.alias ?: "").toString().trim()) ?: dir.getName())
+        if (!alias) {
+            throw new IllegalArgumentException(
+                "alias is empty after sanitising; give one explicitly")
+        }
 
         def info = quick ? readSampled(dir, files, sizes, log) : readEvery(dir, files, log)
 
         def sources = []
         files.each { File f ->
             def sc = info[f.getAbsolutePath()]
-            def posId = RX.sanitize(String.format(POSITION_FORMAT, sc.stack) +
-                                    "_" + (sc.stackDescription ?: ""))
+            // ⚠️ THE ALIAS IS PART OF THE PREFIX, and it has to be.
+            // `s<NNNN>_<stack_description>` is unique only WITHIN one
+            // acquisition: measured on two real acquisitions, all 14 stack
+            // identities were identical ("stack_0-L26A pos1" in both), so
+            // without the alias both produce `s0000_L26A_pos1_t0000` and, run
+            // separately into one output directory, silently overwrite each
+            // other's _outline.txt, _res.txt and _config.txt. That is exactly
+            // what `CLAUDE.md`'s "unique by construction" rule exists to stop.
+            def posId = SS.composePrefix(alias, sc.stack, sc.stackDescription ?: "")
             // THE TABLE DECIDES THE GROUPING, not the assembler: gathering is
             // settled here so the series table says what will be produced.
             def serId = gatherFrames ? posId

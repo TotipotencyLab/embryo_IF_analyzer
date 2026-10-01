@@ -204,6 +204,12 @@ loop, including how to diff.
   mandatory conversion would mean holding two copies of an 800 GB acquisition.
   Set `include=false` on all but a few series first.
 
+  ⚠️ **The series id carries the alias**, built with the repo's own
+  `composePrefix()` rather than a second copy of the rule. `s<NNNN>_<stack
+  description>` repeats between acquisitions — two real ones shared all 14 stack
+  identities — so without it two runs overwrite each other's results in a shared
+  output directory. The alias is the operator's, defaulting to the folder name.
+
   Identity comes from each file's own sidecar, never from its path, and a row
   needs **both** the `.lux.h5` and its `.json` — which is also the index-file
   test, since `main_raw.lux.h5` has no sidecar. The one narrow exception is

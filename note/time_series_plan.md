@@ -401,6 +401,26 @@ loud error: a silent empty run is the failure this repo is built around.
       frame, `position_id` when gathered, both read off the series table.
 - [x] 🔒 `include` **moves to the series table**; `target_output_path` is
       **dropped** and derived. See §3.2b.
+- [x] ⚠️ **The series id carries the alias**, and the alias is a parameter.
+      `s<NNNN>_<stack_description>` is unique only within one acquisition:
+      measured on two real ones, all 14 stack identities were identical, so all
+      56 of the smaller run's series ids collided and two runs in one output
+      directory would have overwritten each other's results. Built with
+      `SampleSheet.composePrefix()`, so the prefix rule stays in one place.
+      This was a bug in Part 2 as first written — `CLAUDE.md`'s "unique by
+      construction" rule was broken without anyone noticing.
+
+❓ **Open, for `vocab`: demote `samples.alias` to `required=no`, and rename it.**
+Nothing reads it — grepped across both languages; `.cli_read_sample_sheet()`
+drops it as a machine column and `reseedAll` recomposes from the *files* table.
+It is write-only provenance, and `path` already says which container a series
+came from. The reframe that makes sense of it: **the alias names the unit the
+series are indexed within** — one file for a `.lif`, one folder for Luxendo —
+which is why `files.tsv` owns it and the series table only echoes it.
+`project_name` was proposed; it describes the Luxendo case well but invites
+giving two `.lif` files of one experiment the same value, which would collide,
+so the name needs care. Not here: this PR fixes the ignored alias rather than
+removing the evidence of it.
 
 **Deferred to the next PR**, to keep this one at "building the input files":
 
