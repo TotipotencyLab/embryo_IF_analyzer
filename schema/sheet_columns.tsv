@@ -19,3 +19,16 @@ samples	pixel_height	machine	double	no	physical pixel size in y
 samples	pixel_depth	machine	double	no	z step; BLANK for a single plane, where there is no z axis to measure
 samples	pixel_unit	machine	string	no	unit of the three sizes above
 samples	file_size	machine	integer	yes	bytes; with the basename this is the fingerprint that spots a copied or replaced file
+manifest	source_path	machine	string	yes	the .lux.h5 supplying this channel at this time point, relative to the acquisition directory named by the series row's path
+manifest	series_id	machine	string	yes	the series this source feeds; joins to the series table's prefix. Rows sharing one value are one series -- its channels, and its time points when the scan gathered frames
+manifest	channel	machine	integer	yes	0-based channel index IN THE OUTPUT, taken from the source metadata rather than from directory order
+manifest	channel_name	machine	string	no	channel_description from the source; BLANK when the acquisition did not name it. It lives here and not on the series table because it is per channel
+manifest	t	machine	integer	yes	0-based time point within the position, from the source metadata. It stays on the row whether or not the series gathers several frames
+manifest	size_x	machine	integer	yes	width in pixels
+manifest	size_y	machine	integer	yes	height in pixels
+manifest	size_z	machine	integer	yes	slices
+manifest	pixel_width	machine	double	no	physical pixel size in x
+manifest	pixel_height	machine	double	no	physical pixel size in y
+manifest	pixel_depth	machine	double	no	z step; BLANK for a single plane, where there is no z axis to measure
+manifest	pixel_unit	machine	string	no	unit of the three sizes above
+manifest	source_bytes	machine	integer	yes	bytes; with the basename this is the fingerprint that spots a replaced source

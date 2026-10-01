@@ -10,7 +10,7 @@ Column names below are exact, including case.
 
 ---
 
-## 1. The two sheets
+## 1. The sheets
 
 `files.tsv` (one row per **file**) → `Make_SampleSheet.groovy` → `samples.tsv`
 (one row per **series**) → the batch runner, and the R CLIs' `--sample_sheet`.
@@ -21,7 +21,9 @@ machine-read columns alongside. Nothing about `--sample_sheet` changed.
 
 The column list both are checked against is
 [`schema/sheet_columns.tsv`](../schema/sheet_columns.tsv) — internal, read by
-both languages, and the reason there is no second copy to drift.
+both languages, and the reason there is no second copy to drift. Its first
+column says which sheet a row describes, so one file declares them all; a third,
+`manifest`, is at the end of this section.
 
 ### Who owns a column
 
@@ -163,6 +165,152 @@ dropping it.
   repo is built to avoid)
 
 Accepted extensions: `.tsv` / `.txt` (tab-delimited), `.csv`, `.xlsx` / `.xls`.
+
+### The Luxendo pair — `series.tsv` and `sources.tsv`
+
+`Make_LuxendoSheets.groovy` writes **two** tables, because Luxendo breaks the
+assumption every other format here satisfies.
+
+> Every format this repo read before Luxendo put one or more **series inside one
+> file**. Luxendo puts **one series across several files** — one per channel, one
+> per time point.
+
+A series row cannot absorb that: it would need more than one `path`. So the file
+facts live in a second table, which is not a new pattern — `files.tsv` →
+`samples.tsv` is already a file table and a series table, and this is the same
+pair with the cardinality reversed.
+
+| | rows | sheet in `schema/sheet_columns.tsv` |
+|---|---|---|
+| `series.tsv` | one per series | `samples` — **the same shape as any sample sheet** |
+| `sources.tsv` | one per `.lux.h5` | `manifest` |
+
+`series.tsv` being `samples`-shaped is the point: the batch runner and every R
+CLI read it unchanged, and it is where `include` lives and where you add your
+own columns.
+
+#### `series.tsv` — four columns, read the Luxendo way
+
+`samples` declares `path`, `series_index`, `series_name` and `alias` as
+**required**, and all four describe "a series addressed inside one file".
+Relaxing them would weaken the guarantee for every other format; renaming the
+sheet would break `cli_helpers.r`, which reads machine columns with
+`sheet == "samples"`. So they keep their names and are given meanings that are
+true here:
+
+| column | Luxendo meaning |
+|---|---|
+| `path` | ⚠️ the **acquisition directory** — the root `source_path` resolves against, not a file |
+| `series_index` | ⚠️ the `stack` number — the **position**, so it repeats once per time point and is **not unique** |
+| `series_name` | `stack_description`, before sanitising |
+| `alias` | a short handle for the acquisition, **the operator's**, defaulting to the folder name |
+
+Everything else follows from the sources: `size_c` is the channel count,
+`size_t` the frame count (1 per time point, N when gathered), `file_size` the
+sum of the sources, `pixel_type` `uint16`.
+
+⚠️ **`prefix` carries the alias, and it has to.** It is
+`sanitise(<alias>_s<NNNN>_<stack_description>)` plus `_t<TTTT>` when not
+gathered — the repo's own `composePrefix()`, not a second copy of the rule.
+`s<NNNN>_<stack_description>` is unique only *within* one acquisition:
+measured on two real acquisitions, **all 14 stack identities were identical**
+(`stack_0-L26A pos1` in both), so without the alias both produce
+`s0000_L26A_pos1_t0000` — all 56 of the smaller run's series ids collided, and
+two runs landing in one output directory would silently overwrite each other's
+`_outline.txt`, `_res.txt` and `_config.txt`. With the alias, 0 collide.
+
+The alias is a **parameter** on `Make_LuxendoSheets`, blank meaning the folder
+name, exactly as `files.tsv`'s alias defaults to the basename. The point of the
+column is that a run need not be named after whatever the camera called the
+directory.
+
+⚠️ **`series_index` is a known-false label, carried deliberately.** It holds the
+*position*, so `(path, series_index)` — which `SampleSheet.mergeKey()` uses as a
+row's identity across regenerations — is **not unique** for a Luxendo table: 56
+rows collapse to 14 keys. Harmless only because nothing regenerates one of these
+tables. A running counter would restore uniqueness and lose stability, which is
+worse: an acquisition grows while it is being analysed, so every counter after
+the new time points shifts. The identity is two-dimensional and needs two
+columns, which is why `position_id` and `t` arrive on the series table in the
+`vocab` work. **Until then, do not build a rescan that preserves a person's
+edits.** `note/time_series_plan.md` §3.2b has the full reasoning.
+
+#### `sources.tsv` — one row per file
+
+| Column | Required | Meaning |
+|---|---|---|
+| `source_path` | **yes** | the `.lux.h5`, relative to the acquisition directory in the series row's `path` |
+| `series_id` | **yes** | the series it feeds; joins to `series.tsv`'s `prefix`. Rows sharing one value are one series — its channels, and its time points when gathered |
+| `channel` | **yes** | 0-based channel index **in the output** |
+| `channel_name` | no | `channel_description`; blank when unnamed. Here and not on the series table because it is per channel |
+| `t` | **yes** | 0-based time point within the position, whether or not the series gathers frames |
+| `size_x`, `size_y`, `size_z` | **yes** | pixels |
+| `pixel_width`, `pixel_height`, `pixel_depth` | no | physical sizes; `pixel_depth` **blank for a single plane** |
+| `pixel_unit` | no | unit of those three |
+| `source_bytes` | **yes** | with the basename, the fingerprint that spots a replaced source |
+
+**There is no `target_output_path`.** It was only ever `series_id + ".tif"`, so
+the output name is **derived**: from `series_id` for a per-time-point file, from
+the position when the scan gathered frames, with `_downscale<PC>pc` and the
+format's extension added. A stored copy of a derived value is a second thing to
+keep in step.
+
+**There is no `include` here either.** It is a property of the series, so it
+lives on `series.tsv` — one value, which makes "the channels of this output
+disagree about `include`" a state that cannot be written down rather than one
+that has to be handled.
+
+#### Identity comes from the `.json` sidecar
+
+Luxendo writes `Cam_long_00000.json` beside every `Cam_long_00000.lux.h5`, and
+it holds the same `processingInformation` as the image's own `/metadata` **plus**
+the dimensions and voxel size. Verified on 25 spread files: it agrees with the
+HDF5 and with the real dimensions in 25 of 25.
+
+**A row needs both halves.** A `.lux.h5` with no sidecar is skipped and
+reported; a `.json` with no image is ignored. That pairing *is* the index-file
+test — `main_raw.lux.h5` is link-only and has no sidecar — so nothing has to be
+opened to recognise it.
+
+⚠️ **`quickScan` (default on) reads one sidecar per *directory*.** The
+dimensions and voxel size are constant within a channel directory, and the one
+fact that is not — the **time point**, which is the axis the directory runs
+along — comes from the filename suffix, *after* the mapping has been confirmed
+against the sampled file's real `time_point`. A directory whose names disagree
+with its sidecar is read in full and says so. Every file's size is also compared
+with its siblings', and anything more than half a z-plane away is read in full:
+sizes within a directory vary by **8 bytes** where one plane is 8,388,608, so a
+truncated time point cannot hide. On the real acquisition the sampled and full
+scans produce **byte-identical** tables.
+
+#### What the conversion writes
+
+```
+gather_summary.tsv        one row per OUTPUT: status, reason, bytes, checksum, verified
+<output>_gather.txt       per output: its sources, checksum and VERSION
+```
+
+`gather_summary.tsv` is **rectangular whatever happened** — same contract as
+`batch_summary.tsv` — with `output_path, series_id, t, frames, channels, format,
+scale_percent, status, reason, bytes, checksum, verified`. A `status` of
+`written` / `skipped` / `failed` with a `reason`, so a half-completed run is
+legible. `frames` is 1 unless the scan gathered a position.
+
+`checksum` is a CRC32 over the pixels **as written** — after any downscale, so
+it cannot pass a scaling bug off as a correct downscale — and `verified=yes`
+means the file was read back off disk and its pixels recomputed to the same
+value. ⚠️ **It verifies the writer, not the reader.** Both sides come from the
+same read, so a plane fetched wrongly would match itself. What it catches is the
+round trip: a truncated write, or channels, slices and frames transposed.
+
+`_gather.txt` names **every** source: one `channel_<c>_source` line per channel,
+or `t<N>_channel_<c>_source` when the output gathered several frames.
+
+⚠️ **The TIFFs are not a required step.** The batch runner reads the `.lux.h5`
+through the same two tables and assembles channels in memory, so it never reads
+them. Converting is for tuning a threshold interactively and for drag-and-drop.
+The sources *are* the pixels and TIFF does not compress them, so a mandatory
+conversion would mean holding two copies of the acquisition.
 
 ---
 

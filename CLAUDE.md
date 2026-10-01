@@ -150,10 +150,27 @@ loop, including how to diff.
   regeneration, `seeded` written once then yours, `user` never touched). It is
   not in `config/` because that folder's contract is "copy one out and edit it;
   nothing here is read automatically".
-- Script name prefixes are a contract: **`Run_*`** does the analysis, **`Inspect_*`**
-  are read-only diagnostics (written to be read as well as run — they carry the
-  Groovy/ImageJ API notes), **`Make_*`** writes a table the pipeline then
-  consumes. Do not invent a fourth verb without adding it here.
+- Script name prefixes are a contract, but a loose one — **none of these verbs
+  has a strict meaning, and trying to give them one is how you end up with a
+  name nobody would choose.**
+
+  - **`Make_*`** — *you can expect these files at the end.* The name says what
+    comes out. Usually the pipeline then consumes it (`Make_SampleSheet`), but
+    it does not have to: `Make_LuxendoTiff` makes TIFFs you may simply look at
+    and be happy with. The promise is the artifact, not the consumer.
+  - **`Run_*`** — *executes something.* The vaguest term here, and deliberately
+    so: it began as "a wrapper that runs some library function", and it is what
+    a script gets called when naming its output would undersell it.
+    `Run_NucleusSelector` could have been `Make_NuclearOutline` — it does write
+    outlines — but it does more than that, and the narrower name would be a
+    worse description.
+  - **`Inspect_*`** — read-only diagnostics, written to be read as well as run;
+    they carry the Groovy/ImageJ API notes.
+  - **`Open_*`** — opens one thing into a window for a human to look at.
+    Inherently interactive, never part of a batch.
+
+  The line between `Make_` and `Run_` is judgement, not rule. Do not invent a
+  fifth verb without adding it here.
 - `Inspect_ImageFile.groovy` lists what is inside a file without opening it —
   series, dimensions, calibration — and with `checkPixels` reports the
   percentage of non-zero pixels per series. That last one matters: a series that
@@ -162,6 +179,48 @@ loop, including how to diff.
   series names and says whether they are separate fields of a tile scan or
   genuinely the same image, which the name alone cannot tell you.
   `Open_LifFile.groovy` opens one chosen series into a window, by index or name.
+- **The Luxendo path is two scripts and two tables.** Bio-Formats cannot read
+  `.lux.h5` correctly — `BDVReader` returns the wrong specimen's pixels — so
+  `LuxendoFile.groovy` reads the HDF5 directly through JHDF5 for pixels, and
+  `LuxendoSidecar.groovy` reads the `.json` Luxendo writes beside every image
+  for everything else.
+
+  **`Make_LuxendoSheets.groovy` writes `series.tsv` + `sources.tsv`.** Two
+  tables because Luxendo breaks the assumption every other format here
+  satisfies: one series spread **across** several files (one per channel, one
+  per time point) rather than one or more series **inside** one file. A series
+  row cannot hold more than one `path`, so the file facts go in the second
+  table. `series.tsv` is `samples`-shaped, so the batch runner and every R CLI
+  read it unchanged, and it is where `include` lives. ⚠️ Its `path` is the
+  **acquisition directory**, not a file — one of four required `samples` columns
+  deliberately reinterpreted rather than relaxed, because relaxing them would
+  weaken the sheet for every other format and renaming the sheet would break
+  `cli_helpers.r`.
+
+  **`Make_LuxendoTiff.groovy` is for tuning and drag-and-drop, not a required
+  step.** The batch runner reads the `.lux.h5` through the same two tables and
+  assembles channels in memory, so it never reads what this writes. That is
+  deliberate: the sources *are* the pixels and TIFF does not compress them, so a
+  mandatory conversion would mean holding two copies of an 800 GB acquisition.
+  Set `include=false` on all but a few series first.
+
+  ⚠️ **The series id carries the alias**, built with the repo's own
+  `composePrefix()` rather than a second copy of the rule. `s<NNNN>_<stack
+  description>` repeats between acquisitions — two real ones shared all 14 stack
+  identities — so without it two runs overwrite each other's results in a shared
+  output directory. The alias is the operator's, defaulting to the folder name.
+
+  Identity comes from each file's own sidecar, never from its path, and a row
+  needs **both** the `.lux.h5` and its `.json` — which is also the index-file
+  test, since `main_raw.lux.h5` has no sidecar. The one narrow exception is
+  `quickScan`, which takes the *time point* from the filename after confirming
+  the mapping against a real sidecar in the same directory, and falls back to
+  reading every sidecar when they disagree. Whether a position's time points
+  become one file or many is settled in the tables, at scan time, not by the
+  assembler. Downscaling is a **percentage of the original**, and the
+  calibration is scaled by the ratio *achieved* rather than requested, because
+  the pixel count is rounded. `note/luxendo_file_format.md` is what the format
+  is; `note/data_formats.md` §1 is the two tables.
 - **`Run_Overview_Batch.groovy` is the cheap look at a dataset**: overview PNGs
   for every included sheet row and nothing else. It exists because deciding what
   a slide contains should not cost a segmentation run — detection needs a tuned

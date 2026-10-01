@@ -99,7 +99,7 @@ test_that("the sheet column schema is readable and its owners are known", {
   d <- read.delim(f, stringsAsFactors = FALSE)
   expect_identical(colnames(d),
                    c("sheet", "column", "owner", "type", "required", "description"))
-  expect_true(all(d$sheet %in% c("files", "samples")))
+  expect_true(all(d$sheet %in% c("files", "samples", "manifest")))
   expect_true(all(d$owner %in% c("machine", "seeded", "user")))
   expect_true(all(d$type %in% c("string", "integer", "double", "boolean")))
   expect_true(all(d$required %in% c("yes", "no")))
@@ -112,12 +112,41 @@ test_that("the sheet column schema is readable and its owners are known", {
   expect_identical(pre$required, "yes")
   expect_identical(d$owner[d$sheet == "samples" & d$column == "series_index"], "machine")
 
-  # Every samples column has to be described where people look for it.
+  # `manifest` is the Luxendo SOURCES table -- one row per .lux.h5, keyed to the
+  # series it feeds. It is never handed to a CLI.
+  man <- d$column[d$sheet == "manifest"]
+  expect_true(all(c("source_path", "series_id", "channel", "t") %in% man))
+  # The join key to series.tsv is series_id; the series table calls it `prefix`,
+  # and that pairing is what makes the two tables usable together.
+  expect_identical(d$required[d$sheet == "manifest" & d$column == "series_id"], "yes")
+  # NO include here: it is a property of the series, so it lives on the series
+  # table. One value per series makes "the channels of this output disagree
+  # about include" unrepresentable rather than merely handled.
+  expect_false("include" %in% man)
+  # NO stored output path: it was only ever series_id + ".tif", so it is derived.
+  # A stored copy of a derived value is a second thing to keep in step.
+  expect_false("target_output_path" %in% man)
+  expect_false("output_path" %in% man)
+  # channel_name belongs here and NOT on the series table, because it is per
+  # channel and the series table has one row per series.
+  expect_true("channel_name" %in% man)
+  # pixel_depth must be optional here for the same reason it is blank in
+  # _config.txt: a single plane has no z step to record.
+  expect_identical(d$required[d$sheet == "manifest" & d$column == "pixel_depth"], "no")
+  # The four samples columns the Luxendo series table reinterprets must stay
+  # REQUIRED -- the whole point of reinterpreting rather than relaxing them.
+  for (col in c("path", "series_index", "series_name", "alias")) {
+    expect_identical(d$required[d$sheet == "samples" & d$column == col], "yes")
+  }
+
+  # Every declared column has to be described where people look for it.
   doc <- paste(readLines(file.path(repo_root(), "note", "data_formats.md"),
                          warn = FALSE), collapse = "\n")
-  undocumented <- setdiff(d$column[d$sheet == "samples"],
-                          unlist(regmatches(doc, gregexpr("[A-Za-z_]+", doc))))
-  expect_identical(undocumented, character(0))
+  words <- unlist(regmatches(doc, gregexpr("[A-Za-z_]+", doc)))
+  for (sh in c("samples", "manifest")) {
+    undocumented <- setdiff(d$column[d$sheet == sh], words)
+    expect_identical(undocumented, character(0))
+  }
 })
 
 test_that("pixel_depth is written by the Groovy side and documented here", {

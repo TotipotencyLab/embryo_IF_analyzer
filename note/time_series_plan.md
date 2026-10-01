@@ -32,9 +32,10 @@ volume, cross-sectional area, circularity or signal intensity changes over time
 is the first instance to arrive. Nothing may be written so that it only works
 for a TruLive3D.
 
-**In scope:** reading Luxendo output into a format the pipeline accepts; a time
-axis through Fiji and R; linking a feature to itself across time; the identity
-and vocabulary cleanup that all of the above depends on.
+**In scope:** reading Luxendo output into a format the pipeline accepts **and
+into the sheets the batch runner already loops**; a time axis through Fiji and R;
+linking a feature to itself across time; the identity and vocabulary cleanup
+that all of the above depends on.
 
 **Not in scope:** background correction and absolute intensity comparison (see
 `note/if_quantification.md`); any new segmentation method; tracking across
@@ -56,6 +57,13 @@ alias is also the branch prefix: `luxendo-<what>`, `time_axis-<what>`.
 | 4 | **`tracking`** | linking features across time | **MINOR** | needs `t`. Small, because TrackMate does the linking. |
 | 5 | **`QoL`** | inspection round trip | **PATCH** | convenience. Lowest priority. |
 | 6 | **`container`** | the R container | **MINOR** | last: see the shape of a working pipeline before building a container for it. |
+
+🔒 **`luxendo` grew a second part** after a design review (§4, §6.12–§6.17): the
+scan emits a *series* table as well as the sources table, because the batch
+runner loops series and that is where `include` lives. The **PR boundary is
+"building the input files"** — `Make_LuxendoSheets` and `Make_LuxendoTiff` — and
+`Make_OverviewStack` sits in `QoL`, since it is a convenience that nothing in
+the analysis depends on and it reads finished outputs rather than producing them.
 
 **Why `time_axis` stays at 3, despite not being needed for the Luxendo path.**
 A review pass established that under one file per (position, timepoint), `t`
@@ -153,6 +161,135 @@ for data it did not produce):
 🔒 `(position_id, t)` must be unique, refused on duplicates exactly as a
 duplicate `series_id` is.
 
+### 3.2b The sources table — when one series comes from many files
+
+🔒 **The friction this resolves.** Every format the repo read before Luxendo put
+one or more *series inside one file*. Luxendo puts **one series across several
+files** — one per channel, one per timepoint. The series table cannot absorb
+that: a row would need more than one `path`.
+
+🔒 **So a second table carries it**, one row per source file, keyed to
+`series_id`. This is not a new pattern: `files.tsv` → `samples.tsv` is already
+"a file table and a series table", and this is the same pair with the cardinality
+reversed. Declared in `schema/sheet_columns.tsv` under sheet `manifest`, read at
+run time by both languages.
+
+🔒 **`include` moves to the series table**, one value per series. Carrying it
+per source made "rows of this output disagree on include" a representable state,
+which was a real source of confusion in use. Moving it makes that state
+**unrepresentable** rather than better handled.
+
+🔒 **`target_output_path` is dropped outright, not moved.** It was only ever
+`series_id + ".tif"`, so it is derived rather than stored: the output name comes
+from `series_id` for a per-timepoint file and from `position_id` for a gathered
+one, with the scale token and extension added as before. A stored copy of a
+derived value is a second thing to keep in step.
+
+The sources table is therefore: `source_path, series_id, channel, channel_name,
+t, size_x, size_y, size_z, pixel_width, pixel_height, pixel_depth, pixel_unit,
+source_bytes`. `channel_name` stays because it is per channel and so cannot live
+on a one-row-per-series table; everything else the series table already carries.
+
+🔒 **The series table needs no new columns.** `samples` already declares
+everything, once the four columns of §3.2b are read the Luxendo way:
+`size_c` is the channel count, `size_t` the frame count, `file_size` the sum of
+the sources, `pixel_type` `uint16`. `position_id` and `t` arrive on the series
+table in `vocab`, not here.
+
+#### 🔒 The four columns that presume one-file addressing
+
+`samples` declares `path`, `series_index`, `series_name` and `alias` all
+`required=yes`, and every one describes a scheme Luxendo does not use. Relaxing
+them would weaken the guarantee for every other format; renaming the sheet would
+break `cli_helpers.r`, which reads machine columns with `sheet == "samples"`.
+So they keep their names and are given meanings that are **true** for Luxendo:
+
+| column | Luxendo meaning | honest? |
+|---|---|---|
+| `path` | the acquisition directory — the root the sources table resolves against | yes |
+| `series_index` | the `stack` number from the source metadata | ⚠️ **no** — see below |
+| `series_name` | `stack_description`, before sanitising | yes |
+| `alias` | a short handle for the acquisition, **the operator's**, defaulting to the folder name | yes |
+
+🔒 **`alias` is a parameter, not the folder name.** The folder name is only its
+default, exactly as `files.tsv`'s alias defaults to the basename — the point of
+the column is that a run need not be named after whatever the camera called the
+directory. `prefix` carries it, built by `SampleSheet.composePrefix()` rather
+than a second copy of the rule, which is what makes a series id unique
+**across** acquisitions and not merely within one. Measured: two real
+acquisitions shared all 14 stack identities, so all 56 of the smaller one's
+series ids collided before the alias was added, and 0 after.
+
+#### ⚠️ `series_index` holds the POSITION index, and is not unique
+
+This one is a known-false label, carried deliberately for one milestone. For
+Luxendo it is the `stack` number, so it repeats once per timepoint — 56 series
+rows, 14 distinct values. Uniqueness of `prefix` survives only because
+`_t<TTTT>` is doing the work `<alias>_s<NNNN>` is supposed to do.
+
+Three things read that column, and none of them is load-bearing *today*:
+
+- **`SampleSheet.mergeKey()` is `[path, series_index]`** — "the identity of a
+  row across regenerations". For Luxendo `path` is the same directory on every
+  row, so the key collapses 56 rows to 14. Nothing regenerates a Luxendo table
+  yet, which is the only reason this costs nothing.
+- **`_config.txt` records it** (`RunConfig.PARAM_TYPES`, written by
+  `NucleusPipeline`), so every Luxendo results folder will state the stack
+  number under a name that says "series".
+- **`group_montage_cli.r --group_by series_index`** would group a position's
+  timepoints. Useful, but by accident.
+
+🔒 **A running counter per row is ruled out, and not merely disliked.** It would
+restore uniqueness and then destroy stability, which is worse. `CLAUDE.md`
+already settled this shape for prefix padding — *"deriving it from the file's
+series count would re-pad every prefix in a file that grew from 999 to 1001,
+which is the same instability as disambiguating only today's collisions"* — and
+a Luxendo acquisition **grows by design**, since §6.1 keeps per-timepoint series
+partly so t=0 can be analysed while t=3 is still acquiring. Scanned at t=0..3,
+position 1's first series is counter 4; rescanned at t=0..95 it is counter 96,
+so 13 of 14 positions change prefix, results folders are orphaned and
+`mergeKey` points at the wrong rows. That is the exact silent-data-loss failure
+the comment at `SampleSheet.groovy:313` records from the last time this went
+wrong.
+
+🔒 **And one integer cannot carry this identity honestly.** `composePrefix()`
+means the prefix's `s<NNNN>` *is* `series_index`, so either the prefix stops
+showing the position, or it stops deriving from the column and
+`composePrefix()`'s documented relationship becomes the next quietly-false
+thing. `stack * 10000 + t` would be stable, unique and content-derived, but
+unreadable and past four digits. The identity is two-dimensional, so it needs
+**two columns** — which is what §3.2 already locks for `vocab`.
+
+⚠️ **The dependency this creates.** Until `position_id` and `t` are real columns
+on the series table, the Luxendo series table has **no stable, non-editable
+match key**: `(path, series_index)` is not unique and `prefix` is editable. So
+**`vocab` must land before any feature that rescans an acquisition while
+preserving a person's edits** — the regeneration discipline H7 asks for cannot
+be built before then.
+
+🔒 **The pattern to notice.** Reinterpreting a required `samples` column leaves
+its documented meaning untrue, and this has now happened twice: `alias` (found
+and fixed) and `series_index` (found, carried knowingly). That is the price of
+borrowing the sheet rather than declaring a new one. ❓ Whether Luxendo
+eventually gets its own sheet is left **open** for `vocab`, not pre-answered
+here — the R side's `sheet == "samples"` lookup in `cli_helpers.r` is the thing
+that would have to change with it.
+
+#### 🔒 One resolver, three callers
+
+How a row becomes pixels is now needed by the batch runner, by
+`Make_LuxendoTiff` and by `Make_OverviewStack`. Three copies is how the fork
+happens quietly, so it is **one resolver** that all three call, reporting which
+route it took the way `BatchRunner` already records `open_method`.
+
+⚠️ **The rule is membership, not plausibility.** A series resolves from the
+sources table *if the table has rows for its `series_id`*; otherwise from
+`path`; **neither is an error naming the series_id.** Sniffing whether `path`
+"looks like a real file" is the class of heuristic this repo has already been
+bitten by (the greedy filename prefix; `Slice` meaning three different things) —
+a stale path or a moved mount silently takes the wrong branch and surfaces
+somewhere else. Membership also lets one sheet mix Luxendo and non-Luxendo rows.
+
 ### 3.3 `_outline.txt`
 
 🔒 Gains a `t` column: `name, roi, t, z, x, y`.
@@ -211,47 +348,183 @@ table's `t` column when the gatherer wrote one file per timepoint (the default).
 Read `.lux.h5` and write files the existing pipeline accepts. Format facts are
 in `note/luxendo_file_format.md`; do not duplicate them here.
 
-- [ ] Read `.lux.h5` with **JHDF5** (`ch.systemsx.cisd.hdf5`). Bio-Formats
+#### Part 1 — reading the format, and the manifest  ✅ done
+
+- [x] Read `.lux.h5` with **JHDF5** (`ch.systemsx.cisd.hdf5`). Bio-Formats
       cannot read them at all, and `BDVReader` on `bdv.xml` returns the wrong
       specimen silently — both verified, both in the format note.
-- [ ] **Assembly manifest**: one row per *output file*, naming every source file
-      and plane feeding it. Identity column `series_id`; also `position_id`, `t`.
-- [ ] 🔒 **Manifest gets a `schema/` entry**, like `sheet_columns.tsv` — read at
+- [x] **Assembly manifest**: one row per *source file*, carrying the output it
+      feeds — a single row with a variable-length list of sources would not
+      survive being a TSV. Identity column `series_id`; also `position_id`, `t`.
+- [x] 🔒 **Manifest gets a `schema/` entry**, like `sheet_columns.tsv` — read at
       run time by both languages, two readers from day one.
-- [ ] **Generic assembler**: manifest → TIFF.
-- [ ] 🔒 **Three entry modes**: (i) end to end from a Luxendo directory,
+- [x] **Generic assembler**: manifest → TIFF.
+- [x] 🔒 **Three entry modes**: (i) end to end from a Luxendo directory,
       (ii) **manifest only**, (iii) assemble from an existing manifest.
       (ii) is what lets a person see the plan before committing to 33 GB.
-- [ ] 🔒 **One file per (position, timepoint), classic TIFF by default**;
+- [x] 🔒 **One file per (position, timepoint), classic TIFF by default**;
       `--format bigtiff` as an explicit alternative. See §5.1 and §6.1.
-- [ ] ⚠️ 🔒 **`setCanDetectBigTiff(false)`, always.** Otherwise Bio-Formats
+- [x] ⚠️ 🔒 **`setCanDetectBigTiff(false)`, always.** Otherwise Bio-Formats
       silently upgrades to BigTIFF above the ceiling and the drag-and-drop
       guarantee is gone with no error. See §5.1.
-- [ ] Predict output size from the manifest and **warn before writing**.
+- [x] Predict output size from the manifest and **warn before writing**.
       Over-limit for the chosen format is a **per-row failure recorded in the
       summary, not an abort** — `BatchRunner.runEach()`'s contract. The message
       names `--format bigtiff`.
-- [ ] 🔒 **One assembler with a `resize` option**, not two entry points. Two
+- [x] 🔒 **One assembler with a scale option**, not two entry points. Two
       gatherers differing only in scale is the fork `CLAUDE.md` forbids.
-      `resize` and `gatherFrames` are independent, both non-persistent.
-- [ ] ⚠️ **Resizing must scale the calibration.** Halve the pixels and
+      Scale and `gatherFrames` are independent, both non-persistent. Built as
+      `scalePercent`, 1..100 **percent of the original**, not a divisor: a
+      percentage needs no explaining in the dialog, and the divisor's unbounded
+      top end was a footgun (`resize=100000` produced a 1x1 image) rather than a
+      capability.
+- [x] ⚠️ **Resizing must scale the calibration.** Halve the pixels and
       `pixel_width`/`pixel_height` must double, or every area is wrong by the
       square of the factor while the image looks perfect. Test: assemble one
-      position at 1x and 2x, assert the physical extent matches.
-- [ ] A non-default `resize` puts a token in the output filename.
-- [ ] Per-output **provenance record**: source paths, checksums, gatherer
-      version, resize factor.
-- [ ] Honour `include`, with exactly `BatchRunner.isIncluded()`'s vocabulary.
-- [ ] **Verification mode**: re-read output planes and compare to source by
+      position at 100% and 50%, assert the physical extent matches.
+      **By the ratio ACHIEVED, not the one requested** — the pixel count is
+      rounded, so 33% of 2048 is 676 px (ratio 3.0296, not 3.0303). Measured on
+      the real acquisition: achieved reproduces 425.98402 um to five decimals,
+      requested would have recorded 426.08488.
+- [x] A non-default scale puts a token in the output filename:
+      `_downscale<PC>pc`, which cannot be misread as a divisor.
+- [x] Per-output **provenance record**: source paths, checksums, gatherer
+      version, scale. Keyed per (timepoint, channel) when gathered, or three of
+      a gathered position's twelve sources would be the only ones named.
+- [x] Honour `include`, with exactly `BatchRunner.isIncluded()`'s vocabulary.
+- [x] **Verification mode**: re-read output planes and compare to source by
       checksum. "39 slices, 3 channels" passes happily while channels are
       transposed — this is the only check that can fail correctly.
-- [ ] ⚠️ Assert z uniform **across timepoints of one position**. It is *not*
-      uniform across positions (16..39, one at z=1).
-- [ ] 🔒 `raw/` — the Luxendo acquisition directory — **is never modified or
+- [x] ⚠️ Assert z uniform **across timepoints of one position**. It is *not*
+      uniform across positions (16..39, one at z=1). A **warning** when writing
+      one file per timepoint, where the run is still well defined; **fatal**
+      under `gatherFrames`, where there is no single volume shape to build the
+      hyperstack from.
+- [x] 🔒 `raw/` — the Luxendo acquisition directory — **is never modified or
       deleted.** Converted TIFFs are derived and may be regenerated.
 
-**Verification.** Assemble two positions including `L26A pos3` (z=1), checksum
-against source, and open one in Fiji by drag-and-drop.
+#### Part 2 — the two sheets, after the design review
+
+A long design pass (recorded in §6.12–§6.17) established that the manifest alone
+is not enough: the batch runner needs a **series** table to loop over, because
+that is what carries `include`, `prefix` and the operator's metadata. So the
+scan emits both, from the one pass, and the milestone grows these items.
+
+🔒 **The analysis workflow this produces**, end to end:
+
+```
+1. Make_LuxendoSheets      scan -> series table + sources table
+   (edit the series table: include=, condition=, genotype=)
+2. Make_LuxendoTiff        a FEW series, full resolution, FOR TUNING ONLY
+3. Run_NucleusSelector     tune the threshold on one of those
+4. Run_NucleusSelector_Batch   detection + measurement, reading .lux.h5 directly
+5. Make_OverviewStack      per position, z-projected, + overlay   (the QoL milestone)
+6. the R CLIs              unchanged
+```
+
+🔒 **Step 2 is small and optional, and that is the point.** Step 4 assembles
+channels in memory and never reads step 2's output, so **the dataset is never
+duplicated on disk.** Converting everything first was rejected for exactly this
+reason (§6.12): the sources are already the pixels, so a required conversion
+step means permanently holding two copies of an 800 GB acquisition.
+
+⚠️ **Step 1 → step 4 has a human edit in between**, and it is where a two-table
+design first goes wrong. Regeneration must match on `series_id`, never
+re-propagate a seeded column silently, and report every carry-over — the
+discipline `Make_SampleSheet` already has. A join matching nothing must be a
+loud error: a silent empty run is the failure this repo is built around.
+
+- [x] 🔒 **`Make_LuxendoSheets.groovy`** — one scan, two tables. Named for what
+      it makes; `Metadata` was considered and dropped because "metadata" in this
+      repo means the operator's columns, which this script does not write.
+- [x] 🔒 **The scan reads the sidecar `.json`, not the HDF5** — §5.6. Pair on
+      the JSON *and* require the `.lux.h5` sibling, so a stray JSON from
+      someone else's analysis cannot invent a row, and `main_raw.lux.h5` (which
+      has no sidecar) is excluded for free. `holdsPixels` is then deleted
+      rather than moved.
+- [x] 🔒 **`quickScan` on by default**: one sidecar per *directory* for the
+      dimension columns rather than one per file, since they are constant within
+      a channel directory. ⚠️ Verified against sibling file sizes — within a
+      directory they vary by **8 bytes** while one z-plane is 8,388,608, so a
+      deviating timepoint stands out by a factor of a million. That turns
+      "sampled one file" into "sampled one file and checked the other 95".
+
+      ⚠️ **The time point is the one fact a sampled sidecar cannot supply**, because
+      it is the axis a channel directory runs along. Reusing the sampled
+      sidecar's `time_point` gave every file `t=0`, which the duplicate-source
+      check then correctly rejected — caught by the tests, not by inspection. It
+      now comes from the filename suffix, the single place in this repo where
+      identity touches a path, and only after the mapping has been **confirmed**
+      against the sampled file's real `time_point`; a directory where they
+      disagree is read in full and says so.
+- [x] `Make_LuxendoTiff` **narrowed**: takes the two sheets instead of scanning,
+      and is for tuning and drag-and-drop only. Basenames from `series_id` per
+      frame, `position_id` when gathered, both read off the series table.
+- [x] 🔒 `include` **moves to the series table**; `target_output_path` is
+      **dropped** and derived. See §3.2b.
+- [x] ⚠️ **The series id carries the alias**, and the alias is a parameter.
+      `s<NNNN>_<stack_description>` is unique only within one acquisition:
+      measured on two real ones, all 14 stack identities were identical, so all
+      56 of the smaller run's series ids collided and two runs in one output
+      directory would have overwritten each other's results. Built with
+      `SampleSheet.composePrefix()`, so the prefix rule stays in one place.
+      This was a bug in Part 2 as first written — `CLAUDE.md`'s "unique by
+      construction" rule was broken without anyone noticing.
+
+❓ **Open, for `vocab`: `series_index` is the position index.** §3.2b has the
+reasoning and the dependency; the fix is `position_id` + `t` as real columns,
+which §3.2 already locks for this milestone, after which `series_index` can
+become a genuine series index or go away.
+
+❓ **Open, for `vocab`: demote `samples.alias` to `required=no`, and rename it.**
+Nothing reads it — grepped across both languages; `.cli_read_sample_sheet()`
+drops it as a machine column and `reseedAll` recomposes from the *files* table.
+It is write-only provenance, and `path` already says which container a series
+came from. The reframe that makes sense of it: **the alias names the unit the
+series are indexed within** — one file for a `.lif`, one folder for Luxendo —
+which is why `files.tsv` owns it and the series table only echoes it.
+`project_name` was proposed; it describes the Luxendo case well but invites
+giving two `.lif` files of one experiment the same value, which would collide,
+so the name needs care. Not here: this PR fixes the ignored alias rather than
+removing the evidence of it.
+
+**Deferred to the next PR**, to keep this one at "building the input files":
+
+- [ ] 🔒 **The one resolver**, §3.2b — membership in the sources table decides,
+      never a guess about `path`.
+- [ ] ⚠️ The batch runner gains **one optional sources parameter**, and nothing
+      else moves. Forking `Run_NucleusSelector_Luxendo_Batch` was rejected
+      (§6.13): the only thing Luxendo changes is how a row becomes an
+      `ImagePlus`, which is one seam the library already has as `open_mode`.
+
+**Verification of Part 2.** A scan of the 800 GB acquisition completing in
+**~8 minutes** rather than ~48 (§5.6), both tables written, and one position run
+end to end through `Run_NucleusSelector_Batch` **without converting anything**
+(the last of those belongs to the next PR).
+
+⚠️ **~8 minutes, not the ~1 minute first estimated.** The estimate counted the
+sidecar reads and not the directory walk: ~8000 entries and ~4000 `stat` calls
+over SMB dominate once the sidecar reads are down to 42. Taking the file sizes
+from the same walk and pairing by set membership rather than a second `isFile()`
+per image was tried and measured at **504 s against 480 s — no gain**, so the
+walk itself is the floor. The change was kept (strictly less I/O, byte-identical
+output) but it buys nothing measurable, and going below ~8 minutes would need a
+different walk strategy, not fewer stats.
+
+#### Part 1's verification, as carried out
+
+Assemble two positions including `L26A pos3` (z=1), checksum against source, and
+open one in Fiji by drag-and-drop.
+
+**Done**, on branch `luxendo-input_transform`. 175 Groovy checks across
+`Test_LuxendoFile`, `Test_LuxendoScan` and `Test_TiffAssembler`, all synthesising
+their own `.lux.h5` through `tests/groovy/LuxFixture.groovy`, plus the real
+33 GB acquisition end to end. Two things were added that this list did not ask
+for and that the work showed were needed: `skipExisting`, which resumes an
+interrupted run and requires the provenance file as well as the image so a
+half-written output is redone; and the manifest being written **before** any
+pixels and unconditionally, because a plan that only survives a successful run
+is not a plan.
 
 ### `vocab` — identity and vocabulary
 
@@ -377,6 +650,22 @@ recorded rather than becoming two unrelated tracks.
 
 ### `QoL` — inspection round trip
 
+Also the current home of the **gathered overview**.
+
+❓ **Its position in the sequence is deliberately not settled.** It is filed here
+because nothing in the analysis depends on it, but it **cannot precede
+`time_axis`** — it needs `t` on the outline tables — and on an 800 GB
+acquisition "can I see what this contains over time" may not be a convenience at
+all. **Decide during or after `time_axis`**, once the absence has been felt.
+
+🔒 **The batch's overview parameter stays `none` / `PNG`**, and gains a frame
+selection (`0`, `0,47,95`, `all`, default `0`). Putting TIFF there was
+considered and rejected (§6.14): `Run_NucleusSelector` handles one open image
+and has no concept of a group, so giving it the same gathering capability means
+giving it a loop — at which point it is a batch runner, and the fork
+`CLAUDE.md` forbids has happened by accretion. Frame selection alone takes the
+real dataset from **4032 overview PNGs to 42**.
+
 🔒 `Open_*` is the verb — `Open_LifFile.groovy` already establishes it as "opens
 something into the Fiji GUI for a human", interactive-only by nature. No fourth
 verb needed.
@@ -394,6 +683,40 @@ a library class and the `Open_*` script is a thin caller — same division as
       feature filter (blank = all). Opens the series via `BatchRunner`'s open
       path, loads the zip with `RoiExport.loadRoiZip()`, filters, renames with
       the `feature_id` prefix, adds to the ROI Manager.
+- [ ] 🔒 **`Make_OverviewStack.groovy`** — one z-projected hyperstack per
+      `position_id`, channels and timepoints inside, downscaled, with the
+      detected outlines attached as an **overlay**.
+
+      🔒 **A `Make_`, not a mode of a batch.** `Run_Overview_Batch` drives
+      `BatchRunner.runEach()`, which is strictly per row; a per-position stack
+      needs per-group accumulation. Running it as a **second pass over finished
+      outputs** removes the accumulation entirely — which is also why holding
+      overviews in memory during the batch was rejected (§6.15).
+
+      🔒 **Not Luxendo-named**, because the artifact is not Luxendo-specific:
+      the same step is how IF QC could move to TIFF later. It resolves rows
+      through the one resolver of §3.2b, so it reads `.lux.h5` or an ordinary
+      file without caring which.
+
+      🔒 **The overlay is attached after segmentation, to the written file.**
+      Measured (§5.7): an ImageJ TIFF carries an `Overlay`, per-frame
+      `tPosition` survives the round trip, and the pixels stay untouched 16-bit.
+      So the assembler never needs to know about outlines, and the outlines stay
+      vector and toggleable instead of burned in. Run it before segmentation for
+      the plain stack, again afterwards to attach — same output path, idempotent.
+
+      ⚠️ **It is a picture, not a count.** ROIs are per z-slice, so a projected
+      stack needs them unioned in 2D, and `CLAUDE.md` already records that this
+      merges objects overlapping in x-y: 5 outlines where R counts 6 nuclei on
+      the fixture. Label it as an eyeball artifact wherever it is written.
+
+      ⚠️ **One display range per (position, channel), not per frame.**
+      `Overview.prepare()` computes `lo`/`hi` per image; applied per frame, a
+      cell appears to brighten because the stretch moved. Over time that artifact
+      looks like biology.
+
+      ⚠️ The overlay is **ImageJ-specific TIFF metadata** — Fiji shows it, other
+      tools silently ignore it. Fine for inspection, not an interchange format.
 - [ ] `Open_SeriesRow.groovy` — open row N of a series table. (Named for
       `series.tsv`, not the retired "sample sheet".)
       🔒 **1-based** (it is a table row; `series_index` stays 0-based because
@@ -592,6 +915,101 @@ tail correctly, since the last three fields remain z, index, y.
 
 ---
 
+### 5.6 The sidecar JSON, and what a network mount costs
+
+Measured on an 800 GB acquisition over a samba mount, 4032 `.lux.h5` in 42
+directories (14 positions x 3 channels x 96 timepoints):
+
+| | per file | over 4032 files |
+|---|---|---|
+| `holdsPixels` (HDF5 open + dataset header) | 392 ms | **26 min** |
+| `LuxendoFile.open` + `/metadata` | 322 ms | **22 min** |
+| sidecar `.json` | 88 ms | 6 min |
+| `File.length()` | 9.5 ms | 38 s |
+
+The same calls on a local SSD were **4.5 ms** — so this is latency, not
+bandwidth, and it scales with file *count*, not dataset size. The first scan of
+this dataset therefore cost **~48 minutes** before printing its first count,
+because the scan opened every file **twice**: once to test for `/Data`, once for
+the metadata.
+
+🔒 **There is a `.json` sidecar beside every `.lux.h5`** — 4032 of 4032 — and it
+holds the complete manifest: `stack`, `stack_description`, `channel`,
+`channel_description`, `time_point`, `voxel_size_um` and `image_size_vx`.
+Checked against the HDF5 `/metadata` *and* the real dimensions on 25 spread
+files: **25 of 25 agree exactly.** So identity still comes from content; it is
+simply a cheaper file's content.
+
+Measured end to end afterwards: **480 s** for the 800 GB acquisition against the
+old path's ~48 minutes, a 6x improvement rather than the 48x the per-file
+figures suggest — the directory walk, not the file reads, is what is left. On
+the 33 GB acquisition it is 2.0 s with `quickScan` and 3.3 s without, and the
+two produce **byte-identical** tables.
+
+`main_raw.lux.h5` has **no sidecar**, which makes "has a `.json` sibling" a free
+index-file test. Its top level is `[timepoint_0..3]` and it has no `/metadata`
+at all — so dropping the content check *without* the sidecar swap would have
+made the scan **throw on every real Luxendo tree**, not merely go faster.
+
+The directory names also parse cleanly (`stack_<n>-<name>_channel_<c>-<name>_obj_<obj>`,
+checked on 404 spread files, 0 disagreements), and that was the user's first
+proposal. Rejected in §6.16.
+
+### 5.7 An ImageJ TIFF carries a per-frame overlay
+
+Written with four frames and one `OvalRoi` per frame, then reopened:
+
+```
+reopened: c=1 z=1 t=4
+overlay survived: true   rois = 4
+roi 0 tPosition=1   roi 1 tPosition=2   roi 2 tPosition=3   roi 3 tPosition=4
+pixels intact: 1000 (want 1000), bitDepth=16
+```
+
+So outlines can be attached to an **already written** stack, per frame, without
+touching the pixels. `Overview.addOutlines()` already draws to an overlay and
+scales ROIs with `RoiScaler` from the view's `sx`/`sy`; the burn-in happens only
+in `savePng` via `flatten()`.
+
+Also measured: R's `magick` (2.9.1, already a dependency) reads a multi-frame
+TIFF and indexes single frames — 5 written, 5 read back, `b[3]` addressable. So
+moving the overview to TIFF is *possible* on the R side. Rejected for now in
+§6.14.
+
+### 5.8 What a parallel run would cost, and why splitting the sheet is better
+
+`runEach()` iterates **sheet rows in sheet order**; a row's identity is `prefix`
+and its address is `(path, series_index)`. There is no `series_id` column yet —
+that is this plan's vocabulary, not today's code.
+
+It cannot be threaded as written, for five reasons, and four of them are shared
+global state: the **single-entry reader cache** (one thread's `closeReader()`
+can close a reader another is mid-read on, and Bio-Formats readers are not
+thread-safe), `IJ.run("Set Measurements...")`, `Prefs.blackBackground` before
+every watershed, and the saved/restored `bioformats.windowless` preference. The
+fifth is `summary <<`, which would also lose sheet order.
+
+⚠️ Memory is the real ceiling regardless: one assembled Luxendo series is
+**981 MB** and a tile merge is 5 GB against ~9 GB usable heap, and "nothing
+holds two whole copies" is a standing decision — so N threads means N copies.
+
+🔒 **The answer is to split the series table into chunks and submit parallel
+jobs**, each its own JVM with its own ImageJ globals. Two things to handle when
+that arrives:
+
+- ⚠️ the **duplicate-`prefix` refusal becomes per-chunk**, so a collision split
+  across two chunks escapes both checks and the jobs overwrite each other's
+  output. It must be checked before the split, not inside each job.
+- `batch_summary.tsv` arrives in N pieces; they concatenate cleanly **only if
+  every chunk was given the same `extraCols`**, which the rectangularity
+  contract guarantees.
+
+Where threading *would* pay is the I/O, which is latency-bound and touches no
+ImageJ state: assembling row *n+1*'s channels while row *n* is segmented. One
+image's extra memory, summary order preserved. Not needed yet.
+
+---
+
 ## 6. Alternatives considered and rejected
 
 Recorded so they are not re-proposed, and so a reversal is a decision rather
@@ -707,6 +1125,125 @@ the output contract — the `_outline.txt` column, the `_res.txt` column after
 it on the R side alone would create a second word for one concept, which is what
 `vocab` exists to remove.
 
+### 6.12 Convert everything to TIFF first, then analyse
+
+**Rejected: it doubles the dataset, permanently.** The `.lux.h5` files already
+*are* the pixels and TIFF does not compress them, so making conversion a
+required step means holding two copies of an 800 GB acquisition for as long as
+the analysis exists. The friction between steps was the stated objection; the
+storage is the decisive one. Conversion survives as a small optional step for
+tuning and drag-and-drop (§4, step 2).
+
+### 6.13 One sheet row per file, or a forked Luxendo batch runner
+
+Two separate rejections of the same shape.
+
+**One row per file: rejected, it breaks a cross-language invariant.** `prefix`
+would stop being unique per row, and three things enforce that it is —
+`BatchRunner.runEach()`'s duplicate refusal, `.cli_read_sample_sheet()`'s on the
+R side, and the standing decision that `prefix` is unique *by construction*. So
+it does not merely make `include` confusing: **every R CLI stops loading the
+sheet**, which is the whole downstream half of the repo.
+
+**A forked `Run_NucleusSelector_Luxendo_Batch.groovy`: rejected.** Tracing
+`runEach()`, the only thing Luxendo changes is *how a row becomes an
+`ImagePlus`* — everything before and after (include, the duplicate refusal, the
+pixel-size warning, closing on both paths, failure isolation,
+`batch_summary.tsv`) is format-agnostic, and `CLAUDE.md` names that exact list
+as "not worth a second copy". The library already has this seam as `open_mode`;
+a third route is **adding an option to the library**, which is what the workflow
+prescribes. Cost of avoiding the fork: one optional parameter, blank for
+everyone not using Luxendo.
+
+### 6.14 A TIFF option on the batch's overview parameter
+
+**Rejected: it turns the interactive runner into a batch runner.**
+`Run_NucleusSelector` handles one open image and has no concept of a group, so
+giving it the gathering capability means giving it a loop. The gathered stack
+also wants one display range per (position, channel), which cannot be known
+until every frame has been seen — so it is not a per-row artifact at all.
+
+Moving the overview from PNG to TIFF *generally* was also considered, and R was
+verified able to read multi-frame TIFF and index frames (§5.7). Rejected for
+now on three costs: `<prefix>_overview_ch<N>.png` is byte-identical between the
+nucleus path and `Run_Overview_Batch` **on purpose**, so nothing downstream need
+know which runner made one; `mg_write()` pins 8-bit because magick composes in
+16 bits and a title band once promoted a whole montage; and a 16-bit TIFF
+carries no display range, so R would inherit a decision Fiji currently makes and
+records in `display_range`. Frame selection solves the file-count problem
+without any of it.
+
+### 6.15 Gathering overview PNGs, or holding overviews in memory
+
+**Writing every overview PNG then gathering them: rejected, the contrast is
+already baked in.** `prepare()` with `contrast=auto` fits `lo`/`hi` per image, so
+a stack of per-frame PNGs shows a cell brightening because the stretch moved.
+Over a time course that artifact looks like biology, which is worse than no
+picture.
+
+**Holding reduced overviews in memory until a group completes: rejected.**
+`prepare()` keeps 16-bit (the 8-bit conversion is in `savePng`), so one
+position's worth is **1.15 GB** at 1000 px wide or **302 MB** at 512, competing
+with a ~1 GB working image. Worse, it would require the series table to be
+**sorted by position** for correctness — and that table is one a person is
+invited to edit and re-sort, so the requirement fails silently into several
+partial files. A second pass over finished outputs needs neither the memory nor
+the ordering.
+
+### 6.16 Parsing the directory names for identity
+
+**Rejected, though it works.** Checked on 404 spread files: the pattern
+`stack_<n>-<name>_channel_<c>-<name>_obj_<obj>` plus the filename's timepoint
+suffix agrees with the metadata in every case, and all 42 directories match.
+
+It is the wrong lever for two reasons. The path **cannot supply `size_x`,
+`size_y`, `size_z` or the voxel size**, and the assembler needs all four — to
+build the processor, to predict bytes, to write the calibration. A path-only
+manifest is blank in exactly the columns that do the work, so the
+predict-before-writing warning stops working, which is the reason the manifest
+step exists. And it saves nothing: reading one sidecar JSON per directory costs
+**~3 s** against **~16 s** for the directory listing it needs anyway. Identity
+stays content-derived for free.
+
+### 6.18 A running counter for Luxendo's `series_index`
+
+**Rejected: it trades uniqueness for instability.** It would make
+`(path, series_index)` unique again, which is tempting because that pair is
+`mergeKey()`. But a counter is derived from the collection, and a Luxendo
+acquisition grows while it is being worked on — so every prefix after the
+inserted timepoints changes on a rescan, orphaning results folders and pointing
+`mergeKey` at the wrong rows. `CLAUDE.md` already rejected the same shape for
+prefix padding, and `SampleSheet.groovy:313` records what it cost last time.
+Full reasoning in §3.2b.
+
+### 6.17 Dropping "one `series_id` per timepoint" for Luxendo
+
+**Rejected.** The two-sheet design makes it *possible* — a row could be a
+position, with the work looping `t` internally — and it would collapse the two
+identity scopes of §6.1 into one, which is genuinely tidier. Three costs
+outweigh it:
+
+- **failure isolation drops from timepoint to position.** A transient read at
+  t=73 of a 96-timepoint position would cost all 96, against `runEach()`'s
+  contract that one row's failure costs one row.
+- **resumability goes with it.** A partly-done position has no clean marker;
+  per-timepoint rows resume naturally.
+- **it re-scopes `feature_id`**, which §3.1 locks as "one object at one
+  timepoint, within a `series_id`". It would have to become
+  `(series_id, t)`-scoped, rippling into `define_feature_group()`,
+  `relate_features.r` and `tracking`.
+
+And the benefit it was reached for — not reading channels a run will not use —
+is a property of resolving through the sources table, true whether a row is a
+position or a position-timepoint. Two independent questions; only one is settled
+by the design.
+
+Revisit if an analysis needs several timepoints resident at once — drift
+correction, or tracking that uses pixels rather than spots. TrackMate on
+hand-built spots does not (§5.2).
+
+---
+
 ## 7. `find_overlap_roi_features()` — review, and what replaces it
 
 303 lines, used by `PLA_analysis/test_PLA.R` and `tests/testthat/test-spatial.R`,
@@ -768,6 +1305,27 @@ position tested.
 comes from the manifest, never from an index alone.
 
 **H5 — `feature_stats.r` silently keeps only the first timepoint.** the `time_axis` milestone.
+
+**H10 — `series_index` is the position index, and `(path, series_index)` is not
+unique.** §3.2b. `SampleSheet.mergeKey()` uses that pair as a row's identity
+across regenerations, and for Luxendo it collapses 56 rows to 14. Harmless only
+while nothing regenerates a Luxendo table. Do not build a rescan that preserves
+edits before `vocab` gives the table `position_id` and `t`. the `vocab` milestone.
+
+**H7 — the two tables can disagree.** The series and sources tables join on
+`series_id`, and a person edits the series table between the scan and the run.
+Regeneration must match on `series_id`, never silently re-propagate a seeded
+column, and report every carry-over — `Make_SampleSheet`'s discipline. A join
+matching nothing must be a **loud error**, not an empty run. the `luxendo` milestone.
+
+**H8 — an auto display range fitted per frame makes a time course lie.** §6.15.
+One range per (position, channel), or a moving stretch reads as changing signal.
+the `QoL` milestone.
+
+**H9 — a per-chunk duplicate-`prefix` check misses a cross-chunk collision.**
+§5.8. Splitting the series table for parallel jobs puts each half's refusal in a
+different JVM, and two jobs then overwrite each other's output. Check before the
+split. the `QoL` milestone / whenever HPC arrives.
 
 **H6 — a failed ROI-zip write leaves a partial file.** Verified: 189 bytes on
 disk after the exception, which `loadRoiZip` would read. the `time_axis` milestone.
