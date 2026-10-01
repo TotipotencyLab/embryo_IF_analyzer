@@ -19,14 +19,11 @@ samples	pixel_height	machine	double	no	physical pixel size in y
 samples	pixel_depth	machine	double	no	z step; BLANK for a single plane, where there is no z axis to measure
 samples	pixel_unit	machine	string	no	unit of the three sizes above
 samples	file_size	machine	integer	yes	bytes; with the basename this is the fingerprint that spots a copied or replaced file
-manifest	target_output_path	machine	string	yes	image file this row's pixels go into, relative to the output directory. Rows sharing one value describe one output file, one row per (channel, time point). It is the name ASKED FOR: what is written adds _downscale<PC>pc when downscaled and the format's own extension
-manifest	series_id	machine	string	yes	identity of the output series; sanitise(<position_id>_t<TTTT>) for one file per time point, or just <position_id> when the scan gathered every frame of a position into one file
-manifest	position_id	machine	string	yes	the field of view, the same across time points; sanitise(s<NNNN>_<stack_description>)
-manifest	t	machine	integer	yes	0-based time point within the position, from the source metadata. It stays on the row whether or not the output gathers several frames
+manifest	source_path	machine	string	yes	the .lux.h5 supplying this channel at this time point, relative to the acquisition directory named by the series row's path
+manifest	series_id	machine	string	yes	the series this source feeds; joins to the series table's prefix. Rows sharing one value are one series -- its channels, and its time points when the scan gathered frames
 manifest	channel	machine	integer	yes	0-based channel index IN THE OUTPUT, taken from the source metadata rather than from directory order
-manifest	channel_name	machine	string	no	channel_description from the source; BLANK when the acquisition did not name it
-manifest	source_path	machine	string	yes	the file supplying this channel, relative to the scanned directory
-manifest	source_bytes	machine	integer	yes	bytes; with the basename this is the fingerprint that spots a replaced source
+manifest	channel_name	machine	string	no	channel_description from the source; BLANK when the acquisition did not name it. It lives here and not on the series table because it is per channel
+manifest	t	machine	integer	yes	0-based time point within the position, from the source metadata. It stays on the row whether or not the series gathers several frames
 manifest	size_x	machine	integer	yes	width in pixels
 manifest	size_y	machine	integer	yes	height in pixels
 manifest	size_z	machine	integer	yes	slices
@@ -34,5 +31,4 @@ manifest	pixel_width	machine	double	no	physical pixel size in x
 manifest	pixel_height	machine	double	no	physical pixel size in y
 manifest	pixel_depth	machine	double	no	z step; BLANK for a single plane, where there is no z axis to measure
 manifest	pixel_unit	machine	string	no	unit of the three sizes above
-manifest	stack_description	machine	string	no	what the acquisition called this position, before sanitising
-manifest	include	seeded	boolean	no	whether to assemble this output; all rows of one target_output_path must agree
+manifest	source_bytes	machine	integer	yes	bytes; with the basename this is the fingerprint that spots a replaced source

@@ -174,15 +174,27 @@ that: a row would need more than one `path`.
 reversed. Declared in `schema/sheet_columns.tsv` under sheet `manifest`, read at
 run time by both languages.
 
-🔒 **`include` and `target_output_path` do NOT live here.** Both are properties
-of the output, so both belong on the series table — one value per series.
-Carrying `include` per source made "rows of this output disagree on include" a
-representable state, which was a real source of confusion in use. Moving it
-makes that state **unrepresentable** rather than better handled.
+🔒 **`include` moves to the series table**, one value per series. Carrying it
+per source made "rows of this output disagree on include" a representable state,
+which was a real source of confusion in use. Moving it makes that state
+**unrepresentable** rather than better handled.
 
-The sources table is therefore: `source_path, series_id, channel, t, size_x,
-size_y, size_z, pixel_width, pixel_height, pixel_depth, pixel_unit,
-source_bytes`.
+🔒 **`target_output_path` is dropped outright, not moved.** It was only ever
+`series_id + ".tif"`, so it is derived rather than stored: the output name comes
+from `series_id` for a per-timepoint file and from `position_id` for a gathered
+one, with the scale token and extension added as before. A stored copy of a
+derived value is a second thing to keep in step.
+
+The sources table is therefore: `source_path, series_id, channel, channel_name,
+t, size_x, size_y, size_z, pixel_width, pixel_height, pixel_depth, pixel_unit,
+source_bytes`. `channel_name` stays because it is per channel and so cannot live
+on a one-row-per-series table; everything else the series table already carries.
+
+🔒 **The series table needs no new columns.** `samples` already declares
+everything, once the four columns of §3.2b are read the Luxendo way:
+`size_c` is the channel count, `size_t` the frame count, `file_size` the sum of
+the sources, `pixel_type` `uint16`. `position_id` and `t` arrive on the series
+table in `vocab`, not here.
 
 #### 🔒 The four columns that presume one-file addressing
 
@@ -361,25 +373,37 @@ re-propagate a seeded column silently, and report every carry-over — the
 discipline `Make_SampleSheet` already has. A join matching nothing must be a
 loud error: a silent empty run is the failure this repo is built around.
 
-- [ ] 🔒 **`Make_LuxendoSheets.groovy`** — one scan, two tables. Named for what
+- [x] 🔒 **`Make_LuxendoSheets.groovy`** — one scan, two tables. Named for what
       it makes; `Metadata` was considered and dropped because "metadata" in this
       repo means the operator's columns, which this script does not write.
-- [ ] 🔒 **The scan reads the sidecar `.json`, not the HDF5** — §5.6. Pair on
+- [x] 🔒 **The scan reads the sidecar `.json`, not the HDF5** — §5.6. Pair on
       the JSON *and* require the `.lux.h5` sibling, so a stray JSON from
       someone else's analysis cannot invent a row, and `main_raw.lux.h5` (which
       has no sidecar) is excluded for free. `holdsPixels` is then deleted
       rather than moved.
-- [ ] 🔒 **`quickScan` on by default**: one sidecar per *directory* for the
+- [x] 🔒 **`quickScan` on by default**: one sidecar per *directory* for the
       dimension columns rather than one per file, since they are constant within
       a channel directory. ⚠️ Verified against sibling file sizes — within a
       directory they vary by **8 bytes** while one z-plane is 8,388,608, so a
       deviating timepoint stands out by a factor of a million. That turns
       "sampled one file" into "sampled one file and checked the other 95".
-- [ ] `Make_LuxendoTiff` **narrowed**: takes the two sheets instead of scanning,
+
+      ⚠️ **The time point is the one fact a sampled sidecar cannot supply**, because
+      it is the axis a channel directory runs along. Reusing the sampled
+      sidecar's `time_point` gave every file `t=0`, which the duplicate-source
+      check then correctly rejected — caught by the tests, not by inspection. It
+      now comes from the filename suffix, the single place in this repo where
+      identity touches a path, and only after the mapping has been **confirmed**
+      against the sampled file's real `time_point`; a directory where they
+      disagree is read in full and says so.
+- [x] `Make_LuxendoTiff` **narrowed**: takes the two sheets instead of scanning,
       and is for tuning and drag-and-drop only. Basenames from `series_id` per
       frame, `position_id` when gathered, both read off the series table.
-- [ ] 🔒 `include` and `target_output_path` **move off the sources table** onto
-      the series table. See §3.2b.
+- [x] 🔒 `include` **moves to the series table**; `target_output_path` is
+      **dropped** and derived. See §3.2b.
+
+**Deferred to the next PR**, to keep this one at "building the input files":
+
 - [ ] 🔒 **The one resolver**, §3.2b — membership in the sources table decides,
       never a guess about `path`.
 - [ ] ⚠️ The batch runner gains **one optional sources parameter**, and nothing
@@ -388,8 +412,18 @@ loud error: a silent empty run is the failure this repo is built around.
       `ImagePlus`, which is one seam the library already has as `open_mode`.
 
 **Verification of Part 2.** A scan of the 800 GB acquisition completing in
-**~1 minute** rather than ~48 (§5.6), both tables written, and one position run
-end to end through `Run_NucleusSelector_Batch` **without converting anything**.
+**~8 minutes** rather than ~48 (§5.6), both tables written, and one position run
+end to end through `Run_NucleusSelector_Batch` **without converting anything**
+(the last of those belongs to the next PR).
+
+⚠️ **~8 minutes, not the ~1 minute first estimated.** The estimate counted the
+sidecar reads and not the directory walk: ~8000 entries and ~4000 `stat` calls
+over SMB dominate once the sidecar reads are down to 42. Taking the file sizes
+from the same walk and pairing by set membership rather than a second `isFile()`
+per image was tried and measured at **504 s against 480 s — no gain**, so the
+walk itself is the floor. The change was kept (strictly less I/O, byte-identical
+output) but it buys nothing measurable, and going below ~8 minutes would need a
+different walk strategy, not fewer stats.
 
 #### Part 1's verification, as carried out
 
@@ -530,8 +564,13 @@ recorded rather than becoming two unrelated tracks.
 
 ### `QoL` — inspection round trip
 
-Also the home of the **gathered overview**, because it is a convenience rather
-than something the analysis depends on.
+Also the current home of the **gathered overview**.
+
+❓ **Its position in the sequence is deliberately not settled.** It is filed here
+because nothing in the analysis depends on it, but it **cannot precede
+`time_axis`** — it needs `t` on the outline tables — and on an 800 GB
+acquisition "can I see what this contains over time" may not be a convenience at
+all. **Decide during or after `time_axis`**, once the absence has been felt.
 
 🔒 **The batch's overview parameter stays `none` / `PNG`**, and gains a frame
 selection (`0`, `0,47,95`, `all`, default `0`). Putting TIFF there was
@@ -814,6 +853,12 @@ holds the complete manifest: `stack`, `stack_description`, `channel`,
 Checked against the HDF5 `/metadata` *and* the real dimensions on 25 spread
 files: **25 of 25 agree exactly.** So identity still comes from content; it is
 simply a cheaper file's content.
+
+Measured end to end afterwards: **480 s** for the 800 GB acquisition against the
+old path's ~48 minutes, a 6x improvement rather than the 48x the per-file
+figures suggest — the directory walk, not the file reads, is what is left. On
+the 33 GB acquisition it is 2.0 s with `quickScan` and 3.3 s without, and the
+two produce **byte-identical** tables.
 
 `main_raw.lux.h5` has **no sidecar**, which makes "has a `.json` sibling" a free
 index-file test. Its top level is `[timepoint_0..3]` and it has no `/metadata`

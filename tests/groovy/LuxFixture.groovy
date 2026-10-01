@@ -25,13 +25,33 @@ class LuxFixture {
      * per-file `bias`. A transposed axis or an off-by-one plane therefore shows
      * up as a WRONG NUMBER rather than as a plausible one.
      *
-     * opts: elementSize (bool), metadata (bool), el (float[3] z,y,x),
+     * Luxendo also writes a `.json` SIDECAR beside every image, holding the
+     * same processingInformation. The scan reads that rather than the HDF5
+     * (LuxendoSidecar says why), and pairing the two is what tells an image
+     * apart from an index file -- so the fixture writes both by default. Pass
+     * `sidecar: false` to leave the image unpaired, which is how the tests
+     * check that an unpaired file is reported and skipped.
+     *
+     * opts: elementSize (bool), metadata (bool), sidecar (bool), el (float[3] z,y,x),
      *       vox (map), stack, stackDesc, channel, chanDesc, tp, bias
      */
     static File writeLux(File f, int nz, int ny, int nx, Map opts = [:]) {
         f.getParentFile()?.mkdirs()
         f.delete()
         int bias = (opts.bias ?: 0) as int
+        def info = [
+            image_id           : "2026-09-10T17:47:37.268Z-test",
+            stack              : String.valueOf(opts.get("stack", 0)),
+            stack_description  : (opts.stackDesc ?: "L26A pos1"),
+            channel            : String.valueOf(opts.get("channel", 0)),
+            channel_description: opts.containsKey("chanDesc") ? opts.chanDesc : "BF",
+            time_point         : String.valueOf(opts.get("tp", 0)),
+            objective          : "bottom",
+            camera             : "long",
+            voxel_size_um      : (opts.containsKey("vox") ? opts.vox
+                                                          : [width: 0.208, height: 0.208, depth: 5.0]),
+            image_size_vx      : [width: nx, height: ny, depth: nz],
+        ]
         def w = HDF5Factory.open(f)
         try {
             short[] flat = new short[nz * ny * nx]
@@ -45,30 +65,36 @@ class LuxFixture {
                                          (opts.el ?: [5.0f, 0.208f, 0.208f]) as float[])
             }
             if (opts.get("metadata", true)) {
-                def vox = opts.containsKey("vox") ? opts.vox
-                                                  : [width: 0.208, height: 0.208, depth: 5.0]
-                w.string().write("/metadata", JsonOutput.toJson([
-                    processingInformation: [
-                        image_id           : "2026-09-10T17:47:37.268Z-test",
-                        stack              : String.valueOf(opts.get("stack", 0)),
-                        stack_description  : (opts.stackDesc ?: "L26A pos1"),
-                        channel            : String.valueOf(opts.get("channel", 0)),
-                        channel_description: opts.containsKey("chanDesc") ? opts.chanDesc : "BF",
-                        time_point         : String.valueOf(opts.get("tp", 0)),
-                        objective          : "bottom",
-                        camera             : "long",
-                        voxel_size_um      : vox,
-                        image_size_vx      : [width: nx, height: ny, depth: nz],
-                    ]
-                ]))
+                w.string().write("/metadata", JsonOutput.toJson([processingInformation: info]))
             }
         } finally {
             w.close()
         }
+        if (opts.get("sidecar", true)) {
+            writeSidecar(sidecarPath(f), info)
+        }
         return f
     }
 
-    /** An index file: valid HDF5, a .lux.h5 name, no /Data. What main_raw.lux.h5 is. */
+    /** The `.json` Luxendo writes beside an image. */
+    static File sidecarPath(File h5) {
+        def n = h5.getName()
+        return new File(h5.getParentFile(), n.replaceAll(/(?i)\.lux\.h5$/, "") + ".json")
+    }
+
+    /** Write a sidecar from an explicit processingInformation map. */
+    static File writeSidecar(File json, Map info) {
+        json.getParentFile()?.mkdirs()
+        json.setText(JsonOutput.prettyPrint(JsonOutput.toJson([processingInformation: info])), "UTF-8")
+        return json
+    }
+
+    /**
+     * An index file: valid HDF5, a .lux.h5 name, no /Data -- AND no sidecar,
+     * which is what main_raw.lux.h5 actually is. Verified on the real
+     * acquisition: its top level is [timepoint_0..3], it has no /metadata, and
+     * there is no main_raw.json. So "has a .json sibling" excludes it for free.
+     */
     static File writeIndex(File f) {
         f.getParentFile()?.mkdirs()
         f.delete()

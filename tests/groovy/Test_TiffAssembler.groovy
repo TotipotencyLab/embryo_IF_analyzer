@@ -93,14 +93,15 @@ println "\n=== a real assembly round trip ==="
 def root = FIX.buildTree(new File(tmp, "acq"),
     [[stack: 0, desc: "pos1", nz: 3], [stack: 1, desc: "pos2", nz: 1]],
     [[index: 0, name: "BF"], [index: 1, name: "GFP"]], 2, 16, 12)
-def rows = scanner.scan(root) { }
+def scanRes = scanner.scan(root) { }
+def rows = scanRes.sources
 def out  = new File(tmp, "out")
 def sums = asm.assembleAll(rows, root, out, [verify: true]) { }
 check("one summary per output", sums.size(), 4)
 check("all written",            sums.collect { it.status }.unique(), ["written"])
 check("all verified",           sums.collect { it.verified }.unique(), ["yes"])
 
-def s0 = sums.find { it.position_id.contains("pos1") && it.t == 0 }
+def s0 = sums.find { it.series_id.contains("pos1") && it.t == 0 }
 def r0 = sheet.inspect(new File(out, s0.output_path))[0]
 check("channels",    r0.size_c, 2)
 check("slices",      r0.size_z, 3)
@@ -110,7 +111,7 @@ checkNear("pixel width", r0.pixel_width as Double, 0.208d)
 checkNear("z step",      r0.pixel_depth as Double, 5.0d)
 
 println "\n=== a single-plane position keeps a blank z step ==="
-def sFlat = sums.find { it.position_id.contains("pos2") && it.t == 0 }
+def sFlat = sums.find { it.series_id.contains("pos2") && it.t == 0 }
 def rFlat = sheet.inspect(new File(out, sFlat.output_path))[0]
 check("slices",      rFlat.size_z, 1)
 check("pixel_depth", rFlat.pixel_depth, null)
@@ -120,7 +121,7 @@ println "\n=== resizing scales the CALIBRATION, not only the pixels ==="
 // square of the factor while the image looks perfect.
 def outR = new File(tmp, "out_ds")
 def sR = asm.assembleAll(rows, root, outR, [scalePercent: 50]) { }
-def sR0 = sR.find { it.position_id.contains("pos1") && it.t == 0 }
+def sR0 = sR.find { it.series_id.contains("pos1") && it.t == 0 }
 def rR = sheet.inspect(new File(outR, sR0.output_path))[0]
 check("width halved",   rR.size_x, 6)
 check("height halved",  rR.size_y, 8)
@@ -142,10 +143,10 @@ println "\n=== over the limit is a per-output failure, not an aborted run ==="
 // A manifest claiming a stack too large for classic TIFF. No pixels are read:
 // the refusal happens on the prediction, before anything is opened.
 def huge = (0..2).collect { c ->
-    [target_output_path: "huge.tif", series_id: "huge", position_id: "p", t: 0, channel: c,
+    [series_id: "huge", t: 0, channel: c,
      channel_name: "c" + c, source_path: "nope.lux.h5", size_x: 4096, size_y: 4096,
      size_z: 100, pixel_width: 0.1, pixel_height: 0.1, pixel_depth: 1.0,
-     pixel_unit: "micron", include: "true"]
+     pixel_unit: "micron"]
 }
 def hugeSum = asm.assembleOne(huge, root, out, [format: "tiff"])
 check("status",        hugeSum.status, "failed")
@@ -163,7 +164,7 @@ check("summary is rectangular",
 println "\n=== bigtiff carries the same pixels and keeps its calibration ==="
 def outB = new File(tmp, "out_big")
 def sB = asm.assembleAll(rows, root, outB, [format: "bigtiff"]) { }
-def sB0 = sB.find { it.position_id.contains("pos1") && it.t == 0 }
+def sB0 = sB.find { it.series_id.contains("pos1") && it.t == 0 }
 check("same pixel checksum as classic", sB0.checksum, s0.checksum)
 def rB = sheet.inspect(new File(outB, sB0.output_path))[0]
 check("channels", rB.size_c, 2)
@@ -172,35 +173,34 @@ checkNear("pixel width", rB.pixel_width as Double, 0.208d)
 checkNear("z step",      rB.pixel_depth as Double, 5.0d)
 
 println "\n=== include is honoured, and a half-included output is a question ==="
-def offRows = rows.collect { new LinkedHashMap(it) }
-offRows.findAll { it.target_output_path == s0.output_path }.each { it.include = "false" }
-def offSum = asm.assembleAll(offRows, root, new File(tmp, "off"), [:]) { }
+// include is a SERIES property now, handed in as a map, so "some channels of
+// this output are excluded" is no longer a state that can be expressed.
+def offSum = asm.assembleAll(rows, root, new File(tmp, "off"),
+                             [includeBySeries: [(s0.series_id): "false"]]) { }
 check("skipped", offSum.find { it.output_path == s0.output_path }.status, "skipped")
 check("reason",  offSum.find { it.output_path == s0.output_path }.reason, "include=false")
-
-def splitRows = rows.collect { new LinkedHashMap(it) }
-splitRows.find { it.target_output_path == s0.output_path && it.channel == 1 }.include = "false"
-def splitSum = asm.assembleAll(splitRows, root, new File(tmp, "split"), [:]) { }
-check("disagreement fails", splitSum.find { it.output_path == s0.output_path }.status, "failed")
-check("and says why",
-      splitSum.find { it.output_path == s0.output_path }.reason.contains("disagree on include"), true)
+check("the others still ran", offSum.count { it.status == "written" }, sums.size() - 1)
+// A series absent from the map defaults to included, so a trimmed series table
+// cannot silently skip everything.
+def noMapSum = asm.assembleAll(rows, root, new File(tmp, "nomap"), [:]) { }
+check("absent from the map means included",
+      noMapSum.collect { it.status }.unique(), ["written"])
 
 println "\n=== gathering every time frame of a position into one file ==="
 // The MANIFEST decides this, not the assembler -- so the gathered plan comes
 // from a second scan, and the assembler just builds what the table describes.
-def gRows = scanner.scan(root, [gatherFrames: true]) { }
-check("same number of sources",   gRows.size(), rows.size())
-check("one output per position",  gRows.collect { it.target_output_path }.unique().size(), 2)
-check("series_id is the position", gRows.every { it.series_id == it.position_id }, true)
-check("the name carries no t",    gRows[0].target_output_path.contains("_t0"), false)
-check("but the rows still do",    gRows.collect { it.t }.unique().sort(), [0, 1])
+def gRows = scanner.scan(root, [gatherFrames: true]) { }.sources
+check("same number of sources",     gRows.size(), rows.size())
+check("one output per position",    gRows.collect { it.series_id }.unique().size(), 2)
+check("the series id carries no t", gRows[0].series_id.contains("_t0"), false)
+check("but the rows still do",      gRows.collect { it.t }.unique().sort(), [0, 1])
 
 def outG = new File(tmp, "out_gather")
 def sG = asm.assembleAll(gRows, root, outG, [verify: true]) { }
 check("one output per position", sG.size(), 2)
 check("all written",             sG.collect { it.status }.unique(), ["written"])
 check("all verified",            sG.collect { it.verified }.unique(), ["yes"])
-def sG0 = sG.find { it.position_id.contains("pos1") }
+def sG0 = sG.find { it.series_id.contains("pos1") }
 check("the summary counts the frames", sG0.frames, 2)
 
 def rG = sheet.inspect(new File(outG, sG0.output_path))[0]
@@ -227,7 +227,7 @@ def crcOf = { File f ->
 }
 def joined = crcOf(new File(outG, sG0.output_path))
 def expectCrc = new java.util.zip.CRC32()
-sums.findAll { it.position_id == sG0.position_id }.sort { it.t }.each { st ->
+sums.findAll { it.series_id.startsWith(sG0.series_id) }.sort { it.t }.each { st ->
     def imp2 = IJ.openImage(new File(out, st.output_path).getAbsolutePath())
     try {
         def stk = imp2.getStack()
@@ -242,9 +242,10 @@ check("gathered pixels are the per-timepoint pixels, in order",
 // A position whose z changes between timepoints cannot be one hyperstack, and
 // that is FATAL when gathering where it is only a warning when not.
 def ragged = gRows.collect { new LinkedHashMap(it) }
-ragged.findAll { it.position_id.contains("pos1") && it.t == 1 }.each { it.size_z = 2 }
+ragged.findAll { it.series_id.contains("pos1") && it.t == 1 }.each { it.size_z = 2 }
+def raggedSeries = ragged.collect { it.series_id }.unique().collect { [prefix: it] }
 throwsWith("z changing between frames refuses", "disagree on dimensions",
-           { scanner.validate(ragged) { } })
+           { scanner.validate(raggedSeries, ragged) { } })
 
 println "\n=== skipExisting resumes a run without redoing it ==="
 def skipDir = new File(tmp, "skip")

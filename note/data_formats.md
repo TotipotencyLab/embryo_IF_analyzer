@@ -166,105 +166,126 @@ dropping it.
 
 Accepted extensions: `.tsv` / `.txt` (tab-delimited), `.csv`, `.xlsx` / `.xls`.
 
-### `manifest.tsv` — the Luxendo conversion plan
+### The Luxendo pair — `series.tsv` and `sources.tsv`
 
-A third sheet, declared in the same `schema/sheet_columns.tsv` under sheet
-`manifest`. It is not a sample sheet and is never given to a CLI: it is the
-table that sits between a Luxendo acquisition and the TIFFs made from it.
+`Make_LuxendoSheets.groovy` writes **two** tables, because Luxendo breaks the
+assumption every other format here satisfies.
 
-`Make_LuxendoTiff.groovy` **always writes it, into the output directory, before
-it reads a single plane** — so the plan exists whether or not the conversion
-then runs, and whatever happens to the run afterwards. Hand the same file back
-through `manifestFile` to convert exactly what you read, with `include=false` on
-the rows you do not want.
+> Every format this repo read before Luxendo put one or more **series inside one
+> file**. Luxendo puts **one series across several files** — one per channel, one
+> per time point.
 
-**One row per source file, not per output.** A Luxendo `.lux.h5` holds one
-channel of one position at one time point, so three channels of one time point
-are three rows that share a `target_output_path` and differ in `channel`.
+A series row cannot absorb that: it would need more than one `path`. So the file
+facts live in a second table, which is not a new pattern — `files.tsv` →
+`samples.tsv` is already a file table and a series table, and this is the same
+pair with the cardinality reversed.
 
-**How the rows group into files is decided at SCAN time and written into the
-table**, not chosen later by the assembler — a table that did not describe its
-own output would not be a plan:
+| | rows | sheet in `schema/sheet_columns.tsv` |
+|---|---|---|
+| `series.tsv` | one per series | `samples` — **the same shape as any sample sheet** |
+| `sources.tsv` | one per `.lux.h5` | `manifest` |
 
-| `gatherFrames` | one output is | `target_output_path` | `series_id` |
-|---|---|---|---|
-| off (default) | one position at one time point | `s0002_L26A_pos3_t0000.tif` | `s0002_L26A_pos3_t0000` |
-| on | one position, every time point | `s0002_L26A_pos3.tif` | `s0002_L26A_pos3` |
+`series.tsv` being `samples`-shaped is the point: the batch runner and every R
+CLI read it unchanged, and it is where `include` lives and where you add your
+own columns.
 
-Gathered, the rows of one output span several `t` and the written file carries a
-real time axis (`nT` frames). `t` stays on every row either way. Passing an
-existing manifest back ignores the `gatherFrames` checkbox and says so: the
-table already says how it is grouped.
+#### `series.tsv` — four columns, read the Luxendo way
+
+`samples` declares `path`, `series_index`, `series_name` and `alias` as
+**required**, and all four describe "a series addressed inside one file".
+Relaxing them would weaken the guarantee for every other format; renaming the
+sheet would break `cli_helpers.r`, which reads machine columns with
+`sheet == "samples"`. So they keep their names and are given meanings that are
+true here:
+
+| column | Luxendo meaning |
+|---|---|
+| `path` | ⚠️ the **acquisition directory** — the root `source_path` resolves against, not a file |
+| `series_index` | the `stack` number from the source metadata |
+| `series_name` | `stack_description`, before sanitising |
+| `alias` | the acquisition folder name |
+
+Everything else follows from the sources: `size_c` is the channel count,
+`size_t` the frame count (1 per time point, N when gathered), `file_size` the
+sum of the sources, `pixel_type` `uint16`. `prefix` is the series id, so it
+still builds by the repo's existing rule and is unique by construction.
+
+#### `sources.tsv` — one row per file
 
 | Column | Required | Meaning |
 |---|---|---|
-| `target_output_path` | **yes** | the image file this row's pixels go into, relative to the output directory. Rows sharing one value are one output — its channels, and its time points when gathered |
-| `series_id` | **yes** | identity of that output — `sanitise(<position_id>_t<TTTT>)`, or just `<position_id>` when gathered |
-| `position_id` | **yes** | the field of view, constant across time points — `sanitise(s<NNNN>_<stack_description>)` |
-| `t` | **yes** | 0-based time point within the position |
+| `source_path` | **yes** | the `.lux.h5`, relative to the acquisition directory in the series row's `path` |
+| `series_id` | **yes** | the series it feeds; joins to `series.tsv`'s `prefix`. Rows sharing one value are one series — its channels, and its time points when gathered |
 | `channel` | **yes** | 0-based channel index **in the output** |
-| `channel_name` | no | what the acquisition called it; blank when it did not |
-| `source_path` | **yes** | the `.lux.h5` supplying this channel, relative to `luxDir` |
-| `source_bytes` | **yes** | with the basename, the fingerprint that spots a replaced source |
+| `channel_name` | no | `channel_description`; blank when unnamed. Here and not on the series table because it is per channel |
+| `t` | **yes** | 0-based time point within the position, whether or not the series gathers frames |
 | `size_x`, `size_y`, `size_z` | **yes** | pixels |
 | `pixel_width`, `pixel_height`, `pixel_depth` | no | physical sizes; `pixel_depth` **blank for a single plane** |
 | `pixel_unit` | no | unit of those three |
-| `stack_description` | no | the acquisition's own name for the position, before sanitising |
-| `include` | no | `seeded` — whether to assemble this output |
+| `source_bytes` | **yes** | with the basename, the fingerprint that spots a replaced source |
 
-⚠️ **`target_output_path` is the name asked for, not the name written.** The
-written name adds `_downscale<PC>pc` when downscaled and the format's own
-extension (`.tif` for `tiff`, `.ome.tif` for `bigtiff`), so it is `output_path`
-in `gather_summary.tsv` and in `_gather.txt` that records what actually landed
-on disk. Two different facts, deliberately two different column names.
+**There is no `target_output_path`.** It was only ever `series_id + ".tif"`, so
+the output name is **derived**: from `series_id` for a per-time-point file, from
+the position when the scan gathered frames, with `_downscale<PC>pc` and the
+format's extension added. A stored copy of a derived value is a second thing to
+keep in step.
 
-**The scale is a percentage of the original, 1–100.** 100 is full resolution,
-50 is half the width and half the height. The calibration is scaled by the
-ratio **achieved**, never the one requested — the pixel count is rounded, so
-33% of 2048 is 676 pixels, a ratio of 3.0296 and not 3.0303. Measured on the
-real acquisition: the achieved ratio reproduces the full-resolution physical
-width of 425.98402 µm to five decimals, where the requested ratio would have
-recorded 426.08488. Downscaling is **for looking, not for measuring**, but a
-file that misstates its own extent is a different kind of wrong.
+**There is no `include` here either.** It is a property of the series, so it
+lives on `series.tsv` — one value, which makes "the channels of this output
+disagree about `include`" a state that cannot be written down rather than one
+that has to be handled.
 
-**`include` is read per output, not per row.** All rows of one
-`target_output_path` must agree: half a file's channels is a question, not an
-instruction, and is recorded as a **failed** output rather than assembled
-without its missing channel. The vocabulary is `BatchRunner.isIncluded()`'s, the
-same as the sample sheet's.
+#### Identity comes from the `.json` sidecar
 
-**Identity comes from each file's own `/metadata`, never from its path.** The
-directory names in a Luxendo tree are a convenience; the JSON inside each file
-is the record. See [`luxendo_file_format.md`](luxendo_file_format.md).
+Luxendo writes `Cam_long_00000.json` beside every `Cam_long_00000.lux.h5`, and
+it holds the same `processingInformation` as the image's own `/metadata` **plus**
+the dimensions and voxel size. Verified on 25 spread files: it agrees with the
+HDF5 and with the real dimensions in 25 of 25.
 
-#### What the conversion writes beside the images
+**A row needs both halves.** A `.lux.h5` with no sidecar is skipped and
+reported; a `.json` with no image is ignored. That pairing *is* the index-file
+test — `main_raw.lux.h5` is link-only and has no sidecar — so nothing has to be
+opened to recognise it.
+
+⚠️ **`quickScan` (default on) reads one sidecar per *directory*.** The
+dimensions and voxel size are constant within a channel directory, and the one
+fact that is not — the **time point**, which is the axis the directory runs
+along — comes from the filename suffix, *after* the mapping has been confirmed
+against the sampled file's real `time_point`. A directory whose names disagree
+with its sidecar is read in full and says so. Every file's size is also compared
+with its siblings', and anything more than half a z-plane away is read in full:
+sizes within a directory vary by **8 bytes** where one plane is 8,388,608, so a
+truncated time point cannot hide. On the real acquisition the sampled and full
+scans produce **byte-identical** tables.
+
+#### What the conversion writes
 
 ```
-manifest.tsv                        the plan, always, written before any pixels
-gather_summary.tsv                  one row per OUTPUT: status, reason, bytes, checksum, verified
-<output>_gather.txt                 per output: its sources, checksum and VERSION
+gather_summary.tsv        one row per OUTPUT: status, reason, bytes, checksum, verified
+<output>_gather.txt       per output: its sources, checksum and VERSION
 ```
 
 `gather_summary.tsv` is **rectangular whatever happened** — same contract as
-`batch_summary.tsv`. One row per output, with
-`output_path, series_id, position_id, t, frames, channels, format,
+`batch_summary.tsv` — with `output_path, series_id, t, frames, channels, format,
 scale_percent, status, reason, bytes, checksum, verified`. A `status` of
 `written` / `skipped` / `failed` with a `reason`, so a half-completed run is
-legible. `frames` is 1 unless the manifest gathered a position.
+legible. `frames` is 1 unless the scan gathered a position.
 
 `checksum` is a CRC32 over the pixels **as written** — after any downscale, so
 it cannot pass a scaling bug off as a correct downscale — and `verified=yes`
 means the file was read back off disk and its pixels recomputed to the same
-value. ⚠️ **It verifies the writer, not the reader.** Both sides of the
-comparison come from the same `LuxendoFile` read, so a plane fetched wrongly
-from the HDF5 would match itself. What it does catch is the round trip: a
-truncated write, or channels, slices and frames transposed — "39 slices, 3
-channels, 4 frames" passes happily while the planes behind it are in the wrong
-order.
+value. ⚠️ **It verifies the writer, not the reader.** Both sides come from the
+same read, so a plane fetched wrongly would match itself. What it catches is the
+round trip: a truncated write, or channels, slices and frames transposed.
 
 `_gather.txt` names **every** source: one `channel_<c>_source` line per channel,
-or `t<N>_channel_<c>_source` when the output gathered several frames, so a
-gathered position's twelve sources are twelve lines rather than three.
+or `t<N>_channel_<c>_source` when the output gathered several frames.
+
+⚠️ **The TIFFs are not a required step.** The batch runner reads the `.lux.h5`
+through the same two tables and assembles channels in memory, so it never reads
+them. Converting is for tuning a threshold interactively and for drag-and-drop.
+The sources *are* the pixels and TIFF does not compress them, so a mandatory
+conversion would mean holding two copies of the acquisition.
 
 ---
 

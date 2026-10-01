@@ -163,26 +163,25 @@ class TiffAssembler {
         String format = checkFormat(opts.format as String)
         int pct       = checkScalePercent(opts.scalePercent)
         def first     = rows[0]
-        def name      = outputName(first.target_output_path as String, pct, format)
+        // DERIVED from series_id, not stored. target_output_path was only ever
+        // series_id + ".tif", and a stored copy of a derived value is a second
+        // thing to keep in step. The scan already folded gatherFrames into
+        // series_id (gathered -> the position), so one rule covers both shapes.
+        def name      = outputName(first.series_id as String, pct, format)
         // One row per (channel, timepoint). When the manifest gathered a whole
         // position into one output these are many timepoints; when it did not,
         // `frames` is 1 and every loop below collapses to what it was.
         def frames    = rows.collect { it.t }.unique().sort()
         def chans     = rows.collect { it.channel as int }.unique().sort()
-        def summary   = [output_path: name, series_id: first.series_id,
-                         position_id: first.position_id, t: first.t,
+        def summary   = [output_path: name, series_id: first.series_id, t: first.t,
                          frames: frames.size(), channels: chans.size(),
                          format: format, scale_percent: pct,
                          status: "", reason: "", bytes: 0L, checksum: ""]
 
-        if (!rows.every { isIncluded(it.include) }) {
-            // All rows of one output must agree; a half-included output is a
-            // question, not an instruction.
-            if (rows.any { isIncluded(it.include) }) {
-                summary.status = "failed"
-                summary.reason = "rows of this output disagree on include"
-                return summary
-            }
+        // include belongs to the SERIES, one value, so "rows of this output
+        // disagree on include" is no longer a state that can be written down.
+        // The caller resolves it from the series table and passes it per output.
+        if (!isIncluded(opts.include)) {
             summary.status = "skipped"
             summary.reason = "include=false"
             return summary
@@ -314,8 +313,10 @@ class TiffAssembler {
             // Only outputs this run will actually attempt. Warning about a
             // position the operator already set include=false on is noise, and
             // noise is what stops warnings being read.
+            def includeOf = (opts.includeBySeries ?: [:])
             def over = groups.findAll { k, v ->
-                v.every { isIncluded(it.include) } && !fitsClassicTiff(predictBytes(v, pct))
+                isIncluded(includeOf.containsKey(k) ? includeOf[k] : "true") &&
+                !fitsClassicTiff(predictBytes(v, pct))
             }
             if (over) {
                 log?.call("WARNING: " + over.size() + " output(s) exceed the classic TIFF limit " +
@@ -327,8 +328,10 @@ class TiffAssembler {
         }
 
         def summaries = []
+        def includeBy = (opts.includeBySeries ?: [:])
         groups.each { String out, List<Map> group ->
-            def s = assembleOne(group, srcRoot, outDir, opts)
+            def inc = includeBy.containsKey(out) ? includeBy[out] : "true"
+            def s = assembleOne(group, srcRoot, outDir, opts + [include: inc])
             if (s.status == "written") {
                 writeProvenance(outDir, s, group, srcRoot)
                 if (verify) {
@@ -355,8 +358,10 @@ class TiffAssembler {
     static Map<String, List<Map>> groupByOutput(List<Map> rows) {
         def m = new LinkedHashMap()
         rows.sort(false) { a, b ->
-            (a.position_id <=> b.position_id) ?: (a.t <=> b.t) ?: (a.channel <=> b.channel)
-        }.each { r -> m.computeIfAbsent(r.target_output_path, { [] }) << r }
+            (a.series_id <=> b.series_id) ?:
+            ((a.t as int) <=> (b.t as int)) ?:
+            ((a.channel as int) <=> (b.channel as int))
+        }.each { r -> m.computeIfAbsent(r.series_id as String, { [] }) << r }
         return m
     }
 
@@ -372,7 +377,6 @@ class TiffAssembler {
         def put = { k, v -> sb.append(k).append("\t").append(v == null ? "" : v.toString()).append("\n") }
         put("output_path",   summary.output_path)
         put("series_id",     summary.series_id)
-        put("position_id",   summary.position_id)
         put("t",             summary.t)
         put("frames",        summary.frames)
         put("format",        summary.format)

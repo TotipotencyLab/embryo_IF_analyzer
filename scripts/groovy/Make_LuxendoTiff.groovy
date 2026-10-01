@@ -1,42 +1,38 @@
-#@ String  (visibility=MESSAGE, value="Scan through Luxendo imaging project, build manifest table, and produce TIFF files", required=false) help_title
-#@ File    (persist=true,  label="Luxendo acquisition directory", style="directory") luxDir
+#@ String  (visibility=MESSAGE, value="Assemble Luxendo sources into TIFF files, for tuning and for drag-and-drop", required=false) help_title
+#@ File    (persist=true,  label="Series table (series.tsv)", style="file") seriesFile
+#@ File    (persist=true,  label="Sources table (sources.tsv)", style="file") sourcesFile
 #@ File    (persist=true,  label="Output directory", style="directory") outdir
-#@ String  (visibility=MESSAGE, value="Manifest table: determine how TIFF is generated from which set of images.", required=false) help_msg1
-#@ File    (persist=false, label="Manifest table (blank = new directory scan)", style="file", required=false) manifestFile
-#@ Boolean (persist=false, label="Gather all time frames of a position into one file", description="One output per imaging position holding every time point, instead of one output per time point. Only applies to a new directory scan; an existing manifest already says how it is grouped. A gathered position is several GB and may need BigTIFF.", value=false) gatherFrames
 #@ String  (visibility=MESSAGE, value=" ", required=false) help_sep0
 #@ String  (visibility=MESSAGE, value="Behavior control:", required=false) help_msg2
-#@ Boolean (persist=false, label="Build manifest only (no TIFF produced)", description="Scan the acquisition and write manifest.tsv, then stop. Edit include= in that table and run again to convert.", value=true) manifestOnly
 #@ String  (persist=false, label="Output format", description="TIFF can be reopened easily in ImageJ, but have size limit of ~4GB. BigTIFF can hold larger file, but may not be compatible with ImageJ", value="tiff", choices={"tiff","bigtiff"}) format
-#@ Integer (persist=false, label="Output scale, % of original (100 = full resolution, 50 = half width & height)", description="Both x and y. The pixel size is scaled to match, so measurements stay in real units, and the filename gains _downscale<PC>pc. For looking, not for measuring.", min="1", max="100", value=100) scalePercent
+#@ Integer (persist=false, label="Output scale (% of original)", description="Both x and y. 100 = full resolution, 50 = half width & height, The pixel size is scaled to match, so measurements stay in real units, and the filename gains _downscale<PC>pc. For looking, not for measuring.", min="1", max="100", value=100) scalePercent
 #@ Boolean (persist=false, label="Verify output", description="Read each written file back and check its pixels against the checksum taken while writing", value=true) verify
 #@ Boolean (persist=false, label="Skip existing targets", description="An output whose TIFF and _gather.txt are both already in the output directory is left alone, so an interrupted run can be resumed", value=true) skipExisting
 
 // Make_LuxendoTiff.groovy
 //
-// Luxendo .lux.h5 files -> one TIFF per (position, time point), which is what
-// the rest of the pipeline already reads.
+// The two tables from Make_LuxendoSheets -> one TIFF per included series.
 //
-// IT ALWAYS WRITES THE MANIFEST, AND ALWAYS BEFORE ANY PIXELS.
+// THIS IS FOR TUNING AND FOR LOOKING, NOT A REQUIRED STEP.
+//   `Run_NucleusSelector` needs a real openable file to tune a threshold
+//   against, and drag-and-drop is worth keeping. But the batch runner reads the
+//   `.lux.h5` through the same two tables and assembles channels in memory, so
+//   it never reads anything written here. That is deliberate: the sources ARE
+//   the pixels and TIFF does not compress them, so a required conversion step
+//   would mean holding two copies of an 800 GB acquisition for as long as the
+//   analysis exists.
 //
-//   outdir/manifest.tsv    what this run will convert, one row per source file
+//   So: set include=false on all but a few representative series first.
 //
-// So the table exists whether or not the conversion then runs, whether or not
-// it succeeds, and whatever kills the JVM afterwards. `manifestOnly` decides
-// only WHERE THE RUN STOPS -- which is the actual question, because deciding
-// what to convert should not cost the tens of minutes that converting does:
+// WHAT COMES FROM WHERE
+//   series.tsv    which series to build (`include`), and `path` -- the
+//                 acquisition directory that `source_path` is relative to
+//   sources.tsv   which files feed each series, and their shape
 //
-//   manifestOnly=true   scan, write manifest.tsv, stop. Nothing is read twice
-//                       and no pixels are read at all.
-//   manifestOnly=false  ... and then assemble.
-//
-// The intended loop is: run once with manifestOnly, open manifest.tsv, set
-// include=false on what you do not want, point `manifestFile` at it and run
-// again. Handing the edited table back is what makes the second run do exactly
-// what you read in the first.
-//
-// `luxDir` is needed either way: source paths in the manifest are relative to
-// it, and nothing in the table is an absolute path.
+// The output NAME is derived from `series_id`, never stored: the scan already
+// folded `gatherFrames` into it, so a gathered series is named for its position
+// and a per-time-point one for its position and time point, with no second copy
+// of the name to keep in step.
 //
 // FORMAT: `tiff` is an ImageJ hyperstack TIFF -- what Fiji opens natively, with
 // channels, slices and calibration intact, and capped at ~3.9 GB of pixels.
@@ -46,24 +42,15 @@
 // FAILED row naming the fix, and the rest of the run still happens.
 //
 // SCALE is a PERCENTAGE OF THE ORIGINAL: 100 is full resolution, 50 is half the
-// width and half the height. It scales the calibration to match what was
-// actually written -- halve the pixels and the pixel size doubles -- and puts
-// `_downscale<PC>pc` in the filename, so a downscaled file cannot be mistaken
-// for full resolution by anybody who meets it later without the manifest. It is
-// for looking, not measuring.
-//
-// GATHER FRAMES puts every time point of a position into ONE file instead of
-// one file per time point. It is decided at SCAN time, not at assembly time, so
-// the manifest says which you will get -- a table that did not describe its own
-// output would not be a plan. The default is off: a per-timepoint file is the
-// one Fiji opens by drag-and-drop, lets you analyse t=0 while t=3 is still
-// acquiring, and costs one file rather than a whole position when it goes bad.
-// Gathering is for when the time axis has to be IN the image.
+// width and half the height. The calibration is scaled to match what was
+// actually written, and `_downscale<PC>pc` goes in the filename, so a
+// downscaled file cannot be mistaken for full resolution by anybody who meets
+// it later without the tables.
 //
 // Headless:
 //   /Applications/Fiji.app/Contents/MacOS/ImageJ-macosx --headless --console \
 //     --run scripts/groovy/Make_LuxendoTiff.groovy \
-//     "luxDir='/path/to/2026-09-10_184731',outdir='/path/out',manifestOnly=false,format='tiff',scalePercent=100,verify=true"
+//     "seriesFile='/p/series.tsv',sourcesFile='/p/sources.tsv',outdir='/p/out',scalePercent=100"
 
 import ij.IJ
 
@@ -84,107 +71,97 @@ if (libDir == null || !new File(libDir, "TiffAssembler.groovy").exists()) {
 def LIBDIR = libDir.getAbsolutePath()
 
 def gcl    = new GroovyClassLoader()
-def LS     = gcl.parseClass(new File(LIBDIR, "LuxendoScan.groovy"))
 def TA     = gcl.parseClass(new File(LIBDIR, "TiffAssembler.groovy"))
 def TSV    = gcl.parseClass(new File(LIBDIR, "Tsv.groovy"))
 def SCHEMA = gcl.parseClass(new File(LIBDIR, "SheetSchema.groovy")).loadFromLibDir(LIBDIR)
 
-// Validated HERE, in code. A `#@ String` with choices={} is NOT validated on
-// the command line -- SciJava passes any string straight through -- so a stale
-// caller must not be able to select a format by accident.
+// Validated HERE, in code. A `#@ String` with choices={} and an `#@ Integer`
+// with min/max are NOT validated on the command line -- SciJava passes the
+// value straight through -- so a stale caller must not be able to pick a format
+// or a scale by accident.
 def fmt = TA.checkFormat(format)
 int pct = TA.checkScalePercent(scalePercent)
 
-IJ.log("=== Luxendo -> TIFF ===")
-IJ.log("  source : " + luxDir.getAbsolutePath())
-IJ.log("  output : " + outdir.getAbsolutePath())
-if (!manifestOnly) {
-    IJ.log("  format : " + fmt + (pct < 100 ? ("  downscaled to " + pct + "%") : ""))
-}
-
-// ---- 1. the manifest -------------------------------------------------------
-
-def rows
-if (manifestFile != null && manifestFile.isFile()) {
-    IJ.log("  manifest: reading " + manifestFile.getAbsolutePath())
-    if (gatherFrames) {
-        // The table already says how it is grouped. Honouring the checkbox here
-        // would mean writing something other than what the table describes.
-        IJ.log("  NOTE: 'gather all time frames' is ignored when a manifest is given --" +
-               " the table already says how its rows are grouped.")
-    }
-    rows = TSV.read(manifestFile)
-    if (!rows) throw new IllegalArgumentException("Manifest has no rows: " + manifestFile)
-    def required = SCHEMA.required("manifest")
-    def absent = required - rows[0].keySet().toList()
+def readSheet = { File f, String sheet ->
+    if (f == null || !f.isFile()) throw new IllegalArgumentException("No such table: " + f)
+    def rows = TSV.read(f)
+    if (!rows) throw new IllegalArgumentException("Table has no rows: " + f)
+    def absent = SCHEMA.required(sheet) - rows[0].keySet().toList()
     if (absent) {
         throw new IllegalArgumentException(
-            "Manifest is missing required column(s): " + absent.join(", ") +
+            f.getName() + " is missing required " + sheet + " column(s): " + absent.join(", ") +
             "\n  found: " + rows[0].keySet().join(", "))
     }
-    // Tsv reads everything as text; the assembler does arithmetic on these.
-    def ints = ["t", "channel", "size_x", "size_y", "size_z", "source_bytes"]
-    def dbls = ["pixel_width", "pixel_height", "pixel_depth"]
-    rows.each { r ->
-        ints.each { k -> if (r[k] != null && r[k].toString().trim()) r[k] = r[k].toString().trim() as Integer }
-        // BLANK stays null, never 0.0 -- a z step that does not exist must not
-        // arrive as a usable-looking number.
-        dbls.each { k -> r[k] = (r[k] != null && r[k].toString().trim()) ? (r[k].toString().trim() as Double) : null }
-    }
-} else {
-    IJ.log("  manifest: none given, scanning now" +
-           (gatherFrames ? " (gathering every time frame of a position into one output)" : ""))
-    rows = LS.load(LIBDIR).scan(luxDir, [gatherFrames: gatherFrames]) { IJ.log(it) }
-    if (!rows) throw new IllegalArgumentException("No .lux.h5 files holding pixels under " + luxDir)
+    return rows
 }
 
-// Written before a single plane is read, and written even when the run stops
-// here. Column order from the schema, so the file and the declaration cannot
-// drift.
-outdir.mkdirs()
-def manifestOut = new File(outdir, "manifest.tsv")
-def cols = SCHEMA.columns("manifest")
-def missing = cols - rows[0].keySet().toList()
-if (missing) {
-    // The scanner and the schema disagreeing is a bug, not a bad input.
-    throw new IllegalStateException(
-        "Manifest is missing declared column(s): " + missing.join(", "))
-}
-if (manifestFile != null && manifestFile.isFile() &&
-    manifestFile.getCanonicalPath() == manifestOut.getCanonicalPath()) {
-    // Handed back the very file we would write. Rewriting it would be a no-op
-    // at best and would clobber an edit at worst.
-    IJ.log("  manifest: is already " + manifestOut.getAbsolutePath() + ", left as it is")
-} else {
-    TSV.write(rows, manifestOut, cols)
-    IJ.log("  manifest: wrote " + manifestOut.getAbsolutePath())
+def seriesRows  = readSheet(seriesFile,  "samples")
+def sourceRows  = readSheet(sourcesFile, "manifest")
+
+// Tsv reads everything as text; the assembler does arithmetic on these.
+def ints = ["t", "channel", "size_x", "size_y", "size_z", "source_bytes"]
+def dbls = ["pixel_width", "pixel_height", "pixel_depth"]
+sourceRows.each { r ->
+    ints.each { k -> if (r[k] != null && r[k].toString().trim()) r[k] = r[k].toString().trim() as Integer }
+    // BLANK stays null, never 0.0 -- a z step that does not exist must not
+    // arrive as a usable-looking number.
+    dbls.each { k -> r[k] = (r[k] != null && r[k].toString().trim()) ? (r[k].toString().trim() as Double) : null }
 }
 
-def outputs   = rows.collect { it.target_output_path }.unique()
-def positions = rows.collect { it.position_id }.unique()
-IJ.log("  " + rows.size() + " source file(s) -> " + outputs.size() +
-       " output(s) across " + positions.size() + " position(s)")
-IJ.log("  time points: " + rows.collect { it.t }.unique().sort())
-
-if (manifestOnly) {
-    IJ.log("")
-    IJ.log("  Stopped after the manifest -- nothing was converted.")
-    IJ.log("  Edit include= in the table above, then run again with")
-    IJ.log("  manifestFile pointed at it and 'Stop after the manifest' off.")
-    IJ.log("Done: Luxendo manifest")
-    return
+// THE JOIN, CHECKED. The two tables meet on series_id (the series table calls it
+// `prefix`), and a join that matches nothing is the failure this repo is built
+// around -- so it is asserted here rather than discovered as an empty run.
+def includeBySeries = seriesRows.collectEntries { [(it.prefix as String): it.include] }
+def srcIds = sourceRows.collect { it.series_id as String }.toSet()
+def orphans = srcIds - includeBySeries.keySet()
+if (orphans) {
+    throw new IllegalArgumentException(
+        "These series appear in " + sourcesFile.getName() + " but not in " + seriesFile.getName() +
+        ":\n  " + orphans.sort().join("\n  ") +
+        "\n  The two tables must come from the same scan.")
+}
+def unsourced = includeBySeries.keySet() - srcIds
+if (unsourced) {
+    // Not fatal: a person may have trimmed the sources table on purpose. Loud,
+    // because the alternative is quietly building fewer files than the series
+    // table implies.
+    IJ.log("WARNING: " + unsourced.size() + " series in " + seriesFile.getName() +
+           " have no sources and cannot be built: " + unsourced.sort().take(5).join(", ") +
+           (unsourced.size() > 5 ? ", ..." : ""))
 }
 
-// ---- 2. the pixels ---------------------------------------------------------
+// `path` on a Luxendo series row is the ACQUISITION DIRECTORY -- the root that
+// source_path is relative to. All included rows must agree on it.
+def roots = seriesRows.findAll { srcIds.contains(it.prefix as String) }
+                      .collect { (it.path ?: "").toString() }.unique()
+if (roots.size() != 1 || !roots[0]) {
+    throw new IllegalArgumentException(
+        "The series table must name exactly one acquisition directory in `path`; found " +
+        (roots ? roots.join(", ") : "none"))
+}
+def srcRoot = new File(roots[0])
+if (!srcRoot.isDirectory()) {
+    throw new IllegalArgumentException("Not a directory: " + srcRoot.getAbsolutePath() +
+        "\n  `path` in the series table is the acquisition directory. Has the volume moved?")
+}
 
-def sums = TA.load(LIBDIR).assembleAll(rows, luxDir, outdir,
+IJ.log("=== Luxendo -> TIFF ===")
+IJ.log("  series : " + seriesFile.getAbsolutePath() + "  (" + seriesRows.size() + " row(s))")
+IJ.log("  sources: " + sourcesFile.getAbsolutePath() + "  (" + sourceRows.size() + " row(s))")
+IJ.log("  images : " + srcRoot.getAbsolutePath())
+IJ.log("  output : " + outdir.getAbsolutePath())
+IJ.log("  format : " + fmt + (pct < 100 ? ("  downscaled to " + pct + "%") : ""))
+
+def sums = TA.load(LIBDIR).assembleAll(sourceRows, srcRoot, outdir,
                                        [format: fmt, scalePercent: pct, verify: verify,
-                                        skipExisting: skipExisting]) { IJ.log(it) }
+                                        skipExisting: skipExisting,
+                                        includeBySeries: includeBySeries]) { IJ.log(it) }
 
 // Rectangular whatever happened: a skipped or failed output still has a row
 // saying which and why, so a half-completed run is legible.
-def summaryCols = ["output_path", "series_id", "position_id", "t", "frames", "channels",
+def summaryCols = ["output_path", "series_id", "t", "frames", "channels",
                    "format", "scale_percent", "status", "reason", "bytes", "checksum", "verified"]
+outdir.mkdirs()
 TSV.write(sums, new File(outdir, "gather_summary.tsv"), summaryCols)
 
 def written = sums.count { it.status == "written" }
