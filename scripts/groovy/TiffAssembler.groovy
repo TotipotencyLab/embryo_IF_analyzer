@@ -207,14 +207,13 @@ class TiffAssembler {
         def first     = rows[0]
         // DERIVED from series_id, not stored. target_output_path was only ever
         // series_id + ".tif", and a stored copy of a derived value is a second
-        // thing to keep in step. The scan already folded gatherFrames into
-        // series_id (gathered -> the position), so one rule covers both shapes.
-        // `base` is set only when one frame is taken out of a multi-frame
+        // thing to keep in step. The rows must carry series_id, which the
+        // sources table does not: the caller attaches it through
+        // LuxendoScan.withSeriesId(). `base` is set only when one frame is taken out of a multi-frame
         // series, and is then series_id + _t<TTTT> -- see groupByOutput.
         def name      = outputName((opts.base ?: first.series_id) as String, pct, format)
-        // One row per (channel, timepoint). When the manifest gathered a whole
-        // position into one output these are many timepoints; when it did not,
-        // `frames` is 1 and every loop below collapses to what it was.
+        // One row per (channel, time point). A whole series is many time
+        // points; one chosen frame is 1, and every loop below collapses.
         def frames    = rows.collect { it.t }.unique().sort()
         def chans     = rows.collect { it.channel as int }.unique().sort()
         def summary   = [output_path: name, series_id: first.series_id, t: first.t,

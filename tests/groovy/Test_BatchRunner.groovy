@@ -142,10 +142,10 @@ check("an unrecognised word is refused",       errOf { BR.isIncluded("maybe") }?
 println ""
 println "=== one failure must not cost the rest ==="
 def rows = [
-    [prefix: "A", path: "one.ome.tif",     series_index: 0, include: "true",  size_x: 200, size_y: 200, size_z: 3, size_c: 1, pixel_width: "0.25"],
-    [prefix: "B", path: "missing.ome.tif", series_index: 0, include: "true",  size_x: 200, size_y: 200, size_z: 3, size_c: 1, pixel_width: "0.25"],
-    [prefix: "C", path: "two.ome.tif",     series_index: 0, include: "true",  size_x: 200, size_y: 200, size_z: 3, size_c: 1, pixel_width: "0.25"],
-    [prefix: "D", path: "two.ome.tif",     series_index: 0, include: "false", size_x: 200, size_y: 200, size_z: 3, size_c: 1, pixel_width: "0.25"],
+    [series_id: "A", path: "one.ome.tif",     series_index: 0, include: "true",  size_x: 200, size_y: 200, size_z: 3, size_c: 1, pixel_width: "0.25"],
+    [series_id: "B", path: "missing.ome.tif", series_index: 0, include: "true",  size_x: 200, size_y: 200, size_z: 3, size_c: 1, pixel_width: "0.25"],
+    [series_id: "C", path: "two.ome.tif",     series_index: 0, include: "true",  size_x: 200, size_y: 200, size_z: 3, size_c: 1, pixel_width: "0.25"],
+    [series_id: "D", path: "two.ome.tif",     series_index: 0, include: "false", size_x: 200, size_y: 200, size_z: 3, size_c: 1, pixel_width: "0.25"],
 ]
 def out1 = new File(tmp, "out1")
 def res = runner.run(rows, raw, params, out1)
@@ -162,21 +162,21 @@ println "=== batch_summary.tsv is the deliverable ==="
 def sum = TSV.read(new File(out1, "batch_summary.tsv"))
 check("one row per sheet row, excluded too",   sum.size(), 4)
 check("columns",                               sum[0].keySet().toList(),
-      ["prefix", "path", "series_index", "status", "open_method",
+      ["series_id", "path", "series_index", "status", "open_method",
        "threshold", "mask_pct", "n_nucleus",
        "n_nucleolus", "seconds", "message"])
-check("A is ok",                               sum.find { it.prefix == "A" }.status, "ok")
-check("A counted its nuclei",                  sum.find { it.prefix == "A" }.n_nucleus, "6")
-check("B is failed",                           sum.find { it.prefix == "B" }.status, "failed")
-check("B says what went wrong",                sum.find { it.prefix == "B" }.message.contains("missing.ome.tif"), true)
-check("D is excluded",                         sum.find { it.prefix == "D" }.status, "excluded")
-check("a failed row has no counts",            sum.find { it.prefix == "B" }.n_nucleus, "")
+check("A is ok",                               sum.find { it.series_id == "A" }.status, "ok")
+check("A counted its nuclei",                  sum.find { it.series_id == "A" }.n_nucleus, "6")
+check("B is failed",                           sum.find { it.series_id == "B" }.status, "failed")
+check("B says what went wrong",                sum.find { it.series_id == "B" }.message.contains("missing.ome.tif"), true)
+check("D is excluded",                         sum.find { it.series_id == "D" }.status, "excluded")
+check("a failed row has no counts",            sum.find { it.series_id == "B" }.n_nucleus, "")
 
 // The threshold and the coverage, per row. Every _config.txt carries them too;
 // the columns exist so that finding the handful of rows where the threshold
 // went wrong does not mean opening a thousand files. On a slide that scans
 // across empty sections that is the common case, not the rare one.
-def rowA = sum.find { it.prefix == "A" }
+def rowA = sum.find { it.series_id == "A" }
 check("A records the range it thresholded at",
       rowA.threshold ==~ /\d+-\d+/, true)
 check("...and the percent of pixels it selected",
@@ -185,8 +185,8 @@ check("...which is neither nothing nor everything",
       (rowA.mask_pct as double) > 0.0d && (rowA.mask_pct as double) < 50.0d, true)
 // Blank, not stale: a row that never ran must not show the previous row's
 // numbers, which is exactly what a carried-over variable would do.
-check("a failed row has no threshold",         sum.find { it.prefix == "B" }.threshold, "")
-check("an excluded row has no coverage",       sum.find { it.prefix == "D" }.mask_pct, "")
+check("a failed row has no threshold",         sum.find { it.series_id == "B" }.threshold, "")
+check("an excluded row has no coverage",       sum.find { it.series_id == "D" }.mask_pct, "")
 
 println ""
 println "=== the overview override refuses what it does not recognise ==="
@@ -253,8 +253,8 @@ check("script_name is not written",            pf.getText("UTF-8").contains("scr
 println ""
 println "=== mixed pixel sizes are reported ==="
 def mixed = [
-    [prefix: "P", path: "one.ome.tif",    series_index: 0, include: "true", pixel_width: "0.25"],
-    [prefix: "Q", path: "coarse.ome.tif", series_index: 0, include: "true", pixel_width: "0.5"],
+    [series_id: "P", path: "one.ome.tif",    series_index: 0, include: "true", pixel_width: "0.25"],
+    [series_id: "Q", path: "coarse.ome.tif", series_index: 0, include: "true", pixel_width: "0.5"],
 ]
 check("two sizes are seen",                    BR.pixelSizes(mixed).keySet().sort(), ["0.25", "0.5"])
 def res2 = runner.run(mixed, raw, params, new File(tmp, "out2"))
@@ -262,14 +262,14 @@ check("...and warned about",                   res2.warnings.any { it.contains("
 check("the warning names the risk",            res2.warnings.any { it.contains("PIXELS") }, true)
 check("both still ran",                        res2.ok, 2)
 // One pixel size must NOT warn, or the warning means nothing.
-def same = [[prefix: "P", path: "one.ome.tif", series_index: 0, include: "true", pixel_width: "0.25"],
-            [prefix: "Q", path: "two.ome.tif", series_index: 0, include: "true", pixel_width: "0.25"]]
+def same = [[series_id: "P", path: "one.ome.tif", series_index: 0, include: "true", pixel_width: "0.25"],
+            [series_id: "Q", path: "two.ome.tif", series_index: 0, include: "true", pixel_width: "0.25"]]
 def res3 = runner.run(same, raw, params, new File(tmp, "out3"))
 check("one pixel size is quiet",               res3.warnings.size(), 0)
 
 println ""
 println "=== a stale sheet is reported ==="
-def stale = [[prefix: "S", path: "one.ome.tif", series_index: 0, include: "true",
+def stale = [[series_id: "S", path: "one.ome.tif", series_index: 0, include: "true",
               size_x: 999, size_y: 200, size_z: 3, size_c: 1, pixel_width: "0.25"]]
 def res4 = runner.run(stale, raw, params, new File(tmp, "out4"))
 check("the mismatch is warned",                res4.warnings.any { it.contains("does not match the image") }, true)
@@ -277,7 +277,7 @@ check("...naming the column",                  res4.warnings.any { it.contains("
 // A warning, not a refusal: the image is what it is, and stopping would lose
 // the run over a stale number that may not matter.
 check("it still ran",                          res4.ok, 1)
-def agree = [[prefix: "T", path: "one.ome.tif", series_index: 0, include: "true",
+def agree = [[series_id: "T", path: "one.ome.tif", series_index: 0, include: "true",
               size_x: 200, size_y: 200, size_z: 3, size_c: 1, pixel_width: "0.25"]]
 check("a matching sheet is quiet",             runner.run(agree, raw, params, new File(tmp, "out5")).warnings.size(), 0)
 
@@ -289,7 +289,7 @@ println "=== the batch must not redecorate the operator's Fiji ==="
 // series instead of offering the chooser. It happened, to a real person, from
 // one run. Same family as Set Measurements and Prefs.blackBackground.
 ij.Prefs.set("bioformats.windowless", false)
-def guarded = [[prefix: "G", path: "one.ome.tif", series_index: 0, include: "true"]]
+def guarded = [[series_id: "G", path: "one.ome.tif", series_index: 0, include: "true"]]
 runner.run(guarded, raw, params, new File(tmp, "out7"))
 check("windowless is left as it was found",
       ij.Prefs.get("bioformats.windowless", false), false)
@@ -301,11 +301,11 @@ check("...and a true value is preserved too",
 ij.Prefs.set("bioformats.windowless", false)
 
 println ""
-println "=== the sheet's prefix names the output, not the image ==="
+println "=== the sheet's series_id names the output, not the image ==="
 // resolveImageId() would dig "Series001" out of both files, which is exactly
 // the collision the sheet exists to prevent.
-def two = [[prefix: "first_one",  path: "one.ome.tif", series_index: 0, include: "true"],
-           [prefix: "second_two", path: "two.ome.tif", series_index: 0, include: "true"]]
+def two = [[series_id: "first_one",  path: "one.ome.tif", series_index: 0, include: "true"],
+           [series_id: "second_two", path: "two.ome.tif", series_index: 0, include: "true"]]
 def out6 = new File(tmp, "out6")
 runner.run(two, raw, params, out6)
 check("first output named from the sheet",     new File(out6, "first_one_nucleus_outline.txt").isFile(), true)
@@ -379,8 +379,8 @@ println "=== the two readers must produce the SAME output ==="
 // reader path that quietly ignored setSeries would fail here rather than pass
 // every calibration check while reading series 0 twice.
 def eqRows = [
-    [prefix: "E0", path: "multi.ome.tif", series_index: 0, include: "true"],
-    [prefix: "E1", path: "multi.ome.tif", series_index: 1, include: "true"],
+    [series_id: "E0", path: "multi.ome.tif", series_index: 0, include: "true"],
+    [series_id: "E1", path: "multi.ome.tif", series_index: 1, include: "true"],
 ]
 def outImp = new File(tmp, "out_importer")
 def outRdr = new File(tmp, "out_reader")
@@ -448,26 +448,40 @@ check("...and blank when nothing opened it",   RC.PROVENANCE_KEYS.contains("open
 
 println ""
 println "=== the analysis step refuses what the sheet step allowed ==="
-// Make_SampleSheet writes a sheet with duplicate prefixes on purpose, so they
+// Make_SampleSheet writes a sheet with duplicate series_ids on purpose, so they
 // can be opened and fixed. Here they must be fatal BEFORE anything runs: the
-// prefix names the output files, so two rows sharing one overwrite each other
+// series_id names the output files, so two rows sharing one overwrite each other
 // on disk and merge into a single sample in R.
-def clash = [[prefix: "same", path: "one.ome.tif", series_index: 0, include: "true"],
-             [prefix: "same", path: "two.ome.tif", series_index: 0, include: "true"]]
+def clash = [[series_id: "same", path: "one.ome.tif", series_index: 0, include: "true"],
+             [series_id: "same", path: "two.ome.tif", series_index: 0, include: "true"]]
 def clashErr = errOf { runner.run(clash, raw, params, new File(tmp, "out_clash")) }
-check("a duplicate prefix stops the batch",    clashErr?.contains("share a prefix"), true)
+check("a duplicate series_id stops the batch", clashErr?.contains("share a series_id"), true)
 check("...naming both rows",                   clashErr?.contains("one.ome.tif[0]") && clashErr?.contains("two.ome.tif[0]"), true)
 check("...before anything was written",        new File(new File(tmp, "out_clash"), "same_nucleus_outline.txt").exists(), false)
 // An excluded duplicate writes nothing, so it is not a duplicate that matters.
-def clashOff = [[prefix: "same", path: "one.ome.tif", series_index: 0, include: "true"],
-                [prefix: "same", path: "two.ome.tif", series_index: 0, include: "false"]]
+def clashOff = [[series_id: "same", path: "one.ome.tif", series_index: 0, include: "true"],
+                [series_id: "same", path: "two.ome.tif", series_index: 0, include: "false"]]
 check("an EXCLUDED duplicate is not a clash",  errOf { runner.run(clashOff, raw, params, new File(tmp, "out_clashoff")) }, null)
+
+// A sheet from before v0.7.0 has `prefix` where `series_id` now is. Without an
+// up-front check every id reads blank, and the duplicate check above reports
+// that two rows "share" one -- loud, about the wrong thing. The check has to
+// fire FIRST, so this sheet would also trip the duplicate check if it got there.
+def oldSheet = [[prefix: "A", path: "one.ome.tif", series_index: 0, include: "true"],
+                [prefix: "B", path: "two.ome.tif", series_index: 0, include: "true"]]
+def oldErr = errOf { runner.run(oldSheet, raw, params, new File(tmp, "out_old")) }
+check("an old sheet is named as one",          oldErr?.contains("written before v0.7.0"), true)
+check("...not reported as a shared id",        oldErr?.contains("share a series_id"), false)
+check("...and nothing ran",                    new File(new File(tmp, "out_old"), "batch_summary.tsv").exists(), false)
+// One included row reaches no duplicate check at all, so this is what stops it.
+check("a one-row old sheet is refused too",
+      errOf { runner.run(oldSheet.take(1), raw, params, new File(tmp, "out_old1")) }?.contains("written before v0.7.0"), true)
 
 println ""
 println "=== a results folder says which series it came from ==="
-// Identity comes from content, not from the filename: the prefix should not
+// Identity comes from content, not from the filename: the series_id should not
 // have to be parsed back apart to answer "which series of which file was this?"
-def provRows = [[prefix: "PV", path: "multi.ome.tif", series_index: 1, include: "true",
+def provRows = [[series_id: "PV", path: "multi.ome.tif", series_index: 1, include: "true",
                  series_name: "S1"]]
 def outProv = new File(tmp, "out_prov")
 runner.run(provRows, raw, params, outProv)
@@ -506,7 +520,7 @@ def eachTsv = new File(outEach, "batch_summary.tsv")
 check("runEach writes batch_summary.tsv",     eachTsv.isFile(), true)
 def eachHdr = eachTsv.readLines()[0].split("\t").toList()
 check("...with the caller's columns, in place",
-      eachHdr, ["prefix", "path", "series_index", "status", "open_method",
+      eachHdr, ["series_id", "path", "series_index", "status", "open_method",
                 "n_slices", "title", "seconds", "message"])
 
 // THE point of `blanks`: an excluded or failed row has no work output, and a
@@ -537,10 +551,10 @@ def throwRows = TSV.read(new File(outThrow, "batch_summary.tsv"))
 // of the message column on a long batch.
 check("...each failure keeps its own reason",
       throwRows.findAll { it.status == "failed" }
-               .collectEntries { [(it.prefix): it.message.contains("deliberate")] },
+               .collectEntries { [(it.series_id): it.message.contains("deliberate")] },
       [A: true, B: false, C: true])
 check("...and B's reason is the missing file",
-      throwRows.find { it.prefix == "B" }.message.contains("no such image file"), true)
+      throwRows.find { it.series_id == "B" }.message.contains("no such image file"), true)
 
 // The pixel-size warning is now the CALLER's sentence, because whether a mixed
 // batch matters depends on what the rows do. Without this the overview batch

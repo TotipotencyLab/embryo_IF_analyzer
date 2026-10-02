@@ -12,55 +12,74 @@ Column names below are exact, including case.
 
 ## 1. The sheets
 
-`files.tsv` (one row per **file**) → `Make_SampleSheet.groovy` → `samples.tsv`
+`files.tsv` (one row per **file**) → `Make_SampleSheet.groovy` → `series.tsv`
 (one row per **series**) → the batch runner, and the R CLIs' `--sample_sheet`.
 
-`samples.tsv` *is* the sample sheet the R side has always read. It used to be
-written by hand with `prefix` plus your metadata; now it can be generated, with
-machine-read columns alongside. Nothing about `--sample_sheet` changed.
+`series.tsv` is the **series table** the R side reads. It can be written by hand
+with `series_id` plus your metadata, or generated, with machine-read columns
+alongside. Luxendo acquisitions get the same table from `Make_LuxendoSheets`.
+
+**A series** is one 5D image — x, y, z, c and t — in Bio-Formats' sense, for
+every format: one series of a `.lif`, or one Luxendo *stack* with all its time
+points. Not to be confused with an ImageJ *stack*, which is the planes of one
+image (`nucleus_stack_histogram` pools over z).
+
+⚠️ **Renamed in v0.7.0:** `samples.tsv` → `series.tsv`, and its id column
+`prefix` → `series_id`. An old sheet is refused with a message naming the
+version, on both sides, rather than read with every id blank.
+`Make_SampleSheet` pointed at an old sheet renames the column in place, keeping
+your edits.
 
 The column list both are checked against is
 [`schema/sheet_columns.tsv`](../schema/sheet_columns.tsv) — internal, read by
 both languages, and the reason there is no second copy to drift. Its first
-column says which sheet a row describes, so one file declares them all; a third,
-`manifest`, is at the end of this section.
+column says which sheet a row describes — `files`, `series`, and `manifest`
+for Luxendo's `sources.tsv` at the end of this section — so one file declares
+them all.
 
 ### Who owns a column
 
 | owner | on regeneration | examples |
 |---|---|---|
 | `machine` | **overwritten** — facts about the file | `series_index`, `series_name`, `size_*`, `pixel_*`, `file_size` |
-| `seeded` | **written once, then yours** | `prefix`, `alias`, `include`, inherited `condition`/`genotype` |
+| `seeded` | **written once, then yours** | `series_id`, `include`, inherited `condition`/`genotype` |
 | `user` | **never touched** | anything you add |
 
 A seeded value does **not** re-propagate when `files.tsv` changes — predictable
 beats clever, and a fix there must not silently rewrite rows you have edited.
 `reseed` (space-separated column names) forces it; `reseedAll` covers every
-seeded column and therefore rewrites `prefix` from `alias`. Every reseed reports
-what it changed.
+seeded column and therefore rewrites `series_id` from `alias`. Every reseed
+reports what it changed.
 
 Rows are matched across regenerations on **`path` + `series_index`**, never on
-`prefix` — you may edit that, and editing `alias` rewrites it.
+`series_id` — you may edit that, and editing `alias` rewrites it. A match whose
+`series_name` has changed is a **renumbering** — the file re-exported in another
+series order — and the merge stops, writing nothing, rather than carry your
+metadata onto the wrong image.
 
 ### `files.tsv` — you write this
 
 | Column | Required | Meaning |
 |---|---|---|
 | `path` | **yes** | image file; absolute, or relative to the image root given at run time |
-| `alias` | no | short name used to build every prefix from this file. Defaults to the basename without its extension |
+| `alias` | no | short handle for the container the series index counts within — here, this file. Builds every `series_id` from it; unique across the table. Defaults to the basename without its extension |
 | `include` | no | seeds the `include` of every series read from this file. Default true |
 | anything else | no | seeded onto every series of that file — typed once instead of per series |
 
 Template: [`config/files_template.tsv`](../config/files_template.tsv). Scan mode
 writes a skeleton for you.
 
-### `samples.tsv` — generated, then yours to edit
+### `series.tsv` — generated, then yours to edit
 
-`prefix` is `sanitise(<alias>_s<NNNN>_<series_name>)` — the series index,
-zero-padded to four digits — and the invariant everything rests on is:
+`series_id` is generated as `sanitise(<alias>_s<NNNN>_<series_name>)` — the
+series index, zero-padded to four digits — and the invariant everything rests
+on is:
 
-> **the `prefix` column == the output filename prefix == the `name` column of
-> the outline table.**
+> **the `series_id` column == the output filename prefix == the `name` column
+> of the outline table.**
+
+**You may edit it**, for readability; it must stay unique. Results already
+written carry the old id, so edit before a run, or re-run after.
 
 That is why the *sanitised* value is written into the sheet, not the raw one: a
 sheet saying `my run` while the disk says `my_run` fails the R join with nothing
@@ -69,21 +88,21 @@ visibly wrong.
 **The index is always present, not added only where names collide.** Series
 names repeat freely — a tile scan is many series under one name, and `Series001`
 is a Leica default — so with `alias` unique across files and the index unique
-within one, the prefix is unique *by construction*. Padding is a fixed four
+within one, the id is unique *by construction*. Padding is a fixed four
 digits and widens past 9999 rather than being derived from the file's series
-count, which would re-pad every prefix in a file that grew from 999 series to
+count, which would re-pad every id in a file that grew from 999 series to
 1001.
 
-A duplicate `prefix` can therefore now only be introduced **by editing the
+A duplicate `series_id` can therefore only be introduced **by editing the
 column**. `Make_SampleSheet` writes the sheet anyway and then fails, so the table
 can be opened and corrected — the error message must not be the only artifact of
-the run. `allowDuplicatePrefix` downgrades that to a warning. The batch refuses
-outright, for included rows, because there two rows sharing a prefix overwrite
+the run. `allowDuplicateId` downgrades that to a warning. The batch refuses
+outright, for included rows, because there two rows sharing an id overwrite
 each other's output files; `.cli_read_sample_sheet()` on the R side refuses too.
 
 Column **order** is presentation only — every reader on both sides works by
 column name, and the merge matches on `path` + `series_index` — so the sheet is
-written in the order a person reads it: `prefix`, `include`, then your own
+written in the order a person reads it: `series_id`, `include`, then your own
 metadata columns, then the file's facts. Rearranging it breaks nothing.
 
 Machine columns are `alias`, `path`, `series_index`, `series_name`, `size_x`,
@@ -108,7 +127,7 @@ either copy would attach the wrong metadata to real numbers.
 honoured by `.cli_read_sample_sheet()` with exactly the vocabulary
 `BatchRunner.isIncluded()` accepts (`true/yes/1`, `false/no/0`, blank or absent
 = included); a word neither side agrees on is an error rather than a guess. It
-is applied **before** the duplicate-prefix check, so setting `include=false` on
+is applied **before** the duplicate-id check, so setting `include=false` on
 all but one of a colliding pair works on both ends — which is what the Groovy
 error tells you to do. The column is then dropped: it says whether to analyse a
 row, and would otherwise land on every output row as a column that is `TRUE`
@@ -129,7 +148,7 @@ everything, and still runs.
 the column being silently renamed to `area...7`. (The `--id_column` itself is
 exempt: it is the key, not metadata.)
 
-Template: [`config/sample_sheet_template.tsv`](../config/sample_sheet_template.tsv).
+Template: [`config/series_template.tsv`](../config/series_template.tsv).
 
 ### What is checked, and how hard
 
@@ -139,7 +158,7 @@ Template: [`config/sample_sheet_template.tsv`](../config/sample_sheet_template.t
 | `alias` unique | **error** | two files claiming one name |
 | basename repeated across paths | warning | a filename reused for different data |
 | basename **and** size repeated | warning | one file copied elsewhere — what `alias` cannot see |
-| composed `prefix` unique | **error** | the collision the parts do not show |
+| composed `series_id` unique | **error** | the collision the parts do not show |
 
 The last is not implied by the others. Alias `A` with series `B_C` composes to
 the same string as alias `A_B` with series `C`; and `sanitise()` collapses
@@ -152,14 +171,14 @@ One column, one meaning. The file-level `include` is a **default generator**:
 each series row inherits its file's value and can then be flipped individually.
 There is no two-level logic at run time.
 
-`samples.tsv` stays a **complete inventory** — an excluded file still gets its
+`series.tsv` stays a **complete inventory** — an excluded file still gets its
 rows, marked off. A record that silently omits things is worse than one listing
 them as off, the same reasoning that keeps an orphan feature rather than
 dropping it.
 
 ### Behaviour when a sheet is given to the R CLIs
 
-- rows naming a `prefix` with no matching file → **warning**, listed
+- rows naming a `series_id` with no matching file → **warning**, listed
 - files whose sample is not in the sheet → dropped, reported as a message
 - no overlap at all → **error** (a silent empty run is the failure mode this
   repo is built to avoid)
@@ -177,85 +196,80 @@ assumption every other format here satisfies.
 
 A series row cannot absorb that: it would need more than one `path`. So the file
 facts live in a second table, which is not a new pattern — `files.tsv` →
-`samples.tsv` is already a file table and a series table, and this is the same
+`series.tsv` is already a file table and a series table, and this is the same
 pair with the cardinality reversed.
 
 | | rows | sheet in `schema/sheet_columns.tsv` |
 |---|---|---|
-| `series.tsv` | one per series | `samples` — **the same shape as any sample sheet** |
+| `series.tsv` | one per series — one per **stack**, every time point inside | `series` — **the same table every format writes** |
 | `sources.tsv` | one per `.lux.h5` | `manifest` |
 
-`series.tsv` being `samples`-shaped is the point: the batch runner and every R
-CLI read it unchanged, and it is where `include` lives and where you add your
-own columns.
+`series.tsv` being the ordinary series table is the point: the R CLIs read it
+unchanged, and it is where `include` lives and where you add your own columns.
+
+**One series per stack, always.** v0.6.0 split a stack into one series per time
+point by default (`gatherFrames`); that option was removed in v0.7.0, and asking
+for it is refused. To take out one time point, use `Make_LuxendoTiff`'s
+`frames`.
 
 #### `series.tsv` — four columns, read the Luxendo way
 
-`samples` declares `path`, `series_index`, `series_name` and `alias` as
-**required**, and all four describe "a series addressed inside one file".
-Relaxing them would weaken the guarantee for every other format; renaming the
-sheet would break `cli_helpers.r`, which reads machine columns with
-`sheet == "samples"`. So they keep their names and are given meanings that are
-true here:
+`path`, `series_index`, `series_name` and `alias` are **required**, and each is
+defined so that it is true for every format, Luxendo included:
 
 | column | Luxendo meaning |
 |---|---|
 | `path` | ⚠️ the **acquisition directory** — the root `source_path` resolves against, not a file |
-| `series_index` | the `stack` number. A Luxendo stack is one series in Bio-Formats' own sense — x, y, z, c **and t** — so this is the series index, unique per row, by default. ⚠️ Not with `gatherFrames` off: see below |
+| `series_index` | the `stack` number — the index the container addresses a series by |
 | `series_name` | `stack_description`, before sanitising |
 | `alias` | a short handle for the acquisition, **the operator's**, defaulting to the folder name |
 
 Everything else follows from the sources: `size_c` is the channel count,
-`size_t` the frame count (every time point of the position by default, 1 with
-`gatherFrames` off), `file_size` the sum of the sources, `pixel_type` `uint16`.
+`size_t` the number of time points, `file_size` the sum of the sources,
+`pixel_type` `uint16`.
 
-**One series per position is the default** (`gatherFrames`, on since this
-release). The per-time-point layout v0.6.0 wrote by default is still available
-by turning it off; nothing downstream can analyse either across time until the
-`time_axis` work, but the folded layout is the one it is being built for.
-
-⚠️ **`prefix` carries the alias, and it has to.** It is
-`sanitise(<alias>_s<NNNN>_<stack_description>)`, plus `_t<TTTT>` only with
-`gatherFrames` off — the repo's own `composePrefix()`, not a second copy of the rule.
+⚠️ **`series_id` carries the alias, and it has to.** It is generated as
+`sanitise(<alias>_s<NNNN>_<stack_description>)` — the repo's own
+`composePrefix()`, not a second copy of the rule.
 `s<NNNN>_<stack_description>` is unique only *within* one acquisition:
 measured on two real acquisitions, **all 14 stack identities were identical**
-(`stack_0-L26A pos1` in both), so without the alias both produce
-`s0000_L26A_pos1_t0000` — all 56 of the smaller run's series ids collided, and
-two runs landing in one output directory would silently overwrite each other's
-`_outline.txt`, `_res.txt` and `_config.txt`. With the alias, 0 collide.
+(`stack_0-L26A pos1` in both), so without the alias both runs produce the same
+ids, and two runs landing in one output directory would silently overwrite each
+other's `_outline.txt`, `_res.txt` and `_config.txt`. With the alias, 0 collide.
 
 The alias is a **parameter** on `Make_LuxendoSheets`, blank meaning the folder
 name, exactly as `files.tsv`'s alias defaults to the basename. The point of the
 column is that a run need not be named after whatever the camera called the
 directory.
 
-⚠️ **With `gatherFrames` off, `series_index` is not unique.** It still holds the
-stack, which then repeats once per time point, so `(path, series_index)` — which
-`SampleSheet.mergeKey()` uses as a row's identity across regenerations —
-collapses 56 rows to 14 keys. Harmless only because nothing regenerates one of
-these tables. With the default layout the key is unique and the question does
-not arise, which is one of the reasons the default changed;
-`note/time_series_plan.md` has the reasoning.
-
 #### `sources.tsv` — one row per file
 
 | Column | Required | Meaning |
 |---|---|---|
 | `source_path` | **yes** | the `.lux.h5`, relative to the acquisition directory in the series row's `path` |
-| `series_id` | **yes** | the series it feeds; joins to `series.tsv`'s `prefix`. Rows sharing one value are one series — its channels, and its time points when gathered |
+| `alias` | **yes** | the acquisition this source belongs to |
+| `series_index` | **yes** | the stack. With `alias`, the join to `series.tsv` — rows sharing the pair are one series: its channels and its time points |
 | `channel` | **yes** | 0-based channel index **in the output** |
 | `channel_name` | no | `channel_description`; blank when unnamed. Here and not on the series table because it is per channel |
-| `t` | **yes** | 0-based time point within the position, whether or not the series gathers frames |
+| `t` | **yes** | 0-based time point within the series |
 | `size_x`, `size_y`, `size_z` | **yes** | pixels |
 | `pixel_width`, `pixel_height`, `pixel_depth` | no | physical sizes; `pixel_depth` **blank for a single plane** |
 | `pixel_unit` | no | unit of those three |
 | `source_bytes` | **yes** | with the basename, the fingerprint that spots a replaced source |
 
+⚠️ **The join is `(alias, series_index)`, never `series_id`.** You may edit
+`series_id` for readability; a join on it would orphan every source row the
+moment you did. Both halves of the key are machine columns on the series table,
+so no edit can break the join, and two acquisitions in one table cannot collide
+on a stack number. One implementation, `LuxendoScan.withSeriesId()`, is what
+every consumer uses; a source with no series row stops the run, a series with
+no sources is reported.
+
 **There is no `target_output_path`.** It was only ever `series_id + ".tif"`, so
-the output name is **derived**: from `series_id` for a per-time-point file, from
-the position when the scan gathered frames, with `_downscale<PC>pc` and the
-format's extension added. A stored copy of a derived value is a second thing to
-keep in step.
+the output name is **derived** from the series row's `series_id` (as it stands,
+so an edited id names the file), plus `_t<TTTT>` when one time point is taken
+out, `_downscale<PC>pc`, and the format's extension. A stored copy of a derived
+value is a second thing to keep in step.
 
 **There is no `include` here either.** It is a property of the series, so it
 lives on `series.tsv` — one value, which makes "the channels of this output
@@ -537,7 +551,7 @@ grep the R CLIs:
 | **schema** | `NucleusPipeline.PARAM_TYPES` (parameters) + `RunConfig.PROVENANCE_KEYS` (everything else) |
 | **template** | `config/nucleus_config_template.txt`, generated from `NucleusPipeline.DEFAULTS` |
 
-Unlike the sample sheet, there is **no run-time schema file** both languages
+Unlike the series table, there is **no run-time schema file** both languages
 read — `schema/sheet_columns.tsv` has no counterpart here. The R readers above
 therefore know these field names by hard-coded string, and nothing checks them
 against the writer. Changing a field name means grepping this table.
@@ -571,7 +585,7 @@ output is *called*, not what work happens — the same category as `outdir`, whi
 is likewise not in the config — so writing it would make a re-run reproduce the
 previous run's filenames and overwrite it instead of landing beside it for
 comparison. What the names were is recorded anyway, as `output_basename`. It is
-also **interactive-only**: the batch passes the sheet's `prefix` as `basename`,
+also **interactive-only**: the batch passes the sheet's `series_id` as `basename`,
 which wins over `output_prefix` outright.
 
 **This file can be read back in as the parameters of another run.**
@@ -611,7 +625,7 @@ is a complete record of what the run did rather than of what succeeded:
 
 | Column | Meaning |
 |---|---|
-| `prefix` | the sample, as the sheet named it |
+| `series_id` | the series, as the sheet named it (`prefix` before v0.7.0) |
 | `path`, `series_index` | which image it came from |
 | `status` | `ok`, `failed`, or `excluded` |
 | `open_method` | `importer` or `reader`, whichever actually opened it; blank for `excluded` rows |
@@ -630,7 +644,7 @@ Projections and nothing else: no threshold, no particles, no measurement, no
 ROI files. It writes
 
 ```
-<prefix>_overview_ch<N>.png
+<series_id>_overview_ch<N>.png
 ```
 
 — the **same names** the nucleus path writes for its raw overview, and that is
@@ -643,7 +657,7 @@ is offered: the suffix exists to mark that outlines were drawn, and nothing here
 draws any.
 
 **`batch_summary.tsv` has a fixed frame and a variable middle.** Every batch
-writes `prefix`, `path`, `series_index`, `status`, `open_method` first and
+writes `series_id`, `path`, `series_index`, `status`, `open_method` first and
 `seconds`, `message` last, with the same meanings as the table above; between
 them sit the columns that *that* batch's work reports. Blank in those columns
 means the row did not run, and every row carries every column — an `excluded`
@@ -676,7 +690,7 @@ cells and a count taken from the picture has to be reconcilable with the table:
 | Column | Meaning |
 |---|---|
 | `group` | the value of the `--group_by` column |
-| `prefix` | the sample, as the sheet named it |
+| `series_id` | the series, as the sheet named it (`prefix` before v0.7.0) |
 | `image_path` | the file used, whether built from `--image_dir`/`--image_suffix` or taken from `--image_path_by` |
 | `status` | `ok`, or `missing` when the image was not there |
 | `row`, `col` | 1-based position in the grid, so a cell in the picture can be named |
@@ -685,11 +699,11 @@ cells and a count taken from the picture has to be reconcilable with the table:
 | `width_um`, `height_um` | the sample's physical size, `size_x * pixel_width` |
 | `montage` | the file this row was drawn into |
 
-**It is designed to be read back in.** It carries `group`, `prefix` and
+**It is designed to be read back in.** It carries `group`, `series_id` and
 `image_path`, so re-running exactly what you looked at is
 `--sample_sheet montage_index.tsv --image_path_by image_path --group_by group`.
 That is the provenance answer rather than writing resolved paths back into
-`samples.tsv`: the sheet is shared with the Fiji side and its columns have
+`series.tsv`: the sheet is shared with the Fiji side and its columns have
 declared owners in `schema/sheet_columns.tsv`, so an R CLI adding one would need
 a schema entry and `Make_SampleSheet` would have to know about it.
 
@@ -817,13 +831,13 @@ cannot read R. Columns, in both:
 | `is_bridge` | lgl | `TRUE` if this ROI only forms graph edges, see §5 |
 | `feature_id` | chr | group this ROI belongs to, see §5 |
 | `feature_type` | chr | `nucleus`, `nucleolus`, … |
-| `sample` | chr | the `prefix` |
+| `sample` | chr | the `series_id` |
 | `run_id` | chr | 10 hex characters identifying the annotate run, see §5 |
 | `parent_feature_id` | chr | `NA` unless `--within` was given |
 | `parent_feature_type` | chr | |
 | `parent_containment` | dbl | 0–1, fraction of the child inside the parent |
 | `parent_match` | chr | `direct`, `gap_filled`, or `NA` |
-| *metadata* | | every non-`prefix` sample sheet column, when supplied |
+| *metadata* | | every non-`series_id` series-table column, when supplied |
 | `geometry` | sfc | `.rds` only |
 
 ⚠️ The `.rds` is a registered `sf` object, but the tibble that
@@ -908,7 +922,7 @@ rejects table instead of being folded in.
 | `circ_med`, `circ_min` | only when the `_res.txt` was found |
 | `ch<N>_signal` | one column per channel measured; only when the `_res.txt` was found |
 | `class` | the `--class` a feature matched, or `unclassified`; only when `--class` was given |
-| *metadata* | every non-`prefix` sample sheet column, when supplied. `is_bridge` is **not** carried through: it is an ROI-level fact that varies within a feature, and `n_bridge` / `frac_bridge` are the feature-level answer |
+| *metadata* | every non-`series_id` series-table column, when supplied. `is_bridge` is **not** carried through: it is an ROI-level fact that varies within a feature, and `n_bridge` / `frac_bridge` are the feature-level answer |
 
 ⚠️ Every statistic above **excludes bridge ROIs** (`n_roi` and `n_z`
 included). That is deliberate: `define_feature_group()` tests `--min_z_span`
@@ -1291,7 +1305,7 @@ count is resting on ROIs that the filter rejected, which is evidence that the
 |---|---|
 | adding a `_config.txt` field | cheap — readers look up by key |
 | adding a column to a CLI output | cheap |
-| adding a sample sheet column | free — non-`prefix` columns are passed through |
+| adding a series-table column | free — non-`series_id` columns are passed through |
 | renaming an output column | **breaks the next stage silently**; grep the CLIs first |
 | changing the `_outline.txt` filename pattern | cheap now — identity comes from the file's content, so the pattern only has to still *select* the files (`--input_pattern`) |
 | renaming a feature (`--rename`) | free downstream; the `roi` column keeps the original prefix on purpose |

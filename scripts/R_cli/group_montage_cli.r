@@ -12,7 +12,7 @@
 # filtering cannot be trusted.
 #
 #   ./group_montage_cli.r --image_dir overviews --image_suffix _overview_ch1.png \
-#       --sample_sheet sheets/samples.tsv --group_by section_id --outdir montages
+#       --sample_sheet sheets/series.tsv --group_by section_id --outdir montages
 #
 # TWO THINGS HERE ARE NOT PREFERENCES.
 #
@@ -89,7 +89,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   p <- arg_parser("Tile every image of a sample group into one montage", hide.opts = TRUE)
 
   p <- add_argument(p, "--sample_sheet", short = "-s", type = "character",
-                    help = "samples.tsv; its prefix column names each image")
+                    help = "series.tsv; its series_id column names each image")
   p <- add_argument(p, "--group_by", short = "-g", type = "character",
                     help = "sheet column whose value names the group, e.g. section_id")
   p <- add_argument(p, "--outdir", short = "-o", type = "character",
@@ -98,9 +98,9 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   p <- add_argument(p, "--image_dir", short = "-i", type = "character", default = NA,
                     help = "directory holding the images")
   p <- add_argument(p, "--image_suffix", short = "-u", type = "character", default = NA,
-                    help = "appended to the prefix, extension included, e.g. _overview_ch1.png")
+                    help = "appended to the series_id, extension included, e.g. _overview_ch1.png")
   p <- add_argument(p, "--image_prefix", short = "-X", type = "character", default = "",
-                    help = "prepended to the prefix, if the images carry one")
+                    help = "prepended to the series_id, if the images carry one")
   p <- add_argument(p, "--image_path_by", short = "-A", type = "character", default = NA,
                     help = paste("sheet column holding each image's path, INSTEAD of",
                                  "building it from --image_dir/--image_suffix"))
@@ -109,7 +109,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = "sheet column ordering the panels within a group [default: sheet order]")
   p <- add_argument(p, "--label_by", short = "-L", type = "character", nargs = Inf,
                     default = NULL,
-                    help = "sheet column(s) for the per-panel label [default: the prefix]")
+                    help = "sheet column(s) for the per-panel label [default: the series_id]")
   p <- add_argument(p, "--ncol", short = "-n", type = "integer", default = 0L,
                     help = "grid columns [default: about the square root of the group size]")
   p <- add_argument(p, "--cell_max_px", short = "-C", type = "integer", default = 500L,
@@ -178,7 +178,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   group_col <- .gm_one(.cli_resolve_arg(argv$group_by, "--group_by"))
   order_col <- .gm_one(.cli_resolve_arg(argv$order_by, "--order_by"))
   label_cols <- .cli_resolve_arg(argv$label_by, "--label_by")
-  if (!length(label_cols)) label_cols <- "prefix"
+  if (!length(label_cols)) label_cols <- "series_id"
 
   physical_cols <- if (scale_mode == "physical") {
     c("size_x", "size_y", "pixel_width", "pixel_height")
@@ -208,7 +208,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   blank <- is.na(groups) | !nzchar(groups)
   if (any(blank)) {
     stop(sum(blank), " included row(s) have no '", group_col, "': ",
-         paste(utils::head(sheet[["prefix"]][blank], 6), collapse = ", "),
+         paste(utils::head(sheet[["series_id"]][blank], 6), collapse = ", "),
          if (sum(blank) > 6) ", ..." else "",
          "\n  Fill the column, or set include=false on those rows.", call. = FALSE)
   }
@@ -229,7 +229,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     # prefixes never collide in the first place.
     paths <- file.path(img_dir,
                        paste0(.gm_one(.cli_resolve_arg(argv$image_prefix, "--image_prefix"), ""),
-                              sheet[["prefix"]], suffix))
+                              sheet[["series_id"]], suffix))
   }
   sheet[[".path"]] <- paths
 
@@ -282,7 +282,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       # montage is that a millimetre is a millimetre across it.
       stop(sum(bad), " row(s) have no usable pixel size, so they cannot be placed ",
            "on a physical scale: ",
-           paste(utils::head(sheet[["prefix"]][bad], 6), collapse = ", "),
+           paste(utils::head(sheet[["series_id"]][bad], 6), collapse = ", "),
            "\n  Fill pixel_width/pixel_height, or pass --scale pixel.", call. = FALSE)
     }
   } else {
@@ -381,7 +381,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       if (scale_mode == "physical") {
         got <- mg_aspect_off(im, rows[[".w_um"]][i] / rows[[".h_um"]][i])
         if (is.finite(got)) {
-          odd[[length(odd) + 1L]] <<- list(prefix = rows[["prefix"]][i], got = got,
+          odd[[length(odd) + 1L]] <<- list(series_id = rows[["series_id"]][i], got = got,
                                            want = rows[[".w_um"]][i] / rows[[".h_um"]][i])
         }
       }
@@ -493,7 +493,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
             " (", info$width, "x", info$height, ")")
 
     index[[length(index) + 1L]] <- data.frame(
-      group = g, prefix = rows[["prefix"]], image_path = rows[[".path"]],
+      group = g, series_id = rows[["series_id"]], image_path = rows[[".path"]],
       status = ifelse(rows[[".found"]], "ok", "missing"),
       row = ((seq_len(n) - 1L) %/% ncol) + 1L,
       col = ((seq_len(n) - 1L) %% ncol) + 1L,
@@ -511,7 +511,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
             "so they are fitted into it with blank space rather than stretched to ",
             "match: ",
             paste(vapply(ex, function(o) sprintf("%s (%.2f vs %.2f)",
-                                                 o$prefix, o$got, o$want), character(1)),
+                                                 o$series_id, o$got, o$want), character(1)),
                   collapse = ", "),
             if (length(odd) > 3) ", ..." else "",
             ". Either the sheet is stale, --image_suffix picked a differently ",

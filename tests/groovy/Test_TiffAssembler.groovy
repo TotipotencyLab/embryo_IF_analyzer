@@ -93,10 +93,14 @@ println "\n=== a real assembly round trip ==="
 def root = FIX.buildTree(new File(tmp, "acq"),
     [[stack: 0, desc: "pos1", nz: 3], [stack: 1, desc: "pos2", nz: 1]],
     [[index: 0, name: "BF"], [index: 1, name: "GFP"]], 2, 16, 12)
-def scanRes = scanner.scan(root, [gatherFrames: false]) { }
-def rows = scanRes.sources
+def scanRes = scanner.scan(root) { }
+// The sources table carries no series_id -- it joins on (alias, series_index)
+// -- so it is attached through the one join, as Make_LuxendoTiff does.
+def rows = LS.withSeriesId(scanRes.sources, scanRes.series).sources
 def out  = new File(tmp, "out")
-def sums = asm.assembleAll(rows, root, out, [verify: true]) { }
+// Every frame in its own file: the per-time-point outputs the gathered and
+// frame-chosen ones below are compared against.
+def sums = asm.assembleAll(rows, root, out, [verify: true, frames: "0-1"]) { }
 check("one summary per output", sums.size(), 4)
 check("all written",            sums.collect { it.status }.unique(), ["written"])
 check("all verified",           sums.collect { it.verified }.unique(), ["yes"])
@@ -154,7 +158,7 @@ check("reason names the fix", hugeSum.reason.contains("format=bigtiff"), true)
 check("nothing written", new File(out, "huge.tif").exists(), false)
 // and the rest of the run still happens
 def mixed = rows + huge
-def mixedSums = asm.assembleAll(mixed, root, new File(tmp, "mixed"), [:]) { }
+def mixedSums = asm.assembleAll(mixed, root, new File(tmp, "mixed"), [frames: "0-1"]) { }
 check("one failure does not stop the others",
       mixedSums.count { it.status == "written" }, 4)
 check("the failure has its own row", mixedSums.count { it.status == "failed" }, 1)
@@ -163,7 +167,7 @@ check("summary is rectangular",
 
 println "\n=== bigtiff carries the same pixels and keeps its calibration ==="
 def outB = new File(tmp, "out_big")
-def sB = asm.assembleAll(rows, root, outB, [format: "bigtiff"]) { }
+def sB = asm.assembleAll(rows, root, outB, [format: "bigtiff", frames: "0-1"]) { }
 def sB0 = sB.find { it.series_id.contains("pos1") && it.t == 0 }
 check("same pixel checksum as classic", sB0.checksum, s0.checksum)
 def rB = sheet.inspect(new File(outB, sB0.output_path))[0]
@@ -176,20 +180,23 @@ println "\n=== include is honoured, and a half-included output is a question ===
 // include is a SERIES property now, handed in as a map, so "some channels of
 // this output are excluded" is no longer a state that can be expressed.
 def offSum = asm.assembleAll(rows, root, new File(tmp, "off"),
-                             [includeBySeries: [(s0.series_id): "false"]]) { }
+                             [frames: "0-1", includeBySeries: [(s0.series_id): "false"]]) { }
 check("skipped", offSum.find { it.output_path == s0.output_path }.status, "skipped")
 check("reason",  offSum.find { it.output_path == s0.output_path }.reason, "include=false")
-check("the others still ran", offSum.count { it.status == "written" }, sums.size() - 1)
+// include belongs to the SERIES: every frame of it is skipped, nothing else is.
+check("every frame of that series skipped",
+      offSum.findAll { it.series_id == s0.series_id }.collect { it.status }.unique(), ["skipped"])
+check("the others still ran", offSum.count { it.status == "written" },
+      sums.count { it.series_id != s0.series_id })
 // A series absent from the map defaults to included, so a trimmed series table
 // cannot silently skip everything.
 def noMapSum = asm.assembleAll(rows, root, new File(tmp, "nomap"), [:]) { }
 check("absent from the map means included",
       noMapSum.collect { it.status }.unique(), ["written"])
 
-println "\n=== gathering every time frame of a position into one file ==="
-// The MANIFEST decides this, not the assembler -- so the gathered plan comes
-// from a second scan, and the assembler just builds what the table describes.
-def gRows = scanner.scan(root, [gatherFrames: true]) { }.sources
+println "\n=== every time frame of a series in one file (frames blank) ==="
+// A series IS the whole position, so the default output holds every frame.
+def gRows = rows
 check("same number of sources",     gRows.size(), rows.size())
 check("one output per position",    gRows.collect { it.series_id }.unique().size(), 2)
 check("the series id carries no t", gRows[0].series_id.contains("_t0"), false)
@@ -243,9 +250,8 @@ check("gathered pixels are the per-timepoint pixels, in order",
 // that is FATAL when gathering where it is only a warning when not.
 def ragged = gRows.collect { new LinkedHashMap(it) }
 ragged.findAll { it.series_id.contains("pos1") && it.t == 1 }.each { it.size_z = 2 }
-def raggedSeries = ragged.collect { it.series_id }.unique().collect { [prefix: it] }
 throwsWith("z changing between frames refuses", "disagree on dimensions",
-           { scanner.validate(raggedSeries, ragged) { } })
+           { scanner.validate(scanRes.series, ragged) { } })
 
 println "\n=== choosing time points: each one its own file ==="
 // A series is now a whole position, which for a long time course fits neither
@@ -283,12 +289,13 @@ check("include=false still skips a chosen frame",
       sInc.collectEntries { [(it.series_id.contains("pos2") ? "pos2" : "pos1"): it.status] },
       [pos1: "written", pos2: "skipped"])
 
-// A per-time-point table holds one frame per series, so choosing t=0 picks
-// those series and names them exactly as before -- no second _t.
-def sP = asm.assembleAll(rows, root, new File(tmp, "out_pt0"), [frames: "0"]) { }
-check("per-time-point table: only the t=0 series", sP.collect { it.t }.unique(), [0])
-check("named as before",
-      sP.collect { it.output_path }.sort(), sums.findAll { it.t == 0 }.collect { it.output_path }.sort())
+// A series that holds ONE frame keeps its own name: there is nothing to tell
+// apart, and a _t0000 would only make the name longer.
+def oneFrame = rows.findAll { it.t == 0 }
+def sP = asm.assembleAll(oneFrame, root, new File(tmp, "out_pt0"), [frames: "0"]) { }
+check("a one-frame series: only t=0 written", sP.collect { it.t }.unique(), [0])
+check("...under its own series_id",
+      sP.collect { it.output_path }.sort(), oneFrame.collect { it.series_id + ".tif" }.unique().sort())
 
 println "\n=== an output too big for the heap fails as a row, before reading ==="
 // bigtiff has no size cap, so without this a 96-frame position would read ~8 GB

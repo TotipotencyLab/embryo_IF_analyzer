@@ -207,8 +207,8 @@ test_that("annotate_features_cli honours a sample sheet without needing one", {
   skip_if_no_fixture(fixture_file("nucleus", "outline"))
 
   d <- withr::local_tempdir()
-  sheet <- file.path(d, "samples.tsv")
-  write.table(data.frame(prefix = "GRV_Position010", genotype = "wt"),
+  sheet <- file.path(d, "series.tsv")
+  write.table(data.frame(series_id = "GRV_Position010", genotype = "wt"),
               sheet, sep = "\t", quote = FALSE, row.names = FALSE)
 
   out <- withr::local_tempdir()
@@ -227,8 +227,8 @@ test_that("annotate_features_cli stops when the sheet excludes everything", {
   skip_if_no_fixture(fixture_file("nucleus", "outline"))
 
   d <- withr::local_tempdir()
-  sheet <- file.path(d, "samples.tsv")
-  write.table(data.frame(prefix = "SOME_OTHER_SAMPLE"), sheet,
+  sheet <- file.path(d, "series.tsv")
+  write.table(data.frame(series_id = "SOME_OTHER_SAMPLE"), sheet,
               sep = "\t", quote = FALSE, row.names = FALSE)
 
   expect_error(suppressWarnings(suppressMessages(annotate_features_cli(c(

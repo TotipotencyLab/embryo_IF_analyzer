@@ -91,9 +91,9 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   p <- add_argument(p, "--res_dir", short = "-e", type = "character", nargs = Inf, default = NULL,
                     help = "directory holding the Fiji *_res.txt [default: beside the features]")
   p <- add_argument(p, "--sample_sheet", short = "-S", type = "character",
-                    help = "optional table with a 'prefix' column; joins metadata")
-  p <- add_argument(p, "--id_column", short = "-I", type = "character", default = "prefix",
-                    help = "sample sheet column holding the file prefix")
+                    help = "optional series table (series.tsv), keyed by its 'series_id' column; joins metadata")
+  p <- add_argument(p, "--id_column", short = "-I", type = "character", default = "series_id",
+                    help = "series table column holding the series_id -- the file prefix")
   p <- add_argument(p, "--group_by", short = "-g", type = "character", nargs = Inf, default = NULL,
                     help = "column to group the plots by [default: sample]")
   p <- add_argument(p, "--feature", short = "-f", type = "character", nargs = Inf, default = NULL,

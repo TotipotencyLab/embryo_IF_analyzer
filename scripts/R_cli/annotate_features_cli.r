@@ -108,9 +108,9 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   p <- add_argument(p, "--feature", short = "-f", type = "character", nargs = Inf, default = NULL,
                     help = "feature name(s) to annotate [default: nucleus]")
   p <- add_argument(p, "--sample_sheet", short = "-S", type = "character",
-                    help = "optional table with a 'prefix' column; filters inputs and joins metadata")
-  p <- add_argument(p, "--id_column", short = "-I", type = "character", default = "prefix",
-                    help = "sample sheet column holding the file prefix")
+                    help = "optional series table (series.tsv), keyed by its 'series_id' column; filters inputs and joins metadata")
+  p <- add_argument(p, "--id_column", short = "-I", type = "character", default = "series_id",
+                    help = "series table column holding the series_id -- the file prefix")
   p <- add_argument(p, "--output_prefix", short = "-X", type = "character", default = "",
                     help = "prefix for the combined output files")
   # Per-feature grouping parameters, as space-separated key=value tokens.

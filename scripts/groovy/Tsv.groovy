@@ -2,7 +2,7 @@
 //
 // Tab-separated tables, read and written the one way this repo does it.
 //
-// Small on purpose. It exists so that the sample sheet, the files table and the
+// Small on purpose. It exists so that the series table, the files table and the
 // batch summary cannot disagree about quoting, blank cells or line endings --
 // and so that "never write a comma into a column another CLI reads back" stays
 // a property of one file rather than a habit.

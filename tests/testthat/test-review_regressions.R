@@ -89,11 +89,11 @@ test_that("a sample sheet column that collides with an output column is refused"
   # bind_cols() silently renamed these to area...7 / feature_type...8, producing
   # a file that violates the documented schema and that count_features_cli then
   # cannot read.
-  write.table(data.frame(prefix = "GRV_Position010", area = "BIG"),
+  write.table(data.frame(series_id = "GRV_Position010", area = "BIG"),
               p, sep = "\t", quote = FALSE, row.names = FALSE)
   expect_error(.cli_read_sample_sheet(p), "collide")
 
-  write.table(data.frame(prefix = "X", feature_type = "a", sample = "b"),
+  write.table(data.frame(series_id = "X", feature_type = "a", sample = "b"),
               p, sep = "\t", quote = FALSE, row.names = FALSE)
   expect_error(.cli_read_sample_sheet(p), "feature_type")
 })
@@ -108,7 +108,7 @@ test_that("the id column itself is not treated as a collision", {
 })
 
 test_that("the shipped template has no reserved column names", {
-  tmpl <- file.path(repo_root(), "config", "sample_sheet_template.tsv")
+  tmpl <- file.path(repo_root(), "config", "series_template.tsv")
   expect_no_error(.cli_read_sample_sheet(tmpl))
 })
 

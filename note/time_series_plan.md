@@ -198,11 +198,12 @@ match — the operator's choice to make. (Making it derived-only was proposed an
 declined.)
 
 ⚠️ **So nothing may JOIN on it that the operator cannot see change.** Today
-`sources.tsv` joins the series table on `series_id`, and an edit would orphan
-every source row. In `vocab` the sources table is keyed on **`series_index`**
-instead — the stack, which the operator never edits and which is unique per
-acquisition now that a series is the whole position (§3.2b) — and
-`series_id` is looked up from the series row. The regeneration key was already
+`sources.tsv` joined the series table on `series_id`, and an edit would have
+orphaned every source row. Since `vocab` the sources table is keyed on
+**`(alias, series_index)`** — the acquisition and the stack, both machine
+columns the operator never edits, unique together now that a series is the
+whole position (§3.2b), and safe when two acquisitions share one table —
+and `series_id` is looked up from the series row (`LuxendoScan.withSeriesId()`). The regeneration key was already
 `(path, series_index)`, so edits survive a rescan.
 
 ### 3.2b The sources table — when one series comes from many files
@@ -592,37 +593,65 @@ other hand, separate cleanly. **Release after PR 2, not between them**: in
 between, `main` is consistent but speaks two vocabularies (sheets say
 `series_id`, outputs say `sample`).
 
-#### PR 1 — `vocab-series_table`: the sheets, in both languages
+#### PR 1 — `vocab-series_table`: the sheets, in both languages  ✅ done
 
 Everything that reads or writes `files.tsv`, `series.tsv` and `sources.tsv`.
 
-- [ ] `schema/sheet_columns.tsv`: sheet `samples` → `series`, column `prefix` →
+- [x] `schema/sheet_columns.tsv`: sheet `samples` → `series`, column `prefix` →
       `series_id`, the §3.2 descriptions of `series_index` and `alias`.
-- [ ] `samples.tsv` → `series.tsv` everywhere it is named.
-- [ ] Groovy: `SampleSheet`, `Make_SampleSheet`, `BatchRunner` (and the `prefix`
-      column of `batch_summary.tsv`), `Run_Overview_Batch`, `SheetSchema`,
-      `LuxendoScan`, `Make_LuxendoTiff`.
-- [ ] ⚠️ **`sources.tsv` keyed on `series_index`, not `series_id`** (§3.2), so a
-      hand-edited id does not orphan the sources.
-- [ ] Remove `gatherFrames`: `Make_LuxendoSheets` writes the folded layout only.
-      `Make_LuxendoTiff`'s `frames` covers per-time-point files for tuning.
-- [ ] R: `.cli_read_sample_sheet()` (its `id_column` and the
-      `sheet == "samples"` literal), `group_montage_cli.r`'s sheet handling.
-- [ ] 🔒 **`merge()` refuses a renumbering**: same `(path, series_index)`,
-      different `series_name` (§3.2b). Both formats.
-- [ ] ⚠️ **Name the real cause when an old sheet is given.** Check the id column
-      up front, as `Make_LuxendoTiff` already does; otherwise the Groovy side
-      reports "duplicate prefix" (every id reads blank) for a sheet that is
-      merely old — `CLAUDE.md` § Versioning.
-- [ ] The glossary (Luxendo stack = series; ImageJ stack = planes of one frame)
-      in `note/data_formats.md`; `tests/testthat/test-data_formats.R`,
-      `README.md`, `config/*template*` with it.
+      `SheetSchema.SERIES` / `ID_COLUMN` name them once on the Groovy side.
+- [x] `samples.tsv` → `series.tsv` everywhere it is named;
+      `config/sample_sheet_template.tsv` → `config/series_template.tsv`.
+- [x] Groovy: `SampleSheet`, `Make_SampleSheet` (`allowDuplicatePrefix` →
+      `allowDuplicateId`), `BatchRunner` (and the `series_id` column of
+      `batch_summary.tsv`), `Run_Overview_Batch`, `SheetSchema`, `LuxendoScan`,
+      `Make_LuxendoTiff`.
+- [x] ⚠️ **`sources.tsv` keyed on `(alias, series_index)`**, not `series_id` —
+      refined from "`series_index`" at implementation, so two acquisitions in one
+      table cannot collide on a stack number. One join,
+      `LuxendoScan.withSeriesId()`.
+- [x] `gatherFrames` removed; asking for it is refused, naming `frames`.
+- [x] R: `.cli_read_sample_sheet()` (default `id_column = "series_id"`, the
+      `sheet == "series"` literal), the CLIs' `--id_column` default,
+      `group_montage_cli.r` (and `montage_index.tsv`'s `series_id` column, since
+      that file is read back in as a sheet).
+- [x] 🔒 **`merge()` refuses a renumbering**: same `(path, series_index)`,
+      different `series_name`; nothing is written.
+- [x] ⚠️ **An old sheet is named as one**, on both sides (`SheetSchema.requireId`,
+      `.cli_read_sample_sheet()`), before the duplicate check can misreport it;
+      `Make_SampleSheet` pointed at an old sheet renames `prefix` in place,
+      edits kept (`SampleSheet.migrateOldId`).
+- [x] The glossary, `note/data_formats.md` §1, `tests/testthat/test-data_formats.R`,
+      `README.md`, `config/`.
 
-**Verification.** Regenerate a sheet from a real `.lif` and from the Luxendo
-acquisition and diff against today's: only the renamed column and filename may
-differ. An old sheet must fail naming the cause, on both sides. A hand-edited
-`series_id` must still reach the sources (Luxendo) and still be refused when it
-duplicates another. Both suites, R under 4.6.
+**Not done here, deliberately:** code identifiers keep the old word —
+`Make_SampleSheet`, `SampleSheet`, `composePrefix()`, `.cli_read_sample_sheet()`,
+the R CLIs' `--sample_sheet` flag, and the schema's `manifest` sheet name for
+`sources.tsv`. They name no data and change no output; renaming them would
+double the diff. The `sample` column of R's outputs is PR 2.
+
+**Verification, as carried out.** R 4.6.1: 964 passed, 0 failed (main: 955; the
+one warning is the same on main). Groovy, every file: `Test_SampleSheet` 106,
+`Test_BatchRunner` 131, `Test_LuxendoScan` 109, `Test_TiffAssembler` 117,
+`Test_LuxendoFile` 37, `Test_LuxendoSidecar` 49, `Test_RunConfig` 90,
+`Test_NucleusPipeline` 62, `Test_Overview` 126, `Test_RoiExport` 28,
+`Test_BuildMask` 108, `Test_NucleolusDetect` 26 — 0 failed. Real data, read
+only, outputs in scratch:
+- the rnf4 oocyte project's `files.tsv` (two tile-merged `.lif`, 111 series):
+  `main`'s and this branch's `Make_SampleSheet` agree on every row and cell,
+  only the id column's header differs;
+- its hand-edited `samples.tsv`, migrated by `Make_SampleSheet`: identical apart
+  from the renamed header and an `ovary` column the merge adds because
+  `files.tsv` has it and the old sheet did not (behaviour already on `main`);
+  every `use`, `section_id` and `include` edit kept;
+- the same old sheet handed to `Run_NucleusSelector_Batch`: refused naming
+  v0.7.0, nothing written;
+- the 800 GB Luxendo acquisition: `series.tsv` and `sources.tsv` equal to
+  v0.6.0's `per_pos_*` in all 14 and 4032 rows once `series_id` is translated to
+  `(alias, series_index)` — 0 differing cells; 85.5 s;
+- the 33 GB acquisition with one `series_id` hand-edited to `my_embryo_A`:
+  `Make_LuxendoTiff frames=0` found its sources, wrote and verified
+  `my_embryo_A_t0000.tif`, skipped the 13 excluded series.
 
 #### PR 2 — `vocab-output_identity`: what the analysis writes
 
@@ -1588,5 +1617,5 @@ position (§3.1, §6.17); the word stays `series` (§6.19); `series_index` and
 overview splits into data and render (§4 `time_axis`, `QoL`); the threshold
 scope is a parameter (§4 `time_axis`); the index file list with option A
 (§4 `luxendo` Part 3); `series_id` stays editable, with the sources keyed on
-`series_index` (§3.2); `gatherFrames` removed and `feature_id`'s format moved
+`(alias, series_index)` (§3.2); `gatherFrames` removed and `feature_id`'s format moved
 to `time_axis` (§4 `vocab`). The container class name is 🔒 **`image_region`** (§6.11).
