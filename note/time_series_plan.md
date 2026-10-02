@@ -854,6 +854,12 @@ a library class and the `Open_*` script is a thin caller — same division as
 
       ⚠️ The overlay is **ImageJ-specific TIFF metadata** — Fiji shows it, other
       tools silently ignore it. Fine for inspection, not an interchange format.
+- [ ] `Open_LuxendoSeries.groovy` — one Luxendo series at one time point, all
+      channels, calibrated, into a window, through `LuxendoFile` and the two
+      sheets (or the one resolver once `time_axis` has built it). Drag-and-drop
+      cannot do this — Bio-Formats has no Luxendo reader — and the HDF5 import
+      opens one channel per file (`note/luxendo_file_format.md` §5). Added
+      2026-10-02.
 - [ ] `Open_SeriesRow.groovy` — open row N of a series table. (Named for
       `series.tsv`, not the retired "sample sheet".)
       🔒 **1-based** (it is a table row; `series_index` stays 0-based because

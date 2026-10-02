@@ -113,6 +113,18 @@ Bio-Formats 8.1.1 as shipped in Fiji:
 So `.lux.h5` must be read with JHDF5 directly. `ch.systemsx.cisd.hdf5` is
 already in Fiji and reads these files without any added dependency.
 
+**By hand, in the GUI:** drag-and-drop goes to Bio-Formats and fails as above.
+Fiji's bundled HDF5 plugin (`HDF5_Vibez`) does open one — **File › Import ›
+HDF5…**, dataset `/Data` — because `.lux.h5` is laid out in that plugin's own
+convention: `/Data` in `[z, y, x]` with `element_size_um`. Verified 2026-10-02
+through its scriptable twin (`Scriptable load HDF5...`, `datasetnames=/Data`):
+2048×2048, 39 slices, 16-bit, calibration 0.208 × 0.208 × 5.0 µm, and a sampled
+pixel equal to `LuxendoFile`'s. One file is one channel at one time point; for
+all channels of a series, `Make_LuxendoTiff` with `frames`.
+BigDataViewer (*Plugins › BigDataViewer › Open XML/HDF5* on `bdv.xml`) may browse
+the whole acquisition — **untested**: the wrong-specimen bug below is Bio-Formats'
+`BDVReader`, not BigDataViewer, but nothing here has checked BigDataViewer either.
+
 ### ⚠️ `BDVReader` is unusable on this data, and fails silently
 
 `bdv.xml` looks like the answer: it opens, reports **14 series** (one per
