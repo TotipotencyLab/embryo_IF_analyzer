@@ -4,7 +4,7 @@
 //
 // The image is synthesised, so this needs no fixture and runs in seconds. What
 // it covers is the part a reference diff on real data CANNOT cover: the
-// `basename` override, which is new. A reference run proves the override
+// `series_id` override. A reference run proves the override
 // changes nothing when it is absent; identical output is equally consistent
 // with "the parameter is never read", so the other half has to be proved
 // separately and on purpose.
@@ -91,7 +91,6 @@ def makeImpZVarying = { String title ->
 
 def baseParams = [
     script_name            : "Test_NucleusPipeline.groovy",
-    position_pattern       : "",
     z_spec                 : "",
     dna_channel            : 1,
     channels_measured      : "1",
@@ -136,27 +135,44 @@ catch (Throwable t) { loadErr = t.getClass().getSimpleName() }
 check("load() on a bad dir throws clearly",    loadErr, "IllegalStateException")
 
 println ""
-println "=== basename OFF: resolved from the image, as before ==="
+println "=== series_id OFF: taken from the image title ==="
 def outA = new File(tmp, "a"); outA.mkdirs()
-def resA = pipe.run(makeImp("probeimage"), outA, baseParams + [output_prefix: "TEST_"])
-check("basename resolved from the title",      resA.basename, "TEST_probeimage")
+def nameCol = { File f ->
+    f.isFile() ? f.getText("UTF-8").readLines().drop(1).collect { it.split("\t", -1)[0] }.unique() : null
+}
+def resA = pipe.run(makeImp("probeimage"), outA, baseParams)
+check("series_id taken from the title",        resA.series_id, "probeimage")
 check("8 ROIs found (2 discs x 4 slices)",     resA.nucRois.size(), 8)
 check("outline written under that name",
-      new File(outA, "TEST_probeimage_nucleus_outline.txt").isFile(), true)
+      new File(outA, "probeimage_nucleus_outline.txt").isFile(), true)
 check("config written under that name",
-      new File(outA, "TEST_probeimage_config.txt").isFile(), true)
+      new File(outA, "probeimage_config.txt").isFile(), true)
+// The point of v0.7.0's change: the name column and the file stem are ONE
+// string, so R can find <name>_config.txt from a name it read out of a table.
+check("the name column IS the file stem",
+      nameCol(new File(outA, "probeimage_nucleus_outline.txt")), ["probeimage"])
 
 println ""
-println "=== basename ON: the caller's name wins ==="
+println "=== series_id ON: the caller's id wins ==="
 def outB = new File(tmp, "b"); outB.mkdirs()
 def resB = pipe.run(makeImp("probeimage"), outB,
-                    baseParams + [output_prefix: "TEST_", basename: "sheetAlias_Series001"])
-check("basename is the one supplied",          resB.basename, "sheetAlias_Series001")
-check("output_prefix does NOT get prepended",  resB.basename.startsWith("TEST_"), false)
-check("outline uses the supplied name",
+                    baseParams + [series_id: "sheetAlias_Series001"])
+check("series_id is the one supplied",         resB.series_id, "sheetAlias_Series001")
+check("outline uses the supplied id",
       new File(outB, "sheetAlias_Series001_nucleus_outline.txt").isFile(), true)
-check("the resolved name is NOT used",
-      new File(outB, "TEST_probeimage_nucleus_outline.txt").exists(), false)
+check("...and so does its name column",
+      nameCol(new File(outB, "sheetAlias_Series001_nucleus_outline.txt")), ["sheetAlias_Series001"])
+check("the title is NOT used",
+      new File(outB, "probeimage_nucleus_outline.txt").exists(), false)
+
+println ""
+println "=== a given id that cannot name a file is refused, not rewritten ==="
+def outBad = new File(tmp, "badid"); outBad.mkdirs()
+String badIdErr = null
+try { pipe.run(makeImp("probeimage"), outBad, baseParams + [series_id: "my embryo"]) }
+catch (IllegalArgumentException e) { badIdErr = e.getMessage() }
+check("refused, offering the clean form",      badIdErr?.contains("'my_embryo'"), true)
+check("...before anything was written",        outBad.list().toList(), [])
 
 // Same image, same settings -- so anything differing between A and B beyond the
 // name would be the override changing the analysis, which it must not.
@@ -168,7 +184,7 @@ def stripName = { File f ->
     f.isFile() ? f.getText("UTF-8").readLines().drop(1).collect { it.split("\t", -1).drop(1).join("\t") }
                : null
 }
-def geomA = stripName(new File(outA, "TEST_probeimage_nucleus_outline.txt"))
+def geomA = stripName(new File(outA, "probeimage_nucleus_outline.txt"))
 def geomB = stripName(new File(outB, "sheetAlias_Series001_nucleus_outline.txt"))
 check("outline geometry identical either way", (geomA != null && geomA == geomB), true)
 
@@ -180,7 +196,8 @@ new File(outB, "sheetAlias_Series001_config.txt").eachLine { line ->
     if (parts.length == 2 && parts[0] != "parameter") cfg[parts[0]] = parts[1]
 }
 check("script names the entry point",          cfg["script"]?.startsWith("Test_NucleusPipeline.groovy"), true)
-check("output_basename matches the override",  cfg["output_basename"], "sheetAlias_Series001")
+check("series_id is recorded",                 cfg["series_id"], "sheetAlias_Series001")
+check("output_basename is gone (same as series_id)", cfg.containsKey("output_basename"), false)
 check("nucleus_count is recorded",             cfg["nucleus_count"], "8")
 // The threshold the run actually used, as the RANGE it selected rather than
 // the algorithm's bare number -- so it can be copied into a manual threshold
@@ -220,7 +237,7 @@ def outC = new File(tmp, "c"); outC.mkdirs()
 def impC = makeImp("stackimage")
 impC.getCalibration().pixelDepth = 0.9999285454545455d
 impC.getCalibration().pixelWidth = 0.25d
-pipe.run(impC, outC, baseParams + [basename: "stk"])
+pipe.run(impC, outC, baseParams + [series_id: "stk"])
 def cfgC = readCfg(new File(outC, "stk_config.txt"))
 check("pixel_depth is written for a stack",    cfgC["pixel_depth"], "0.9999285454545455")
 check("pixel_width still written beside it",   cfgC["pixel_width"], "0.25")
@@ -239,7 +256,7 @@ def impD = new ImagePlus("planeimage", st1)
 impD.setDimensions(1, 1, 1)
 check("the single-plane probe really has 1 slice", impD.getNSlices(), 1)
 check("...and ImageJ's default depth is 1.0",  impD.getCalibration().pixelDepth, 1.0d)
-pipe.run(impD, outD, baseParams + [basename: "pln"])
+pipe.run(impD, outD, baseParams + [series_id: "pln"])
 def cfgD = readCfg(new File(outD, "pln_config.txt"))
 check("pixel_depth is BLANK for one plane",    cfgD["pixel_depth"], "")
 check("...the key is still present",           cfgD.containsKey("pixel_depth"), true)
@@ -252,7 +269,7 @@ println "=== nucleus circularity: off is the old behaviour, on drops the bar ===
 // that it does something when set. Identical counts alone would be equally
 // consistent with the parameter never being read.
 def outE = new File(tmp, "e"); outE.mkdirs()
-def resE = pipe.run(makeImpWithBar("bar"), outE, baseParams + [basename: "circ_off"])
+def resE = pipe.run(makeImpWithBar("bar"), outE, baseParams + [series_id: "circ_off"])
 check("filter off: 12 ROIs (2 discs + 1 bar) x 4",  resE.nucRois.size(), 12)
 def cfgE = new File(outE, "circ_off_config.txt").readLines().collectEntries {
     def f = it.split("\t", -1); [(f[0]): (f.length > 1 ? f[1] : "")] }
@@ -260,7 +277,7 @@ check("filter off: rejected is BLANK, not 0",       cfgE["nucleus_circ_rejected"
 
 def outF = new File(tmp, "f"); outF.mkdirs()
 def resF = pipe.run(makeImpWithBar("bar"), outF,
-                    baseParams + [basename: "circ_on", nucleus_circularity: "0.50-1.00"])
+                    baseParams + [series_id: "circ_on", nucleus_circularity: "0.50-1.00"])
 check("filter on: 8 ROIs left",                     resF.nucRois.size(), 8)
 // WHICH four went is the assertion that matters -- a count alone would be
 // equally satisfied by dropping a disc. The bar is 10 px tall against the
@@ -289,11 +306,11 @@ def pngDims = { File dir, String base ->
 def ovParams = baseParams + [save_overview: true, nucleus_threshold: "Otsu"]
 
 def outG = new File(tmp, "g"); outG.mkdirs()
-pipe.run(makeImpZVarying("zv"), outG, ovParams + [basename: "ov_max", overview_width: 0])
+pipe.run(makeImpZVarying("zv"), outG, ovParams + [series_id: "ov_max", overview_width: 0])
 check("width 0 gives the original 200x200",         pngDims(outG, "ov_max"), [200, 200])
 
 def outH = new File(tmp, "h"); outH.mkdirs()
-pipe.run(makeImpZVarying("zv"), outH, ovParams + [basename: "ov_small", overview_width: 60])
+pipe.run(makeImpZVarying("zv"), outH, ovParams + [series_id: "ov_small", overview_width: 60])
 check("width 60 gives 60x60 (aspect kept)",         pngDims(outH, "ov_small"), [60, 60])
 
 // NB: compare the projections with contrast OFF. "auto" stretches each
@@ -303,19 +320,19 @@ check("width 60 gives 60x60 (aspect kept)",         pngDims(outH, "ov_small"), [
 //     code comments warn about. Measured: both saved display 0-255.
 def outJ0 = new File(tmp, "j0"); outJ0.mkdirs()
 pipe.run(makeImpZVarying("zv"), outJ0,
-         ovParams + [basename: "ov_maxraw", overview_width: 0,
+         ovParams + [series_id: "ov_maxraw", overview_width: 0,
                      overview_method: "max", overview_contrast: "none"])
 
 def outI = new File(tmp, "i"); outI.mkdirs()
 pipe.run(makeImpZVarying("zv"), outI,
-         ovParams + [basename: "ov_minraw", overview_width: 0,
+         ovParams + [series_id: "ov_minraw", overview_width: 0,
                      overview_method: "min", overview_contrast: "none"])
 check("min projection differs from max (raw)",
       java.util.Arrays.equals(pngBytes(outJ0, "ov_maxraw"), pngBytes(outI, "ov_minraw")), false)
 
 def outJ = new File(tmp, "j"); outJ.mkdirs()
 pipe.run(makeImpZVarying("zv"), outJ,
-         ovParams + [basename: "ov_flat", overview_width: 0, overview_contrast: "none"])
+         ovParams + [series_id: "ov_flat", overview_width: 0, overview_contrast: "none"])
 check("contrast none differs from auto",
       java.util.Arrays.equals(pngBytes(outG, "ov_max"), pngBytes(outJ, "ov_flat")), false)
 
@@ -329,7 +346,7 @@ def outK = new File(tmp, "k"); outK.mkdirs()
 String ovErr = null
 try {
     pipe.run(makeImpZVarying("zv"), outK,
-             ovParams + [basename: "ov_bad", overview_method: "banana"])
+             ovParams + [series_id: "ov_bad", overview_method: "banana"])
 } catch (Throwable t) {
     ovErr = t.getClass().getSimpleName()
 }
@@ -347,7 +364,7 @@ println "=== Manual travels through the config, which is the point of it ==="
 // the default on the next run.
 def outM = new File(tmp, "m"); outM.mkdirs()
 def resM = pipe.run(makeImp("probeimage"), outM,
-                    baseParams + [basename: "manual", nucleus_threshold: "Manual",
+                    baseParams + [series_id: "manual", nucleus_threshold: "Manual",
                                   nucleus_threshold_range: "200-255"])
 def cfgM = readCfg(new File(outM, "manual_config.txt"))
 check("the manual range is recorded",          cfgM["nucleus_threshold_range"], "200-255")
@@ -363,7 +380,7 @@ def outBadM = new File(tmp, "mbad"); outBadM.mkdirs()
 String errM = null
 try {
     pipe.run(makeImp("probeimage"), outBadM,
-             baseParams + [basename: "bad", nucleus_threshold: "Manual"])
+             baseParams + [series_id: "bad", nucleus_threshold: "Manual"])
 } catch (Throwable t) { errM = t.getMessage() }
 check("Manual with no range fails the run",    errM?.contains("needs nucleus_threshold_range"), true)
 check("...before anything was written",        (outBadM.exists() ? outBadM.listFiles().size() : 0), 0)
@@ -387,25 +404,18 @@ println "=== every parameter is written back, or the round trip is a lie ==="
 // Asserted against a config that was actually WRITTEN, not against a regex
 // over the source -- scraping the source for key names is how a test of this
 // shape comes to agree with itself and with nothing else.
-def writtenKeys = readCfg(new File(outA, "TEST_probeimage_config.txt")).keySet()
+def writtenKeys = readCfg(new File(outA, "probeimage_config.txt")).keySet()
 
-// The one deliberate exclusion, with its reason, so that its absence reads as a
-// decision rather than as the oversight the save_* keys were. output_prefix
-// decides what the output is CALLED, not what work happens -- the same category
-// as outdir, which is likewise not in the config. Writing it would make a
-// re-run reproduce the previous run's filenames and overwrite it instead of
-// landing beside it. What the names were is already recorded, as
-// output_basename.
-def NOT_WRITTEN = ["output_prefix"]
-
+// No exclusions since v0.7.0. output_prefix was the one -- it named the output
+// rather than deciding the analysis -- and it is retired; the series id that
+// replaced it is not a parameter at all, and is written as provenance.
 check("every parameter is written back",
-      (NP.PARAM_TYPES.keySet() - writtenKeys - NOT_WRITTEN).toList().sort(), [])
-// The exclusion has to stay real: if output_prefix ever starts being written,
-// this fails and the decision gets revisited rather than quietly reversed.
-check("...and the exclusion is still excluded",
-      writtenKeys.contains("output_prefix"), false)
-// Not vacuous -- the exclusion list must not grow to swallow a real miss.
-check("...with exactly one exclusion",         NOT_WRITTEN.size(), 1)
+      (NP.PARAM_TYPES.keySet() - writtenKeys).toList().sort(), [])
+check("...and the series id is recorded",      writtenKeys.contains("series_id"), true)
+// Retired keys must not reappear in a new config: one written today would
+// otherwise carry a key a later reader skips, and look as though it mattered.
+check("...and no retired key is written",
+      writtenKeys.findAll { RC.RETIRED_KEYS.containsKey(it) }.toList(), [])
 
 // The five that were missing, by name, so a regression names itself.
 ["save_roi_zips", "save_outlines", "save_measurements",
@@ -418,7 +428,7 @@ check("...with exactly one exclusion",         NOT_WRITTEN.size(), 1)
 // that had overviews on and fed its own config forward would write none.
 def outRT = new File(tmp, "rt"); outRT.mkdirs()
 pipe.run(makeImpZVarying("zv"), outRT,
-         baseParams + [basename: "rt", save_overview: true, nucleus_threshold: "Otsu",
+         baseParams + [series_id: "rt", save_overview: true, nucleus_threshold: "Otsu",
                        overview_width: 40])
 def rtParams = NP.fromConfig(RC.readParams(new File(outRT, "rt_config.txt"), NP.PARAM_TYPES))
 check("a config from an overview run says so",  rtParams.save_overview, true)
@@ -426,7 +436,7 @@ check("...and the PNG really was written",
       new File(outRT, "rt_overview_ch1.png").isFile(), true)
 
 def outRT2 = new File(tmp, "rt2"); outRT2.mkdirs()
-pipe.run(makeImpZVarying("zv"), outRT2, rtParams + [basename: "rt2", script_name: "rerun"])
+pipe.run(makeImpZVarying("zv"), outRT2, rtParams + [series_id: "rt2", script_name: "rerun"])
 check("...so the rerun from that config writes one too",
       new File(outRT2, "rt2_overview_ch1.png").isFile(), true)
 // The failure this replaces, stated: before the save_* keys were written, the

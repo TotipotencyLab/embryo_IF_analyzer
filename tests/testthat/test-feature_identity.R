@@ -2,7 +2,7 @@
 # that depend on it.
 #
 # The theme: the outline table already knows what it holds -- the `name` column
-# is the sample and the ROI id prefix is the feature -- so the filename does not
+# is the series id and the ROI id prefix is the feature -- so the filename does not
 # have to be parsed for identity, only matched for selection. Everything here
 # pins one consequence of that.
 
@@ -10,12 +10,12 @@ source_cli("cli_helpers.r")
 
 # A minimal outline table in the real shape. Three vertices per ROI, so the
 # polygon is valid; the caller varies the parts under test.
-write_outline <- function(path, sample = "S1", feature = "nucleus",
+write_outline <- function(path, series_id = "S1", feature = "nucleus",
                           rois = c("0001-0001-0433", "0002-0001-0433"),
                           z = NULL) {
   if (is.null(z)) z <- seq_along(rois)
   rows <- do.call(rbind, lapply(seq_along(rois), function(i) {
-    data.frame(name = sample,
+    data.frame(name = series_id,
                roi  = paste0(feature, "_", rois[i]),
                z    = z[i],
                x    = c(0, 10, 10, 0),
@@ -46,13 +46,13 @@ test_that("ids that are not ROI ids are ignored rather than guessed at", {
 
 # --- identity from content ------------------------------------------------------
 
-test_that("sample and feature come out of the file, not its name", {
+test_that("series id and feature come out of the file, not its name", {
   d <- withr::local_tempdir()
   p <- write_outline(file.path(d, "utterly_unrelated_name.txt"),
-                     sample = "GRV_Position010", feature = "nucleus")
+                     series_id = "GRV_Position010", feature = "nucleus")
   id <- .cli_identify_outline(p)
   expect_true(id$ok)
-  expect_identical(id$sample, "GRV_Position010")
+  expect_identical(id$series_id, "GRV_Position010")
   expect_identical(id$feature, "nucleus")
 })
 
@@ -66,14 +66,14 @@ test_that("a file mixing feature types is an error, never a silent pick", {
   expect_error(.cli_identify_outline(p), "mixes feature types")
 })
 
-test_that("a file mixing sample names is an error too", {
+test_that("a file mixing series ids is an error too", {
   d <- withr::local_tempdir()
   p <- file.path(d, "mixed_sample.txt")
   rows <- rbind(
     data.frame(name = "S1", roi = "nucleus_0001-0001-0433", z = 1, x = 0, y = 0),
     data.frame(name = "S2", roi = "nucleus_0002-0001-0433", z = 2, x = 1, y = 1))
   write.table(rows, p, sep = "\t", quote = FALSE, row.names = FALSE)
-  expect_error(.cli_identify_outline(p), "mixes sample names")
+  expect_error(.cli_identify_outline(p), "mixes series ids")
 })
 
 test_that("a table without a usable name column reports why, rather than throwing", {
@@ -90,10 +90,10 @@ test_that("a table without a usable name column reports why, rather than throwin
 
 test_that("scan_inputs prefers content and reports the source", {
   d <- withr::local_tempdir()
-  p <- write_outline(file.path(d, "anything.txt"), sample = "S1", feature = "nucleus")
+  p <- write_outline(file.path(d, "anything.txt"), series_id = "S1", feature = "nucleus")
   jobs <- .cli_scan_inputs(p, "nucleus")
   expect_identical(nrow(jobs), 1L)
-  expect_identical(jobs$sample, "S1")
+  expect_identical(jobs$series_id, "S1")
   expect_identical(jobs$feature, "nucleus")
   expect_identical(jobs$roi_prefix, "nucleus")
   expect_identical(jobs$from, "content")
@@ -101,8 +101,8 @@ test_that("scan_inputs prefers content and reports the source", {
 
 test_that("a file holding an unrequested feature is dropped, and said so", {
   d <- withr::local_tempdir()
-  a <- write_outline(file.path(d, "a.txt"), sample = "S1", feature = "nucleus")
-  b <- write_outline(file.path(d, "b.txt"), sample = "S1", feature = "nucleolus")
+  a <- write_outline(file.path(d, "a.txt"), series_id = "S1", feature = "nucleus")
+  b <- write_outline(file.path(d, "b.txt"), series_id = "S1", feature = "nucleolus")
   jobs <- expect_message(.cli_scan_inputs(c(a, b), "nucleus"), "not requested")
   expect_identical(nrow(jobs), 1L)
   expect_identical(jobs$roi_prefix, "nucleus")
@@ -110,41 +110,41 @@ test_that("a file holding an unrequested feature is dropped, and said so", {
 
 test_that("asking for a feature no file holds names what was found instead", {
   d <- withr::local_tempdir()
-  a <- write_outline(file.path(d, "a.txt"), sample = "S1", feature = "nucleus")
+  a <- write_outline(file.path(d, "a.txt"), series_id = "S1", feature = "nucleus")
   expect_error(.cli_scan_inputs(a, "cytoplasm"), "Found instead: nucleus")
 })
 
 test_that("a file whose content cannot be read falls back to its name", {
   d <- withr::local_tempdir()
   p <- file.path(d, "S9_nucleus_outline.txt")
-  # No `name` column, so the content probe cannot supply a sample.
+  # No `name` column, so the content probe cannot supply a series id.
   rows <- data.frame(roi = "nucleus_0001-0001-0433", z = 1, x = 0, y = 0)
   write.table(rows, p, sep = "\t", quote = FALSE, row.names = FALSE)
   jobs <- .cli_scan_inputs(p, "nucleus")
   expect_identical(jobs$from, "filename")
-  expect_identical(jobs$sample, "S9")
+  expect_identical(jobs$series_id, "S9")
 })
 
 # --- the bug this replaces --------------------------------------------------------
 
 test_that("the filename parser no longer mis-splits a multi-word feature", {
-  # Greedy (.*) filed S1_growing_oocyte_outline.txt under sample "S1_growing",
+  # Greedy (.*) filed S1_growing_oocyte_outline.txt under series "S1_growing",
   # feature "oocyte" -- silently, and reordering the alternation did not help.
   got <- .cli_parse_contract("S1_growing_oocyte_outline.txt",
                              c("oocyte", "growing_oocyte"))
-  expect_identical(got$sample, "S1")
+  expect_identical(got$series_id, "S1")
   expect_identical(got$feature, "growing_oocyte")
 
   # The single-word case still parses as it always did.
   got2 <- .cli_parse_contract("GRV_Position010_nucleus_outline.txt", "nucleus")
-  expect_identical(got2$sample, "GRV_Position010")
+  expect_identical(got2$series_id, "GRV_Position010")
   expect_identical(got2$feature, "nucleus")
 })
 
 # --- rename -----------------------------------------------------------------------
 
 test_that("rename changes the reporting name and leaves the ROI matcher alone", {
-  jobs <- data.frame(path = "p", sample = "S1", roi_prefix = "nucleus",
+  jobs <- data.frame(path = "p", series_id = "S1", roi_prefix = "nucleus",
                      from = "content", feature = "nucleus",
                      stringsAsFactors = FALSE)
   out <- expect_message(.cli_apply_rename(jobs, c(nucleus = "oocyte")), "nucleus -> oocyte")
@@ -175,7 +175,7 @@ test_that("a key matching no feature is reported, not quietly ignored", {
 })
 
 test_that("renaming something absent warns instead of passing silently", {
-  jobs <- data.frame(path = "p", sample = "S1", roi_prefix = "nucleus",
+  jobs <- data.frame(path = "p", series_id = "S1", roi_prefix = "nucleus",
                      from = "content", feature = "nucleus",
                      stringsAsFactors = FALSE)
   expect_warning(.cli_apply_rename(jobs, c(cytoplasm = "cell")), "not present")

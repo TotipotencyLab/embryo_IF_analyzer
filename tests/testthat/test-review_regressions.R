@@ -26,7 +26,7 @@ test_that("containment is measured on unioned slices, not summed ROIs", {
     feature_id   = c("nucleus_1", "nucleolus_1", "nucleolus_1"),
     feature_type = c("nucleus", "nucleolus", "nucleolus"),
     z            = c(5, 5, 5),
-    sample       = "S1",
+    series_id    = "S1",
     geometry     = sf::st_sfc(sq(0, 0, 100), sq(40, 40, 10), sq(44, 40, 10)))
 
   rel <- assign_feature_parent(x, within = c(nucleolus = "nucleus"))
@@ -39,7 +39,7 @@ test_that("containment is measured on unioned slices, not summed ROIs", {
     feature_id   = c("nucleus_1", "nucleolus_1"),
     feature_type = c("nucleus", "nucleolus"),
     z            = c(5, 5),
-    sample       = "S1",
+    series_id    = "S1",
     geometry     = sf::st_sfc(sq(0, 0, 100), sq(95, 40, 10)))
   d2 <- sf::st_drop_geometry(
     assign_feature_parent(half, within = c(nucleolus = "nucleus"), min_containment = 0.6))
@@ -63,7 +63,7 @@ test_that("the count plot draws bars only when not grouping", {
   suppressPackageStartupMessages(library(ggplot2))
   source_cli("count_features_cli.r")
 
-  tidy <- data.frame(sample = c("A", "B"), feature_type = "nucleus",
+  tidy <- data.frame(series_id = c("A", "B"), feature_type = "nucleus",
                      n_detected = c(3L, 5L), genotype = c("wt", "ko"),
                      stringsAsFactors = FALSE)
   geoms_of <- function(p) vapply(p$layers, function(l) class(l$geom)[1], character(1))
@@ -73,7 +73,7 @@ test_that("the count plot draws bars only when not grouping", {
 
   expect_true("GeomCol" %in% ungrouped)
   # The bug: `data = NULL` means "inherit the plot data", not "skip this
-  # layer", so GeomCol appeared here too -- one bar per sample, overplotted
+  # layer", so GeomCol appeared here too -- one bar per series, overplotted
   # under the boxplot.
   expect_false("GeomCol" %in% grouped)
   expect_true("GeomBoxplot" %in% grouped)
@@ -101,10 +101,11 @@ test_that("a series table column that collides with an output column is refused"
 test_that("the id column itself is not treated as a collision", {
   d <- withr::local_tempdir()
   p <- file.path(d, "s.tsv")
-  # --id_column sample is legitimate: it is the key, not metadata.
-  write.table(data.frame(sample = c("A", "B"), genotype = c("wt", "ko")),
+  # series_id is a reserved output column AND the sheet's key. As the key it
+  # is not metadata, so it must not be reported as a collision with itself.
+  write.table(data.frame(series_id = c("A", "B"), genotype = c("wt", "ko")),
               p, sep = "\t", quote = FALSE, row.names = FALSE)
-  expect_identical(nrow(.cli_read_series_sheet(p, id_column = "sample")), 2L)
+  expect_identical(nrow(.cli_read_series_sheet(p)), 2L)
 })
 
 test_that("the shipped template has no reserved column names", {

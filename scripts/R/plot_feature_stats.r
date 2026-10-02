@@ -63,7 +63,7 @@ save_plot_list <- function(plot_list, file, width = 8, height = 6, ...){
 #' @param types     any of "box", "violin", "quasirandom", drawn in that order
 #' @param colour_by optional column mapped to point colour
 #' @param log_y     log10 the y axis (areas span orders of magnitude)
-plot_feature_stat <- function(stats, value_col, group_col = "sample",
+plot_feature_stat <- function(stats, value_col, group_col = "series_id",
                               types = c("box", "quasirandom"),
                               colour_by = NULL, log_y = FALSE){
 
@@ -168,7 +168,7 @@ plot_feature_stat <- function(stats, value_col, group_col = "sample",
 feature_stat_value_cols <- function(stats){
   # Size, then extent, then shape, then signal. Ids and coordinates are not
   # statistics about the object.
-  skip <- c("sample", "feature_id", "feature_type", "z_min", "z_max")
+  skip <- c("series_id", "feature_id", "feature_type", "z_min", "z_max")
   cols <- names(stats)[vapply(stats, is.numeric, logical(1))]
   cols <- setdiff(cols, skip)
   preferred <- c("area_med", "area_mean", "area_max", "area_sum", "volume",
@@ -186,7 +186,7 @@ feature_stat_value_cols <- function(stats){
 #' @param log_cols columns to draw on a log10 y axis, as names or globs; see
 #'                 log_axis_matcher(). Nothing is logged unless named.
 #' @return named list of ggplot
-plot_feature_stat_list <- function(stats, value_cols = NULL, group_col = "sample",
+plot_feature_stat_list <- function(stats, value_cols = NULL, group_col = "series_id",
                                    types = c("box", "quasirandom"),
                                    colour_by = NULL, log_cols = character(0)){
   if(is.null(value_cols)){

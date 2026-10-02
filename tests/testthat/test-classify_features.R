@@ -6,7 +6,7 @@
 
 .fake <- function() {
   data.frame(
-    sample       = rep(c("S1", "S2"), each = 3),
+    series_id       = rep(c("S1", "S2"), each = 3),
     feature_type = "nucleus",
     feature_id   = paste0("nucleus_", 1:6),
     area_med     = c(100, 500, 1200, 150, 800, 2000),

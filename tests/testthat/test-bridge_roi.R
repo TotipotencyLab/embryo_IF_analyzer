@@ -152,7 +152,7 @@ test_that("feature_stats reports n_bridge and frac_bridge", {
 
   on <- .run_group(.pinched_object(), bridge_roi = "area")
   on$feature_type <- "nucleus"
-  on$sample <- "S1"
+  on$series_id <- "S1"
 
   st <- summarise_feature_stats(sf::st_as_sf(on))
   expect_identical(nrow(st), 1L)
@@ -206,7 +206,7 @@ test_that("a bridge may not weld two objects that sit side by side", {
   on <- .run_group(o, roi_area_range = c(50, 2000), bridge_roi = "area")
   expect_identical(.n_valid(on), 2L)
 
-  on$feature_type <- "nucleus"; on$sample <- "S1"
+  on$feature_type <- "nucleus"; on$series_id <- "S1"
   st <- summarise_feature_stats(sf::st_as_sf(on))
   # Neither survivor holds two seeds on one slice.
   expect_identical(unique(st$max_roi_per_z), 1L)
@@ -242,7 +242,7 @@ test_that("a table written before bridging existed still summarises", {
 
   on <- .run_group(.pinched_object(), bridge_roi = "area")
   on$feature_type <- "nucleus"
-  on$sample <- "S1"
+  on$series_id <- "S1"
   on$is_bridge <- NULL              # as an older _features.rds would be
 
   st <- summarise_feature_stats(sf::st_as_sf(on))
@@ -255,7 +255,7 @@ test_that("volume is Cavalieri on the seeds, and only when z_step is given", {
   source_r_scripts("feature_stats.r")
 
   on <- .run_group(.pinched_object(), bridge_roi = "area")
-  on$feature_type <- "nucleus"; on$sample <- "S1"
+  on$feature_type <- "nucleus"; on$series_id <- "S1"
   sf_on <- sf::st_as_sf(on)
 
   # Absent by default: a volume nobody asked for would be in unknown units.

@@ -9,7 +9,7 @@ source_cli("cli_helpers.r")
 # A per-ROI feature table in the shape annotate_features_cli.r writes. Areas
 # vary per slice on purpose: a feature that tapers is what makes weighted and
 # unweighted means differ.
-make_feats <- function(sample = "S1", feature = "nucleus",
+make_feats <- function(series_id = "S1", feature = "nucleus",
                        ids = c("nucleus_1", "nucleus_1", "nucleus_1"),
                        z = 1:3, area = c(10, 100, 10),
                        roi = NULL) {
@@ -17,7 +17,7 @@ make_feats <- function(sample = "S1", feature = "nucleus",
     roi <- sprintf("%s_%04d-0001-0433", feature, z)
   }
   data.frame(roi = roi, z = z, area = area,
-             feature_id = ids, feature_type = feature, sample = sample,
+             feature_id = ids, feature_type = feature, series_id = series_id,
              stringsAsFactors = FALSE)
 }
 
@@ -67,7 +67,7 @@ test_that("degenerate inputs return NA rather than a wrong number", {
 test_that("the roi prefix survives a rename", {
   source_r_scripts("feature_stats.r")
   # feature_type says "oocyte" after --rename, but the file on disk is still
-  # <sample>_nucleus_res.txt. The roi column is what knows that.
+  # <series_id>_nucleus_res.txt. The roi column is what knows that.
   expect_identical(feature_roi_prefix("nucleus_0001-0001-0433"), "nucleus")
   expect_identical(feature_roi_prefix("growing_oocyte_0012-0003-1884"), "growing_oocyte")
   expect_true(is.na(feature_roi_prefix("not-an-roi-id")))
@@ -80,7 +80,7 @@ test_that("one row per feature, with the documented columns", {
   f <- make_feats()
   st <- summarise_feature_stats(f)
   expect_identical(nrow(st), 1L)
-  for (col in c("sample", "feature_type", "feature_id", "n_roi", "n_z",
+  for (col in c("series_id", "feature_type", "feature_id", "n_roi", "n_z",
                 "z_span", "z_gaps", "area_med", "area_mean", "area_max", "area_sum")) {
     expect_true(col %in% colnames(st), info = col)
   }
@@ -232,7 +232,7 @@ test_that("plot_feature_stat rejects unknown types and columns by name", {
   skip_if_no_pkg("ggplot2")
   source_r_scripts("plot_feature_stats.r")
   suppressPackageStartupMessages(library(ggplot2))
-  st <- data.frame(sample = c("a", "b"), area_med = c(1, 2), stringsAsFactors = FALSE)
+  st <- data.frame(series_id = c("a", "b"), area_med = c(1, 2), stringsAsFactors = FALSE)
   expect_error(plot_feature_stat(st, "area_med", types = "swarm"), "Unknown plot type")
   expect_error(plot_feature_stat(st, "nope"), "No such column")
   expect_error(plot_feature_stat(st, "area_med", group_col = "nope"), "No such grouping")
@@ -242,7 +242,7 @@ test_that("a statistic that is entirely NA yields no panel rather than an empty 
   skip_if_no_pkg("ggplot2")
   source_r_scripts("plot_feature_stats.r")
   suppressPackageStartupMessages(library(ggplot2))
-  st <- data.frame(sample = c("a", "b"), area_med = c(1, 2),
+  st <- data.frame(series_id = c("a", "b"), area_med = c(1, 2),
                    ch9_signal = c(NA_real_, NA_real_), stringsAsFactors = FALSE)
   expect_null(plot_feature_stat(st, "ch9_signal"))
   pl <- plot_feature_stat_list(st)
@@ -333,7 +333,7 @@ test_that("--group_by naming a column that is absent fails with the available on
 
 test_that("is_bridge does not leak onto the per-feature table", {
   # It is an ROI-level fact and VARIES within a bridged feature, so carrying it
-  # through as sample metadata made summarise_feature_stats() warn and then
+  # through as series metadata made summarise_feature_stats() warn and then
   # take an arbitrary first value -- yielding an is_bridge column on a table
   # whose unit is the feature, which invites exactly the wrong filter.
   # n_bridge / frac_bridge are the feature-level answer.
@@ -388,7 +388,7 @@ test_that("volume appears only with --z_step, and is area_sum x z_step", {
 test_that("the distribution panels log only what --log_scale names", {
   skip_if_no_pkg("ggplot2")
   source_r_scripts(c("plot_feature_scatter.r", "plot_feature_stats.r"))
-  d <- data.frame(sample = rep(c("A", "B"), each = 4),
+  d <- data.frame(series_id = rep(c("A", "B"), each = 4),
                   feature_type = "nucleus",
                   feature_id = paste0("nucleus_", 1:8),
                   area_sum = c(100, 300, 900, 2700, 200, 600, 1800, 5400),
@@ -410,7 +410,7 @@ test_that("the distribution panels log only what --log_scale names", {
 test_that("a distribution panel refuses to log away a zero, loudly", {
   skip_if_no_pkg("ggplot2")
   source_r_scripts(c("plot_feature_scatter.r", "plot_feature_stats.r"))
-  d <- data.frame(sample = rep(c("A", "B"), each = 3),
+  d <- data.frame(series_id = rep(c("A", "B"), each = 3),
                   feature_type = "nucleus",
                   feature_id = paste0("nucleus_", 1:6),
                   z_gaps = c(0, 1, 2, 3, 4, 5))
@@ -423,7 +423,7 @@ test_that("a distribution panel refuses to log away a zero, loudly", {
 
 test_that("the log hint names only columns that get a panel", {
   source_r_scripts(c("plot_feature_scatter.r", "plot_feature_stats.r"))
-  d <- data.frame(sample = "A", feature_type = "nucleus", feature_id = "nucleus_1",
+  d <- data.frame(series_id = "A", feature_type = "nucleus", feature_id = "nucleus_1",
                   area_sum = c(100, 30000), z_min = c(1, 42), n_roi = c(3, 9))
   # z_min spans 42x but is never plotted, so advising a log axis for it is
   # advice the reader cannot act on.
@@ -553,7 +553,7 @@ test_that("a sheet that disagrees with the annotation is refused, not merged", {
     "--input", fixture_dir(), "--feature", "nucleus", "--outdir", feat,
     "--series_sheet", one)))
 
-  # Same sample, different genotype: the features were annotated from another
+  # Same series, different genotype: the features were annotated from another
   # sheet. Quietly preferring either one would attach the wrong metadata to
   # real numbers.
   two <- file.path(d, "b.tsv")

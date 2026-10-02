@@ -302,7 +302,7 @@ ij.Prefs.set("bioformats.windowless", false)
 
 println ""
 println "=== the sheet's series_id names the output, not the image ==="
-// resolveImageId() would dig "Series001" out of both files, which is exactly
+// An id from the title would be "Series001" for both files, which is exactly
 // the collision the sheet exists to prevent.
 def two = [[series_id: "first_one",  path: "one.ome.tif", series_index: 0, include: "true"],
            [series_id: "second_two", path: "two.ome.tif", series_index: 0, include: "true"]]
@@ -311,6 +311,22 @@ runner.run(two, raw, params, out6)
 check("first output named from the sheet",     new File(out6, "first_one_nucleus_outline.txt").isFile(), true)
 check("second output named from the sheet",    new File(out6, "second_two_nucleus_outline.txt").isFile(), true)
 check("no Series001 collision on disk",        new File(out6, "Series001_nucleus_outline.txt").exists(), false)
+
+println ""
+println "=== a hand-edited id that cannot name a file fails its row only ==="
+// series_id is the operator's to edit. One with a space would name files, and
+// be written into the tab-separated outline table, as given -- so it is
+// refused per row, before the image opens, and the other rows still run.
+def edited = [[series_id: "my embryo",  path: "one.ome.tif", series_index: 0, include: "true"],
+              [series_id: "fine_one",   path: "two.ome.tif", series_index: 0, include: "true"]]
+def outEd = new File(tmp, "outEd")
+def resEd = runner.run(edited, raw, params, outEd)
+check("one row failed, one ran",               [resEd.failed, resEd.ok], [1, 1])
+def edRow = resEd.summary.find { it.series_id == "my embryo" }
+check("...the failure names the clean form",   edRow?.message?.toString()?.contains("'my_embryo'"), true)
+check("...and nothing was written for it",
+      outEd.list().findAll { it.startsWith("my") }.toList(), [])
+check("the good row's output exists",          new File(outEd, "fine_one_nucleus_outline.txt").isFile(), true)
 
 println ""
 println "=== which reader opened the image ==="

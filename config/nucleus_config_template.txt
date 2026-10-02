@@ -7,8 +7,6 @@
 # config, which is the point of the format. Provenance fields in it (timestamp,
 # nucleus_count, open_method, ...) are ignored on the way in.
 parameter	value
-output_prefix	
-position_pattern	Position
 z_spec	(all)
 dna_channel	1
 channels_measured	1,2,3

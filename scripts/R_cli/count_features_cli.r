@@ -2,10 +2,10 @@
 
 # count_features_cli.r
 #
-# Annotated features -> tidy per-sample counts, ready to plot.
+# Annotated features -> tidy per-series counts, ready to plot.
 #
 # Reads the *_features.rds written by annotate_features_cli.r, counts distinct
-# features per sample per feature type, joins sample metadata, and writes a tidy
+# features per series per feature type, joins series table metadata, and writes a tidy
 # table. This is the oocyte-counting deliverable.
 #
 #   ./count_features_cli.r --input out/ --series_sheet series.tsv \
@@ -13,7 +13,7 @@
 #
 # A count is the number of distinct feature_id values that carry a real feature
 # prefix. ROIs in invalid_* or failed_* groups are reported separately rather
-# than dropped quietly -- a sample whose nuclei mostly failed the z-span filter
+# than dropped quietly -- a series whose nuclei mostly failed the z-span filter
 # should look different from one that genuinely has few nuclei.
 
 suppressPackageStartupMessages({
@@ -96,7 +96,7 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   .count_source_helpers()
 
-  p <- arg_parser("Count annotated cellular features per sample", hide.opts = TRUE)
+  p <- arg_parser("Count annotated cellular features per series", hide.opts = TRUE)
   p <- add_argument(p, "--input", short = "-i", type = "character", nargs = Inf, default = NULL,
                     help = "*_features.rds files, globs, or directories to scan")
   p <- add_argument(p, "--outdir", short = "-o", type = "character",
@@ -108,7 +108,7 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   p <- add_argument(p, "--group_by", short = "-g", type = "character", nargs = Inf, default = NULL,
                     help = "metadata column(s) to summarise over, e.g. genotype timepoint")
   p <- add_argument(p, "--feature_table", short = "-T", type = "character",
-                    help = paste("optional feature_stats.tsv to join on sample+feature_id,",
+                    help = paste("optional feature_stats.tsv to join on series_id+feature_id,",
                                  "bringing its columns (e.g. class) in for --feature_class_by"))
   p <- add_argument(p, "--feature_class_by", short = "-B", type = "character", nargs = Inf, default = NULL,
                     help = paste("column(s) whose values are joined into the identity of",
@@ -140,17 +140,17 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   })
 
   files <- .cli_resolve_input_path(argv$input, "_features\\.rds$")
-  samples_on_disk <- sub("_features\\.rds$", "", basename(files))
+  series_on_disk <- sub("_features\\.rds$", "", basename(files))
 
   sheet <- NULL
   if (!is.na(argv$series_sheet)) {
     sheet <- .cli_read_series_sheet(argv$series_sheet, argv$id_column)
     jobs <- .cli_apply_series_sheet(
-      data.frame(path = files, sample = samples_on_disk, feature = NA_character_,
+      data.frame(path = files, series_id = series_on_disk, feature = NA_character_,
                  stringsAsFactors = FALSE),
       sheet, argv$id_column)
     files <- jobs$path
-    samples_on_disk <- jobs$sample
+    series_on_disk <- jobs$series_id
   }
 
   keep_features <- .cli_resolve_arg(argv$feature, "--feature")
@@ -169,7 +169,8 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     if (!file.exists(argv$feature_table)) {
       stop("--feature_table not found: ", argv$feature_table, call. = FALSE)
     }
-    ftab <- utils::read.delim(argv$feature_table, stringsAsFactors = FALSE)
+    ftab <- .cli_require_series_id(
+      utils::read.delim(argv$feature_table, stringsAsFactors = FALSE), argv$feature_table)
     message("Joining ", basename(argv$feature_table), " (", nrow(ftab), " feature rows)")
   }
 
@@ -179,10 +180,10 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   message("Counting features in ", length(files), " file(s)")
 
-  per_sample <- list()
+  per_series <- list()
   for (k in seq_along(files)) {
-    smp <- samples_on_disk[k]
-    x <- readRDS(files[k])
+    sid <- series_on_disk[k]
+    x <- .cli_require_series_id(readRDS(files[k]), files[k])
 
     # NB: check the columns BEFORE st_as_sf(). A file that is not an annotate
     #     output fails inside sf with "no simple features geometry column
@@ -198,14 +199,14 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     tab <- sf::st_drop_geometry(x)
     if (length(keep_features)) tab <- tab[tab$feature_type %in% keep_features, , drop = FALSE]
     if (!nrow(tab)) {
-      warning("No rows left for sample ", smp, " after --feature filtering", call. = FALSE)
+      warning("No rows left for series ", sid, " after --feature filtering", call. = FALSE)
       next
     }
 
     tab$.status <- .feature_status(tab$feature_id)
 
     if (!is.null(ftab)) {
-      if (!"sample" %in% colnames(tab)) tab$sample <- smp
+      if (!"series_id" %in% colnames(tab)) tab$series_id <- sid
       # Only the detected features are in a per-feature table; invalid and
       # failed rows are legitimately absent and must not read as misses.
       tab <- join_feature_table(tab, ftab, force = argv$force,
@@ -232,29 +233,29 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       if (!col %in% colnames(counts)) counts[[col]] <- 0L
     }
     counts <- counts |>
-      dplyr::mutate(sample = smp,
+      dplyr::mutate(series_id = sid,
                     # unname(): vapply over a character vector names the result
                     # after its input, which would leak into the written TSV.
                     n_roi = unname(vapply(.class,
                                           function(cl) sum(tab$.class == cl), integer(1)))) |>
-      dplyr::select(sample, feature_class = ".class",
+      dplyr::select(series_id, feature_class = ".class",
                     dplyr::all_of(class_by),
                     n_detected = detected, n_invalid = invalid,
                     n_failed = failed, n_roi)
 
-    per_sample[[smp]] <- counts
-    message("  ", smp, ": ",
+    per_series[[sid]] <- counts
+    message("  ", sid, ": ",
             paste(sprintf("%s=%d", counts$feature_class, counts$n_detected), collapse = ", "))
   }
 
-  if (!length(per_sample)) stop("Nothing was counted.", call. = FALSE)
+  if (!length(per_series)) stop("Nothing was counted.", call. = FALSE)
 
-  tidy <- dplyr::bind_rows(per_sample)
+  tidy <- dplyr::bind_rows(per_series)
 
   if (!is.null(sheet)) {
     meta <- sheet
-    names(meta)[names(meta) == argv$id_column] <- "sample"
-    tidy <- dplyr::left_join(tidy, meta, by = "sample")
+    names(meta)[names(meta) == argv$id_column] <- "series_id"
+    tidy <- dplyr::left_join(tidy, meta, by = "series_id")
   }
 
   missing_group <- setdiff(group_by_cols, colnames(tidy))
@@ -272,7 +273,7 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   if (length(group_by_cols)) {
     summary_df <- tidy |>
       dplyr::group_by(dplyr::across(dplyr::all_of(c(group_by_cols, "feature_type")))) |>
-      dplyr::summarise(n_sample = dplyr::n(),
+      dplyr::summarise(n_series = dplyr::n(),
                        mean_detected = mean(n_detected),
                        sd_detected = stats::sd(n_detected),
                        total_detected = sum(n_detected),
@@ -310,18 +311,18 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 #' Separate from saving it so a test can inspect the layers. Which layers are
 #' present is the behaviour that matters here, and it is invisible in a PNG.
 .count_plot_build <- function(tidy, group_by_cols) {
-  x_col <- if (length(group_by_cols)) group_by_cols[1] else "sample"
+  x_col <- if (length(group_by_cols)) group_by_cols[1] else "series_id"
 
   p <- ggplot2::ggplot(tidy, ggplot2::aes(x = .data[[x_col]], y = n_detected))
 
   if (!length(group_by_cols)) {
-    # One bar per sample. NB: the layer is added conditionally rather than given
+    # One bar per series. NB: the layer is added conditionally rather than given
     # `data = NULL` -- NULL means "inherit the plot data", so that spelling drew
-    # the bars in both branches, overplotting one bar per sample underneath the
+    # the bars in both branches, overplotting one bar per series underneath the
     # grouped boxplot.
     p <- p + ggplot2::geom_col(fill = "grey70", width = 0.6)
   } else {
-    # Several samples per group: show the points, not a bar of a mean.
+    # Several series per group: show the points, not a bar of a mean.
     p <- p + ggplot2::geom_boxplot(outlier.shape = NA, fill = NA, colour = "grey50")
     if (requireNamespace("ggbeeswarm", quietly = TRUE)) {
       p <- p + ggbeeswarm::geom_quasirandom(width = 0.15, size = 1.6, alpha = 0.85)
@@ -346,7 +347,7 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
 .count_plot <- function(tidy, group_by_cols, path) {
   p <- .count_plot_build(tidy, group_by_cols)
-  x_col <- if (length(group_by_cols)) group_by_cols[1] else "sample"
+  x_col <- if (length(group_by_cols)) group_by_cols[1] else "series_id"
   n_x <- length(unique(tidy[[x_col]]))
   ggplot2::ggsave(path, p, width = max(4, min(12, 1 + n_x * 0.5)), height = 4, dpi = 150)
   return(invisible(path))

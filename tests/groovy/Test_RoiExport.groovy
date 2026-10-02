@@ -28,6 +28,7 @@ def check = { String what, Object got, Object want ->
     println String.format("  %-6s %-48s got=%s want=%s", ok ? "ok" : "FAILED", what, got, want)
     ok ? passed++ : failed++
 }
+def errOf = { Closure c -> try { c(); return null } catch (Throwable t) { return t.getMessage() } }
 def throwsWith = { String what, String fragment, Closure body ->
     String msg = null
     try { body() } catch (IllegalArgumentException e) { msg = e.getMessage() }
@@ -90,14 +91,12 @@ if (real.isFile()) {
 }
 
 
-// --- image id resolution -------------------------------------------------------
-// The strings below are the real ones, read off a Leica .lif and the embryo
-// fixture. ImageJ prefixes a hyperstack slice label with the plane coordinates
-// ("c:1/3 z:12/56 - Series001"), and those slashes are NOT path separators --
-// splitting the raw label on "/" handed back "56 - Series001".
+// --- the series id an interactive run uses ----------------------------------
+// From the title since v0.7.0; the slice-label token search is retired. The
+// titles below are real ones, read off a Leica .lif and the embryo fixture.
 
 println ""
-println "=== resolveImageId ==="
+println "=== seriesIdFromTitle ==="
 
 def mkImp = { String title, String label ->
     def st = new ij.ImageStack(4, 4)
@@ -105,32 +104,37 @@ def mkImp = { String title, String label ->
     return new ImagePlus(title, st)
 }
 
-def idCheck = { String what, String title, String label, String pattern, String want ->
-    def got = RX.resolveImageId(mkImp(title, label), pattern)
+def idCheck = { String what, String title, String want ->
+    def got = RX.seriesIdFromTitle(mkImp(title, "c:1/3 z:12/56 - ignored"))
     boolean ok = (got == want)
     println String.format("  %-6s %-34s got=%s want=%s", ok ? "ok" : "FAILED", what, got, want)
     ok ? passed++ : failed++
 }
 
-idCheck("lif z-stack: the reported bug",
-        "f.lif - Series001", "c:1/3 z:12/56 - Series001", "Series", "Series001")
-idCheck("lif single plane, via the title",
-        "260909_IHC.lif - Image002", "c:1/3 - Image002", "Series", "Image002")
-idCheck("embryo fixture is unchanged",
-        "x.lif-Position010-1.tif",
-        "c:1/4 z:1/50 - Lightning 001/Mark_and_Find 001/Position010", "Position", "Position010")
-idCheck("a series name containing a space",
-        "f.lif - Image005 Denoised", "c:1/3 - Image005 Denoised", "Image", "Image005_Denoised")
-idCheck("no pattern falls back to the title",
-        "f.lif - Series004", "c:1/3 - Series004", "", "Series004")
-idCheck("pattern later in a path-like label",
-        "f.tif", "c:1/2 z:3/9 - A 001/B 002/Position077", "Position", "Position077")
+idCheck("a Bio-Formats series title",     "f.lif - Series001", "Series001")
+idCheck("a single plane",                 "260909_IHC.lif - Image002", "Image002")
+// The fixture's own title: no " - ", so nothing is taken off but the extension.
+// This is why its 0.2.0 output (GRV_Position010) is reproduced with a typed id.
+idCheck("the embryo fixture's TIFF",      "x.lif-Position010-1.tif", "x.lif-Position010-1")
+idCheck("a series name containing a space", "f.lif - Image005 Denoised", "Image005_Denoised")
+idCheck("the slice label is not read",    "plain_title", "plain_title")
+check("an untitled image is refused, naming the field",
+      errOf { RX.seriesIdFromTitle(mkImp("", "c:1/3 - Series001")) }?.contains("Series id"), true)
 
-check("stripSliceCoords leaves a bare label alone", RX.stripSliceCoords("Position010"), "Position010")
-check("stripSliceCoords on an empty label",         RX.stripSliceCoords(""), "")
 check("stripFileTitle keeps a plain title",         RX.stripFileTitle("Position010"), "Position010")
 // A dash that is not the Bio-Formats separator must survive.
 check("stripFileTitle ignores an ordinary dash",    RX.stripFileTitle("a-b-c.tif"), "a-b-c.tif")
+
+println ""
+println "=== checkSeriesId: a given id is refused, never rewritten ==="
+check("a clean id passes unchanged",       RX.checkSeriesId("GRV_Position010"), "GRV_Position010")
+check("a generated sheet id passes",       RX.checkSeriesId("rnf4_s0003_Series004"), "rnf4_s0003_Series004")
+def spaceErr = errOf { RX.checkSeriesId("my embryo") }
+check("a space is refused",                spaceErr != null, true)
+check("...and the message offers the clean form", spaceErr?.contains("'my_embryo'"), true)
+check("a slash is refused",                errOf { RX.checkSeriesId("a/b") } != null, true)
+check("a trailing image extension is refused", errOf { RX.checkSeriesId("embryo.tif") } != null, true)
+check("blank is refused",                  errOf { RX.checkSeriesId("   ") }?.contains("blank"), true)
 
 println ""
 println "=== sanitize ==="

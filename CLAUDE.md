@@ -62,11 +62,18 @@ Before deleting anything, confirm git actually holds it — `**/tmp/` and
 Fiji writes, per feature per image:
 
 ```
-<prefix><image id>_<feature>_outline.txt        name, roi, z, x, y   (one row per polygon vertex)
-<prefix><image id>_<feature>_outline_ROIs.zip   ImageJ ROIs
-<prefix><image id>_<feature>_res.txt            measurements, one row per ROI per channel
-<prefix><image id>_config.txt                   every parameter used for that run
+<series_id>_<feature>_outline.txt        name, roi, z, x, y   (one row per polygon vertex)
+<series_id>_<feature>_outline_ROIs.zip   ImageJ ROIs
+<series_id>_<feature>_res.txt            measurements, one row per ROI per channel
+<series_id>_config.txt                   every parameter used for that run
 ```
+
+⚠️ **The file stem and the `name` column are one string.** The R side reads the
+series id out of `name` and finds `_config.txt` and `_res.txt` by it, so a
+prefix in the file names but not in `name` hides both — no `volume`, no signal
+columns, and only a warning. That is why v0.7.0 *retired* `output_prefix` rather
+than taking it out of `name` alone: an interactive run's id is the `Series id`
+field, or the image title when that is blank.
 
 **This is a contract, not an implementation detail.** The field-level
 description lives in `note/data_formats.md`; what follows is why it is
@@ -102,10 +109,12 @@ breaking, and now has one too:
 | `PARAM_TYPES` ↔ what `saveRunConfig()` actually writes | `Test_NucleusPipeline` |
 
 Do not replace these with a checklist. A checklist is something a person has to
-remember to read; a set difference is something that fails. `output_prefix` is
-the one deliberate exclusion — it names the output rather than deciding the
-analysis, the same category as `outdir` — and the test names it, so its absence
-reads as a decision rather than as the next oversight.
+remember to read; a set difference is something that fails. There is no
+exclusion: `output_prefix` was the one, and is retired. The series id names the
+output rather than deciding the analysis — the same category as `outdir` — so
+it is not a parameter at all, and is written as provenance. A retired key in an
+older config is skipped, not refused (`RunConfig.RETIRED_KEYS`): every
+`_config.txt` before v0.7.0 carries `position_pattern`.
 
 **The series table does not need any of this, and the difference is the point.**
 `schema/sheet_columns.tsv` is read at *run time* by `SheetSchema.groovy` and by
@@ -356,15 +365,15 @@ loop, including how to diff.
   which it reads from `schema/sheet_columns.tsv` rather than listing again: a
   generated sheet carries sixteen, and joining them through would put `size_x`
   and `file_size` on every feature row. Dropped columns are reported.
-  `feature_stat_cli.r --z_step` defaults to `pixel_depth` from each sample's own
-  `_config.txt` — per sample, because pixel size varies fourfold inside one
+  `feature_stat_cli.r --z_step` defaults to `pixel_depth` from each series' own
+  `_config.txt` — per series, because pixel size varies fourfold inside one
   `.lif` here. Missing or blank means no `volume` column, never a default of 1.
 
   **Identity comes from the file's content, not its name.** The `name` column
-  holds the sample, the `roi` prefix holds the feature; the filename only has to
+  holds the series id, the `roi` prefix holds the feature; the filename only has to
   select the right files. The previous filename parse used a greedy prefix and
   so mis-split any feature name containing `_` — `S1_growing_oocyte_outline.txt`
-  became sample `S1_growing`, feature `oocyte`, silently. A greedy prefix is
+  became series `S1_growing`, feature `oocyte`, silently. A greedy prefix is
   right when reading the feature out of an *ROI id*, whose tail is anchored and
   fixed-shape, and wrong for a filename, which has no such anchor.
 
@@ -455,17 +464,18 @@ fourth fork.** A new assay should be a new configuration of the shared library.
   batch given neither `outPrefix` nor `saveOverview` ran with `outPrefix=test_`
   and wrote overview PNGs, both left over from an interactive session. (The
   batch's `outPrefix` field has since been removed — it could never take effect,
-  because `BatchRunner` passes the sheet's `series_id` as `basename` and that wins
-  over `output_prefix` outright. The observation is kept: it is the evidence for
+  because the sheet's `series_id` named the output outright; v0.7.0 retired
+  `output_prefix` altogether. The observation is kept: it is the evidence for
   the rule, not a description of today's dialog.) Same
   reasoning as forcing Set Measurements and `blackBackground` — a persistent
   user preference must never decide what a run does. `Run_NucleusSelector.groovy`
   keeps persistence deliberately: it is the tuning entry point and a human is
-  looking at the dialog. **Two fields there are the exception** and reset
-  every run: `nucleus_threshold_range`, a raw pixel value that is meaningless on
-  a different bit depth or exposure, and `nucleus_stack_histogram`, the riskier
-  of the two histogram modes. Neither should be inherited by the next image
-  because it was tried once on this one.
+  looking at the dialog. **Three fields there are the exception** and reset
+  every run: `Series id`, which names one image, so inheriting it would put the
+  next image's output under this one's name; `nucleus_threshold_range`, a raw
+  pixel value that is meaningless on a different bit depth or exposure; and
+  `nucleus_stack_histogram`, the riskier of the two histogram modes. None should
+  be inherited by the next image because it was used once on this one.
 
   `nucleus_threshold` itself **does** persist, like every other tuning field —
   and it is safe precisely because the range does not. Leaving the method on

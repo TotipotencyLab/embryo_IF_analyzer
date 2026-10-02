@@ -20,7 +20,7 @@
 //   def view = OV.prepare(proj, dnaCh, [width: 500])
 //   OV.addOutlines(view, nucRois,  [mode: "merged", color: "yellow"])
 //   OV.addOutlines(view, nuclRois, [mode: "all",    color: "magenta"])
-//   OV.savePng(view, OV.overviewPath(outDir, basename, dnaCh))
+//   OV.savePng(view, OV.overviewPath(outDir, seriesId, dnaCh))
 //
 // Why not just call ZProjector: it projects one continuous range. Detection
 // accepts gapped ranges ("1-20,35-40"), and an overview has to show what
@@ -423,7 +423,7 @@ class Overview {
 
     /**
      * The one place the overview file name is decided:
-     * <basename>_overview_ch<c><suffix>.png
+     * <series_id>_overview_ch<c><suffix>.png
      *
      * The suffix exists because the raw projection and the same projection with
      * outlines drawn on it are two different pictures that used to be written to
@@ -439,9 +439,9 @@ class Overview {
      * dialog cannot turn into a path separator and scatter files into
      * directories.
      */
-    static String overviewPath(String dir, String basename, int channel, String suffix = "") {
+    static String overviewPath(String dir, String seriesId, int channel, String suffix = "") {
         String s = (suffix ?: "").trim().replaceAll(/[^A-Za-z0-9._-]/, "_")
-        new File(dir, "${basename}_overview_ch${channel}${s}.png").getPath()
+        new File(dir, "${seriesId}_overview_ch${channel}${s}.png").getPath()
     }
 
     /** Original channel numbers of a projection, read from its "ch<c>" labels. */

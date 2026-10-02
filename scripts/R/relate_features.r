@@ -225,7 +225,7 @@ assign_feature_parent <- function(st_df, within, min_containment = 0.5,
   }
 
   # Validated ONCE, against the feature types present in the whole table. A
-  # per-sample subset may legitimately lack a feature type -- that is a warning
+  # per-series subset may legitimately lack a feature type -- that is a warning
   # about the data, not a broken spec -- so the recursion below must not
   # re-run this check against the subset.
   within <- validate_within_spec(within, known = unique(st_df$feature_type))
@@ -233,28 +233,28 @@ assign_feature_parent <- function(st_df, within, min_containment = 0.5,
     return(st_df)
   }
 
-  # Several samples in one table would compare a nucleolus against a nucleus
+  # Several series in one table would compare a nucleolus against a nucleus
   # from a different image, which is meaningless. Handle them separately.
-  if("sample" %in% colnames(st_df) && length(unique(st_df$sample)) > 1){
-    parts <- lapply(unique(st_df$sample), function(s){
-      .assign_parent_one_sample(st_df[st_df$sample == s, ], within = within,
+  if("series_id" %in% colnames(st_df) && length(unique(st_df$series_id)) > 1){
+    parts <- lapply(unique(st_df$series_id), function(s){
+      .assign_parent_one_series(st_df[st_df$series_id == s, ], within = within,
                                 min_containment = min_containment,
                                 tie_margin = tie_margin, verbose = verbose)
     })
     return(do.call(rbind, parts))
   }
 
-  return(.assign_parent_one_sample(st_df, within = within,
+  return(.assign_parent_one_series(st_df, within = within,
                                    min_containment = min_containment,
                                    tie_margin = tie_margin, verbose = verbose))
 }
 
 
-#' Parent assignment within a single sample
+#' Parent assignment within a single series
 #'
 #' Assumes the spec has already been validated and the columns already added.
 #' @keywords internal
-.assign_parent_one_sample <- function(st_df, within, min_containment,
+.assign_parent_one_series <- function(st_df, within, min_containment,
                                       tie_margin, verbose){
   for(child_type in names(within)){
     parent_type <- unname(within[[child_type]])

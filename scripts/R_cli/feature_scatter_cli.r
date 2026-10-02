@@ -11,7 +11,7 @@
 #
 #   ./feature_scatter_cli.r --input stats/feature_stats.tsv --outdir stats/ \
 #       --plot 'area_med:ch1_signal' 'circ_med:ch1_signal' \
-#       --threshold 'area_med=400' --color_by sample
+#       --threshold 'area_med=400' --color_by series_id
 #
 #   ./feature_scatter_cli.r --input stats/feature_stats.tsv --show_avail_stats
 #
@@ -153,7 +153,7 @@ feature_scatter_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   }
 
   # Which facet levels to break out. Two ways in, because a real run has more
-  # samples than fit comfortably on a command line.
+  # series than fit comfortably on a command line.
   facet_keep <- .cli_resolve_arg(argv$facet_keep, "--facet_keep")
   if (!is.na(argv$facet_keep_file)) {
     facet_keep <- unique(c(facet_keep,
@@ -166,7 +166,7 @@ feature_scatter_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   .report_plan(specs, thresholds, stats)
   if (length(facet_keep) && argv$facet != "none") {
-    fcol <- if (argv$facet == "both") "sample" else argv$facet
+    fcol <- if (argv$facet == "both") "series_id" else argv$facet
     have <- unique(stats[[fcol]])
     # The INTERSECTION, not length(facet_keep): a name that is not in the data
     # is warned about below, and counting it here would overstate the page.
@@ -209,7 +209,8 @@ feature_scatter_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 #' --facet source_file or --color_by source_file.
 .read_stats_tables <- function(files) {
   one <- lapply(files, function(f) {
-    d <- utils::read.delim(f, stringsAsFactors = FALSE, check.names = FALSE)
+    d <- .cli_require_series_id(
+      utils::read.delim(f, stringsAsFactors = FALSE, check.names = FALSE), f)
     if (!nrow(d)) {
       warning("Empty stats table, skipping: ", basename(f), call. = FALSE)
       return(NULL)

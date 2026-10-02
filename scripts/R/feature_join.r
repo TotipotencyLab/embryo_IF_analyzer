@@ -4,7 +4,7 @@
 #
 # feature_id is sequential WITHIN AN IMAGE and carries no meaning across runs:
 # nucleus_1 from two annotate runs are unrelated objects. So joining one run's
-# per-feature table onto another run's annotation matches on sample+feature_id
+# per-feature table onto another run's annotation matches on series_id+feature_id
 # at essentially 100% and attaches every class to the wrong object. The match
 # rate -- the obvious guard -- reads perfect in exactly the case that is broken.
 #
@@ -54,7 +54,7 @@ run_input_fingerprint <- function(paths){
 #' Join a per-feature table onto a feature-keyed table, refusing a mismatch
 #'
 #' @param x        the spine -- the annotation, one row per ROI, or any table
-#'                 carrying `sample` and `feature_id`
+#'                 carrying `series_id` and `feature_id`
 #' @param tbl      the table to bring columns from, one row per feature
 #' @param cols     columns of `tbl` to add; default every column that is not a
 #'                 key and not already in `x`
@@ -66,7 +66,7 @@ run_input_fingerprint <- function(paths){
 #'   every time -- and a warning that always fires is one nobody reads.
 #' @param what     name of `tbl` for messages
 #' @return `x` with the requested columns added
-join_feature_table <- function(x, tbl, cols = NULL, by = c("sample", "feature_id"),
+join_feature_table <- function(x, tbl, cols = NULL, by = c("series_id", "feature_id"),
                                force = FALSE, expect = NULL,
                                what = "--feature_table"){
   absent_x <- setdiff(by, colnames(x))

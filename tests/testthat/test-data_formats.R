@@ -17,14 +17,14 @@ test_that("the series table template loads through the real reader", {
   expect_false(anyDuplicated(sheet$series_id) > 0)
 })
 
-test_that("the template's first sample is the fixture, so it can be run as-is", {
+test_that("the template's first series is the fixture, so it can be run as-is", {
   tmpl <- file.path(repo_root(), "config", "series_template.tsv")
   skip_if_no_fixture(fixture_file("nucleus", "outline"))
 
   sheet <- .cli_read_series_sheet(tmpl)
-  fixture_sample <- sub("_nucleus_outline\\.txt$", "",
-                        basename(fixture_file("nucleus", "outline")))
-  expect_true(fixture_sample %in% sheet$series_id)
+  fixture_id <- sub("_nucleus_outline\\.txt$", "",
+                    basename(fixture_file("nucleus", "outline")))
+  expect_true(fixture_id %in% sheet$series_id)
 })
 
 test_that("only series_id is required; other columns are free metadata", {
@@ -343,12 +343,13 @@ test_that("Manual thresholding and the per-slice option are parameters, and docu
   expect_true(any(grepl("per-slice", doc, fixed = TRUE)))
 
   # CLAUDE.md's persist=false decision said the tuning dialog remembers
-  # everything; two fields are now the exception, so that claim had to move.
+  # everything; three fields are now the exception (the series id since
+  # v0.7.0), so that claim had to move.
   # The METHOD is not one of them -- it persists, and is safe to because the
   # range does not, so a stale "Manual" is refused rather than silently reusing
   # a pixel value from another image.
   cl <- readLines(file.path(repo_root(), "CLAUDE.md"), warn = FALSE)
-  expect_true(any(grepl("Two fields there are the exception", cl, fixed = TRUE)))
+  expect_true(any(grepl("Three fields there are the exception", cl, fixed = TRUE)))
   rns <- readLines(file.path(repo_root(), "scripts", "groovy",
                              "Run_NucleusSelector.groovy"), warn = FALSE)
   np_line <- grep("nucRange$", rns, value = TRUE)
@@ -382,7 +383,10 @@ test_that("every run-config parameter is written back, and the rule is recorded"
   # rather than scraping source for key names.
   tnp_src <- paste(readLines(tnp, warn = FALSE), collapse = "\n")
   expect_match(tnp_src, "every parameter is written back", fixed = TRUE)
-  expect_match(tnp_src, "NOT_WRITTEN", fixed = TRUE)
+  # With no exclusions since v0.7.0 (output_prefix is retired): the guard is a
+  # bare set difference, and the series id is checked as provenance beside it.
+  expect_match(tnp_src, "(NP.PARAM_TYPES.keySet() - writtenKeys)", fixed = TRUE)
+  expect_match(tnp_src, "the series id is recorded", fixed = TRUE)
 
   cl <- readLines(file.path(repo_root(), "CLAUDE.md"), warn = FALSE)
   expect_true(any(grepl("Every `PARAM_TYPES` key must be written back", cl, fixed = TRUE)))
@@ -394,7 +398,10 @@ test_that("every run-config parameter is written back, and the rule is recorded"
   expect_true(any(grepl("read at \\*run time\\* by `SheetSchema.groovy`", cl)))
 
   doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
-  expect_true(any(grepl("single deliberate exception", doc, fixed = TRUE)))
+  # No exclusion since v0.7.0 retired output_prefix; the doc must say so rather
+  # than go on describing one.
+  expect_true(any(grepl("There is **no exception** to that since v0.7.0", doc, fixed = TRUE)))
+  expect_false(any(grepl("single deliberate exception", doc, fixed = TRUE)))
   # The writer/reader inventory: the R CLIs read this file by hard-coded field
   # name and nothing checks them against the writer.
   expect_true(any(grepl("no run-time schema file", doc, fixed = TRUE)))
@@ -419,8 +426,8 @@ test_that("the batch overview switch overrides the config instead of replacing i
   # NOT asserted here: the caller in sandbox/, which passed the old boolean.
   # sandbox/ is gitignored, so a check on it would pass vacuously on every
   # checkout but this one.
-  # The dead field is gone: BatchRunner passes the sheet's series_id as basename,
-  # which wins over output_prefix outright, so this could never take effect.
+  # The dead field is gone, and since v0.7.0 so is output_prefix itself: the
+  # sheet's series_id is the whole name.
   expect_false(grepl("outPrefix", src, fixed = TRUE))
 })
 
@@ -543,7 +550,7 @@ test_that("annotate writes the documented columns", {
     "--within", "nucleolus=nucleus")))
 
   documented <- c("roi", "z", "area", "is_bridge", "feature_id", "feature_type",
-                  "sample", "run_id", "parent_feature_id", "parent_feature_type",
+                  "series_id", "run_id", "parent_feature_id", "parent_feature_type",
                   "parent_containment", "parent_match")
   expect_identical(colnames(tsv), documented)
 
@@ -590,7 +597,7 @@ test_that("count writes the documented columns", {
   out <- withr::local_tempdir()
   counts <- suppressMessages(count_features_cli(c("--input", feat, "--outdir", out)))
   expect_identical(colnames(counts),
-                   c("sample", "feature_class", "feature_type", "n_detected",
+                   c("series_id", "feature_class", "feature_type", "n_detected",
                      "n_invalid", "n_failed", "n_roi"))
   # With the default --feature_class_by the composite IS the feature type, so
   # the extra column is a rename of nothing rather than a change of meaning.
@@ -607,7 +614,7 @@ test_that("count writes the documented columns", {
   s <- read.delim(file.path(out2, "feature_counts_summary.tsv"),
                   stringsAsFactors = FALSE)
   expect_identical(colnames(s),
-                   c("genotype", "feature_type", "n_sample", "mean_detected",
+                   c("genotype", "feature_type", "n_series", "mean_detected",
                      "sd_detected", "total_detected"))
 })
 
@@ -628,7 +635,7 @@ test_that("feature_stat writes the documented columns", {
   st <- suppressMessages(feature_stat_cli(c(
     "--input", feat, "--outdir", out, "--res_dir", fixture_dir(), "--no_plot")))
 
-  documented <- c("sample", "feature_type", "feature_id", "n_roi", "n_z",
+  documented <- c("series_id", "feature_type", "feature_id", "n_roi", "n_z",
                   "z_min", "z_max", "z_span", "area_med", "area_mean",
                   "area_max", "area_sum", "z_gaps", "circ_med", "circ_min")
   expect_true(all(documented %in% colnames(st)),
@@ -644,7 +651,7 @@ test_that("feature_stat writes the documented columns", {
   expect_equal(st$z_span, st$z_max - st$z_min + 1L)
 
   rej <- read.delim(file.path(out, "feature_rejects.tsv"), stringsAsFactors = FALSE)
-  expect_identical(colnames(rej), c("sample", "feature_type", "bucket", "n_roi"))
+  expect_identical(colnames(rej), c("series_id", "feature_type", "bucket", "n_roi"))
   expect_true(all(rej$bucket %in% c("feature", "invalid", "failed", "unassigned")))
 })
 
@@ -686,9 +693,9 @@ test_that(".read_outline survives a name column containing spaces", {
 })
 
 test_that("the documented identity columns are the ones the code reads", {
-  # note/data_formats.md §2 claims the sample comes from `name` and the feature
-  # from the `roi` prefix. Assert that against the fixture and the real reader,
-  # so the claim cannot rot.
+  # note/data_formats.md §2 claims the series id comes from `name` and the
+  # feature from the `roi` prefix. Assert that against the fixture and the real
+  # reader, so the claim cannot rot.
   skip_if_no_fixture(fixture_file("nucleus", "outline"))
   o <- read.table(fixture_file("nucleus", "outline"), header = TRUE,
                   sep = "\t", stringsAsFactors = FALSE)
@@ -697,7 +704,13 @@ test_that("the documented identity columns are the ones the code reads", {
 
   id <- .cli_identify_outline(fixture_file("nucleus", "outline"))
   expect_true(id$ok)
-  expect_identical(id$sample, "GRV_Position010")
+  expect_identical(id$series_id, "GRV_Position010")
+  # And `name` IS the file stem. The R side finds <series_id>_config.txt and
+  # <series_id>_<feature>_res.txt from the name it read here, so a prefix in
+  # the file names but not in `name` would lose them -- which is why v0.7.0
+  # removed output_prefix rather than moving it out of `name` alone.
+  expect_identical(unique(o$name),
+                   sub("_nucleus_outline\\.txt$", "", basename(fixture_file("nucleus", "outline"))))
   expect_identical(id$feature, "nucleus")
 })
 

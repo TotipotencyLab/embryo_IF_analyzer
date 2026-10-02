@@ -6,7 +6,7 @@
 #
 # Takes the *_<feature>_outline.txt tables written by the Groovy pipeline,
 # groups the per-slice ROIs of each object across z, and writes one annotated
-# sf object per sample plus a tidy per-ROI table. Optionally draws the detected
+# sf object per series plus a tidy per-ROI table. Optionally draws the detected
 # features as a QC plot.
 #
 # The grouping is z-aware: two objects that overlap in the flattened projection
@@ -203,7 +203,7 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   #
   # The identity used to be parsed out of the basename, which could not
   # represent a feature name containing "_" and mis-split it silently. The
-  # `name` column already holds the sample and the ROI ids already carry the
+  # `name` column already holds the series id and the ROI ids already carry the
   # feature prefix, so the filename is no longer load-bearing -- it only has to
   # get the right files onto the list.
   pattern <- if(is.na(argv$input_pattern)) "_outline\\.txt$" else argv$input_pattern
@@ -211,7 +211,7 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   # Provenance. feature_id is sequential per image and means nothing across
   # runs, so a table joined onto the WRONG run's annotation matches on
-  # sample+feature_id at ~100% and attaches every value to the wrong object.
+  # series_id+feature_id at ~100% and attaches every value to the wrong object.
   # run_id is what makes that detectable downstream; see scripts/R/feature_join.r.
   #
   # The hash covers the effective parameters, the repo version and the input
@@ -261,9 +261,9 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     sheet <- NULL
   }
   
-  samples <- sort(unique(jobs$sample))
-  message("Annotating ", nrow(jobs), " file(s) across ", length(samples),
-          " sample(s); feature(s): ", paste(features, collapse = ", "))
+  series_ids <- sort(unique(jobs$series_id))
+  message("Annotating ", nrow(jobs), " file(s) across ", length(series_ids),
+          " series; feature(s): ", paste(features, collapse = ", "))
   
   outdir <- argv$outdir
   dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
@@ -278,15 +278,15 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   
   # --- annotate ---------------------------------------------------------------
   all_rows <- list()
-  for (smp in samples) {
-    smp_jobs <- jobs[jobs$sample == smp, , drop = FALSE]
-    message("  ", smp)
+  for (sid in series_ids) {
+    sid_jobs <- jobs[jobs$series_id == sid, , drop = FALSE]
+    message("  ", sid)
     
     per_feature <- list()
-    for (k in seq_len(nrow(smp_jobs))) {
-      feat <- smp_jobs$feature[k]          # reporting name, post --rename
-      roi_prefix <- smp_jobs$roi_prefix[k] # what the ROI ids actually say
-      path <- smp_jobs$path[k]
+    for (k in seq_len(nrow(sid_jobs))) {
+      feat <- sid_jobs$feature[k]          # reporting name, post --rename
+      roi_prefix <- sid_jobs$roi_prefix[k] # what the ROI ids actually say
+      path <- sid_jobs$path[k]
 
       roi_df <- .read_outline(path)
       if (!nrow(roi_df)) {
@@ -341,7 +341,7 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
         fail_ROI_feature_prefix = paste0("failed_", feat, "_")
       )
       feature_group$feature_type <- feat
-      feature_group$sample <- smp
+      feature_group$series_id <- sid
       per_feature[[feat]] <- feature_group
       
       n_valid <- length(unique(feature_group$feature_id[grepl(paste0("^", feat, "_"), feature_group$feature_id)]))
@@ -368,19 +368,19 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     } # end for k
     
     if (!length(per_feature)) {
-      warning("No usable feature table for sample ", smp, call. = FALSE)
+      warning("No usable feature table for series ", sid, call. = FALSE)
       next
     }
     
-    # Collapse all feature into one sample_df
-    sample_df <- dplyr::bind_rows(per_feature)
+    # Collapse all feature into one series_df
+    series_df <- dplyr::bind_rows(per_feature)
     if (!is.null(sheet)) {
-      meta <- sheet[sheet[[argv$id_column]] == smp, , drop = FALSE]
+      meta <- sheet[sheet[[argv$id_column]] == sid, , drop = FALSE]
       meta[[argv$id_column]] <- NULL
-      if (ncol(meta)) sample_df <- dplyr::bind_cols(sample_df, meta[rep(1, nrow(sample_df)), , drop = FALSE])
+      if (ncol(meta)) series_df <- dplyr::bind_cols(series_df, meta[rep(1, nrow(series_df)), , drop = FALSE])
     }
-    sample_df$run_id <- run_id
-    sample_sf <- sf::st_as_sf(sample_df)
+    series_df$run_id <- run_id
+    series_sf <- sf::st_as_sf(series_df)
     
     # --- containment ----------------------------------------------------------
     # Relating features must never rewrite them: a gap-filled match relaxes the
@@ -392,29 +392,29 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       }else{
         dflt_args$min_containment
       }
-      sample_sf <- assign_feature_parent(
-        st_df           = sample_sf,
+      series_sf <- assign_feature_parent(
+        st_df           = series_sf,
         within          = within,
         min_containment = containment_spec
       )
-      .report_parents(sample_sf, within)
+      .report_parents(series_sf, within)
       
       if(argv$require_parent){
-        sample_sf <- .drop_orphans(sample_sf, within)
+        series_sf <- .drop_orphans(series_sf, within)
       }
     }
     
-    rds_path <- file.path(outdir, paste0(smp, "_features.rds"))
-    saveRDS(sample_sf, rds_path)
+    rds_path <- file.path(outdir, paste0(sid, "_features.rds"))
+    saveRDS(series_sf, rds_path)
     message("    -> ", basename(rds_path))
     
     if (argv$qc_plot) {
-      png_path <- file.path(outdir, paste0(smp, "_features_qc.png"))
-      .qc_plot(sample_sf, smp, png_path)
+      png_path <- file.path(outdir, paste0(sid, "_features_qc.png"))
+      .qc_plot(series_sf, sid, png_path)
       message("    -> ", basename(png_path))
     }
     
-    all_rows[[smp]] <- sf::st_drop_geometry(sample_sf)
+    all_rows[[sid]] <- sf::st_drop_geometry(series_sf)
   }
   
   if (!length(all_rows)) stop("Nothing was annotated.", call. = FALSE)
@@ -447,8 +447,8 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 #' The gap-filled count is the number worth watching: if many children needed
 #' their parent's missing slices filled in, the PARENT detection is what needs
 #' work, and that should be visible rather than buried in a clean-looking run.
-.report_parents <- function(sample_sf, within) {
-  tab <- sf::st_drop_geometry(sample_sf)
+.report_parents <- function(series_sf, within) {
+  tab <- sf::st_drop_geometry(series_sf)
   for(child_type in names(within)) {
     rows <- tab[tab$feature_type == child_type &
                   !is.na(tab$feature_id) &
@@ -473,19 +473,19 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 #'
 #' Off by default. An orphaned nucleolus is evidence about NUCLEUS detection
 #' quality, so discarding it destroys the evidence -- only do it on request.
-.drop_orphans <- function(sample_sf, within) {
-  drop <- rep(FALSE, nrow(sample_sf))
+.drop_orphans <- function(series_sf, within) {
+  drop <- rep(FALSE, nrow(series_sf))
   for(child_type in names(within)) {
-    is_child <- sample_sf$feature_type == child_type &
-      !is.na(sample_sf$feature_id) &
-      startsWith(sample_sf$feature_id, paste0(child_type, "_"))
-    drop <- drop | (is_child & is.na(sample_sf$parent_feature_id))
+    is_child <- series_sf$feature_type == child_type &
+      !is.na(series_sf$feature_id) &
+      startsWith(series_sf$feature_id, paste0(child_type, "_"))
+    drop <- drop | (is_child & is.na(series_sf$parent_feature_id))
   }
   if(any(drop)){
-    message("    --require_parent dropped ", length(unique(sample_sf$feature_id[drop])),
+    message("    --require_parent dropped ", length(unique(series_sf$feature_id[drop])),
             " orphaned feature(s) (", sum(drop), " ROIs)")
   }
-  return(sample_sf[!drop, ])
+  return(series_sf[!drop, ])
 }
 
 
@@ -512,21 +512,21 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   roi_df
 }
 
-.qc_plot <- function(sample_sf, sample_name, path) {
+.qc_plot <- function(series_sf, sid, path) {
   # Per-slice ROIs faintly underneath, the z-aware union on top in colour.
   # plot_features_topView() is the library function; it uses geom_sf (a union
   # can be a MULTIPOLYGON or carry holes) and puts y in image orientation.
-  valid <- .cli_valid_rows(sample_sf)
+  valid <- .cli_valid_rows(series_sf)
   if (!nrow(valid)) {
-    warning("No valid features to plot for ", sample_name, call. = FALSE)
+    warning("No valid features to plot for ", sid, call. = FALSE)
     return(invisible(NULL))
   }
   unioned <- union_features(valid)
   
-  p <- plot_features_topView(sample_sf, unioned, color_by = "feature_type") +
+  p <- plot_features_topView(series_sf, unioned, color_by = "feature_type") +
     ggplot2::labs(
-      title = sample_name,
-      subtitle = paste0(nrow(sample_sf), " ROIs -> ", nrow(unioned), " features"))
+      title = sid,
+      subtitle = paste0(nrow(series_sf), " ROIs -> ", nrow(unioned), " features"))
   
   ggplot2::ggsave(path, p, width = 6, height = 6, dpi = 150)
   invisible(path)

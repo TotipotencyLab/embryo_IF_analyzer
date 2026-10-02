@@ -2,7 +2,7 @@
 
 # montage_qc_cli.r
 #
-# Three-panel QC montage for one sample:
+# Three-panel QC montage for one series:
 #   (i)   raw z-projection                 (PNG from Run_Overview, roiMode none)
 #   (ii)  z-projection + Fiji outlines     (PNG from Run_Overview, roiMode merged)
 #   (iii) outlines from R, unioned per feature
@@ -104,7 +104,7 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   p <- add_argument(p, "--feature", short = "-f", type = "character", nargs = Inf, default = NULL,
                     help = "restrict panel (iii) to these feature type(s)")
   p <- add_argument(p, "--feature_table", short = "-T", type = "character",
-                    help = paste("optional feature_stats.tsv, joined on sample+feature_id,",
+                    help = paste("optional feature_stats.tsv, joined on series_id+feature_id,",
                                  "so --feature_class_by can name a column from it (e.g. class)"))
   p <- add_argument(p, "--feature_class_by", short = "-B", type = "character", nargs = Inf, default = NULL,
                     help = paste("column(s) whose values are joined to label each outline",
@@ -127,7 +127,7 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   p <- add_argument(p, "--no_labels", short = "-N", flag = TRUE,
                     help = "omit the panel captions")
   p <- add_argument(p, "--title", short = "-t", type = "character", default = NA,
-                    help = "montage title [default: the sample name]")
+                    help = "montage title [default: the series id]")
   p <- add_argument(p, "--no_title", short = "-Z", flag = TRUE,
                     help = "omit the title band")
   p <- add_argument(p, "--rlib_path", short = "-R", type = "character",
@@ -145,7 +145,7 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   if (!file.exists(argv$features)) {
     stop("No such features file: ", argv$features, call. = FALSE)
   }
-  feats <- readRDS(argv$features)
+  feats <- .cli_require_series_id(readRDS(argv$features), argv$features)
   if (!inherits(feats, "sf")) feats <- sf::st_as_sf(feats)
 
   keep_features <- .cli_resolve_arg(argv$feature, "--feature")
@@ -154,11 +154,11 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     if (!nrow(feats)) stop("No rows left after --feature filtering", call. = FALSE)
   }
 
-  sample_name <- sub("_features\\.rds$", "", basename(argv$features))
+  sid <- sub("_features\\.rds$", "", basename(argv$features))
 
   # --- image extent -----------------------------------------------------------
   cfg_path <- argv$config
-  if (is.na(cfg_path)) cfg_path <- .find_config(argv$features, sample_name)
+  if (is.na(cfg_path)) cfg_path <- .find_config(argv$features, sid)
   extent <- .image_extent(cfg_path)
 
   # --- panels -----------------------------------------------------------------
@@ -216,8 +216,9 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       if (!file.exists(argv$feature_table)) {
         stop("--feature_table not found: ", argv$feature_table, call. = FALSE)
       }
-      ftab <- utils::read.delim(argv$feature_table, stringsAsFactors = FALSE)
-      if (!"sample" %in% colnames(valid)) valid$sample <- sample_name
+      ftab <- .cli_require_series_id(
+        utils::read.delim(argv$feature_table, stringsAsFactors = FALSE), argv$feature_table)
+      if (!"series_id" %in% colnames(valid)) valid$series_id <- sid
       geom <- sf::st_geometry(valid)
       tab <- sf::st_drop_geometry(valid)
       tab <- join_feature_table(tab, ftab, force = argv$force)
@@ -263,7 +264,7 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   }
 
   r_png <- tempfile(fileext = ".png")
-  .r_panel(feats, unioned, extent, sample_name, r_png, argv$panel_height,
+  .r_panel(feats, unioned, extent, sid, r_png, argv$panel_height,
            palette = pal$palette)
 
   # The panel is deliberately legend-free so it lines up with the Fiji PNGs
@@ -312,11 +313,11 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   })
   montage <- mg_grid(imgs, ncol = length(imgs))
 
-  # A title, because a QC montage on its own says nothing about WHICH sample it
+  # A title, because a QC montage on its own says nothing about WHICH series it
   # is: the panel captions name the panels, and the filename is only visible
   # from outside the picture. Opened from a folder of them, or pasted into a
   # note, an untitled montage is unattributable.
-  ttl <- .mqc_one(.cli_resolve_arg(argv$title, "--title"), sample_name)
+  ttl <- .mqc_one(.cli_resolve_arg(argv$title, "--title"), sid)
   if (!argv$no_title && nzchar(ttl)) {
     montage <- mg_title(montage, ttl)
   }
@@ -336,12 +337,12 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   return(magick::image_read(path))
 }
 
-.find_config <- function(features_path, sample_name) {
+.find_config <- function(features_path, sid) {
   # The config is written by Fiji beside the outline tables, not beside the
   # .rds. Look in both places before giving up.
   cands <- c(
-    file.path(dirname(features_path), paste0(sample_name, "_config.txt")),
-    file.path(dirname(features_path), "..", paste0(sample_name, "_config.txt"))
+    file.path(dirname(features_path), paste0(sid, "_config.txt")),
+    file.path(dirname(features_path), "..", paste0(sid, "_config.txt"))
   )
   hit <- cands[file.exists(cands)]
   if (length(hit)) 
@@ -393,7 +394,7 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   return(list(xmax = w * pw, ymax = h * ph))
 }
 
-.r_panel <- function(feats, unioned, extent, sample_name, path, panel_height,
+.r_panel <- function(feats, unioned, extent, sid, path, panel_height,
                      palette = NULL) {
   # Nothing to draw is still something to show, but only at a known scale: an
   # empty panel whose extent came from the data would be an empty panel of
