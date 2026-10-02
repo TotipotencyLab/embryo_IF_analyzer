@@ -492,6 +492,11 @@ check("outline header has t, before z",        oOne.head, ["name", "roi", "t", "
 check("one frame is t = 1 everywhere",         oOne.rows.collect { it.t }.unique(), ["1"])
 def rOne = readTsv(new File(outOne, "one_nucleus_res.txt"))
 check("res carries roi, z, t, ch",             rOne.head.containsAll(["roi", "z", "t", "ch"]), true)
+// Identity first, then ImageJ's measurements in ImageJ's order.
+check("res leads with row number, Label, roi, z, t, ch",
+      rOne.head.take(6), [" ", "Label", "roi", "z", "t", "ch"])
+check("...then ImageJ's columns, starting at Area", rOne.head[6], "Area")
+check("no .part file left behind",             outOne.list().findAll { it.endsWith(".part") }.toList(), [])
 check("...and not ImageJ's Ch or Slice",       rOne.head.findAll { it in ["Ch", "Slice", "Frame"] }, [])
 // The explicit columns against the Label, which carries the same facts in
 // ImageJ's words: <title>:<roi name>:<slice label>.

@@ -142,8 +142,8 @@ class RoiExport {
      * cannot be trusted -- which appear, and what Slice holds, depends on the
      * image's shape (note/time_series_plan.md §5.3: on 1c 1z 4t, Slice is the
      * TIME) -- so `stack` is no longer in Set Measurements and these are the
-     * only position columns. All count from 1. They come after ImageJ's
-     * columns, because the first measure() creates those.
+     * only position columns. All count from 1. saveMeasurements() writes them
+     * straight after the Label, ahead of ImageJ's measurements.
      *
      * NB: iterates the channels actually supplied. The macro used only the
      * LENGTH of its channel array and measured channels 1..N regardless.
@@ -174,8 +174,41 @@ class RoiExport {
         imp.deleteRoi()
     }
 
+    /** The columns a measurement table leads with, after Fiji's row number. */
+    static final List<String> MEASUREMENT_LEAD = ["Label", "roi", "z", "t", "ch"]
+
+    /**
+     * Save a measurement table with the identity first: row number, Label, roi,
+     * z, t, ch, then ImageJ's measurements in ImageJ's order.
+     *
+     * ImageJ cannot be asked for that order: its standard measurements have
+     * fixed slots that precede any column we add, so ours always came last.
+     * The table is therefore saved by ImageJ, as before, and its columns
+     * reordered -- every cell keeps ImageJ's own formatting, so only the order
+     * changes. The R reader finds columns by name, never by position.
+     */
     static void saveMeasurements(ResultsTable rt, String path) {
-        rt.save(path)
+        def dest = new File(path)
+        def tmp  = new File(dest.getParentFile(), dest.getName() + ".part")
+        try {
+            rt.save(tmp.getPath())
+            def lines = tmp.readLines("UTF-8")
+            if (lines.isEmpty()) { tmp.renameTo(dest); return }
+            def head = lines[0].split("\t", -1).toList()
+            // ImageJ's unnamed row-number column, when present, stays first.
+            def order = []
+            if (head[0].trim().isEmpty()) order << 0
+            MEASUREMENT_LEAD.each { String c -> int i = head.indexOf(c); if (i >= 0) order << i }
+            (0..<head.size()).each { int i -> if (!order.contains(i)) order << i }
+            def sb = new StringBuilder()
+            lines.each { String l ->
+                def f = l.split("\t", -1)
+                sb.append(order.collect { int i -> i < f.length ? f[i] : "" }.join("\t")).append("\n")
+            }
+            dest.setText(sb.toString(), "UTF-8")
+        } finally {
+            tmp.delete()
+        }
     }
 
     /**

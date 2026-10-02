@@ -551,8 +551,13 @@ Groovy scripts force explicitly to:
 area mean standard min centroid shape integrated median display
 ```
 
-giving `Label, Area, Mean, StdDev, Min, Max, X, Y, Circ., IntDen, Median,
-RawIntDen, AR, Round, Solidity` — then **four columns we write ourselves**:
+giving `Area, Mean, StdDev, Min, Max, X, Y, Circ., IntDen, Median, RawIntDen,
+AR, Round, Solidity` plus `Label` — and **four columns we write ourselves**. The
+file leads with the identity: the row number, then
+`Label, roi, z, t, ch`, then ImageJ's measurements in the order above
+(`RoiExport.saveMeasurements()`; ImageJ itself always puts its standard columns
+first, so the table is saved by ImageJ and its columns reordered — every cell
+keeps ImageJ's formatting). Readers find columns by name, never by position.
 
 | Column | Notes |
 |---|---|
