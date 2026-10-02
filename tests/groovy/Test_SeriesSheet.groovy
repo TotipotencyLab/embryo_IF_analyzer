@@ -1,4 +1,4 @@
-// Test_SampleSheet.groovy
+// Test_SeriesSheet.groovy
 //
 // files.tsv -> series.tsv, on images this test WRITES rather than ships.
 //
@@ -10,7 +10,7 @@
 //
 // Run headless from the repo root:
 //
-//   ImageJ-macosx --headless --console --run tests/groovy/Test_SampleSheet.groovy
+//   ImageJ-macosx --headless --console --run tests/groovy/Test_SeriesSheet.groovy
 
 import loci.formats.MetadataTools
 import loci.formats.out.OMETiffWriter
@@ -21,7 +21,7 @@ import ome.xml.model.enums.PixelType
 import ome.xml.model.primitives.PositiveInteger
 
 def LIBDIR = new File("scripts/groovy").getAbsolutePath()
-if (!new File(LIBDIR, "SampleSheet.groovy").exists()) {
+if (!new File(LIBDIR, "SeriesSheet.groovy").exists()) {
     throw new IllegalStateException("run from the repository root; no scripts/groovy at " + LIBDIR)
 }
 
@@ -86,7 +86,7 @@ def imgB = writeMultiSeries(new File(rawDir, "plateB.ome.tif"),
 check("fixture A written",                     imgA.isFile(), true)
 check("fixture B written",                     imgB.isFile(), true)
 
-def SS = new GroovyClassLoader().parseClass(new File(LIBDIR, "SampleSheet.groovy"))
+def SS = new GroovyClassLoader().parseClass(new File(LIBDIR, "SeriesSheet.groovy"))
 def TSV = new GroovyClassLoader().parseClass(new File(LIBDIR, "Tsv.groovy"))
 def sheet = SS.load(LIBDIR)
 
@@ -124,7 +124,7 @@ check("series_id is alias + index + series",   built[0].series_id, "A_s0000_Seri
 // Same series name, different file -- unique only because of the alias.
 check("the other file's Series001 differs",    built.find { it.path == "plateB.ome.tif" && it.series_index == 0 }.series_id, "B_s0000_Series001")
 check("a space in the name is sanitised",      built[2].series_id, "A_s0002_Image005_Denoised")
-check("no series_id collision",                errOf { sheet.checkPrefixes(built) }, null)
+check("no series_id collision",                errOf { sheet.checkIds(built) }, null)
 
 println ""
 println "=== the machine columns are the file's own facts ==="
@@ -159,38 +159,38 @@ check("a repeated alias is fatal",             errOf { sheet.checkFiles(dupAlias
 // the index sits between them, but still reachable with an alias that ends the
 // way an index begins -- which is why the check runs on the composed string and
 // not on the parts.
-def collide = [[series_id: sheet.composePrefix("A", 0, "s0000_B"), path: "p", series_index: 0, series_name: "s0000_B"],
-               [series_id: sheet.composePrefix("A_s0000", 0, "B"), path: "q", series_index: 0, series_name: "B"]]
+def collide = [[series_id: sheet.composeSeriesId("A", 0, "s0000_B"), path: "p", series_index: 0, series_name: "s0000_B"],
+               [series_id: sheet.composeSeriesId("A_s0000", 0, "B"), path: "q", series_index: 0, series_name: "B"]]
 check("the two compose to the same series_id", collide[0].series_id, collide[1].series_id)
-check("...and that is fatal",                  errOf { sheet.checkPrefixes(collide) }?.contains("not unique"), true)
-check("duplicatePrefixes names the offender",  sheet.duplicatePrefixes(collide).keySet().toList(), [collide[0].series_id])
-check("...and is quiet on a clean table",      sheet.duplicatePrefixes(built), [:])
+check("...and that is fatal",                  errOf { sheet.checkIds(collide) }?.contains("not unique"), true)
+check("duplicateIds names the offender",  sheet.duplicateIds(collide).keySet().toList(), [collide[0].series_id])
+check("...and is quiet on a clean table",      sheet.duplicateIds(built), [:])
 
 // sanitise() collapses whitespace, so "Image005 Denoised" and
 // "Image005_Denoised" become one filename. They are different SERIES of one
 // file, so the index now separates them -- this used to be fatal.
-def sanitiseClash = [[series_id: sheet.composePrefix("A", 0, "Image005 Denoised"), path: "p", series_index: 0, series_name: "Image005 Denoised"],
-                     [series_id: sheet.composePrefix("A", 1, "Image005_Denoised"), path: "p", series_index: 1, series_name: "Image005_Denoised"]]
+def sanitiseClash = [[series_id: sheet.composeSeriesId("A", 0, "Image005 Denoised"), path: "p", series_index: 0, series_name: "Image005 Denoised"],
+                     [series_id: sheet.composeSeriesId("A", 1, "Image005_Denoised"), path: "p", series_index: 1, series_name: "Image005_Denoised"]]
 check("the names still sanitise alike",
       sanitiseClash[0].series_id.replace("s0000", ""), sanitiseClash[1].series_id.replace("s0001", ""))
-check("...but the index keeps them apart",     errOf { sheet.checkPrefixes(sanitiseClash) }, null)
+check("...but the index keeps them apart",     errOf { sheet.checkIds(sanitiseClash) }, null)
 
 println ""
 println "=== the index is forced, so a repeated series name is not a collision ==="
-// Before this, a tile scan could not produce a sheet: checkPrefixes refused it,
+// Before this, a tile scan could not produce a sheet: checkIds refused it,
 // correctly, and the error message was the only artifact of the run.
 def tileRows = sheet.build([[path: "tiles.ome.tif", alias: "T", include: "true"]], rawDir, [])
 check("two series really do share one name",   tileRows.collect { it.series_name }.unique(), ["O1_1 10x"])
 check("...but not one series_id",              tileRows.collect { it.series_id },
       ["T_s0000_O1_1_10x", "T_s0001_O1_1_10x"])
-check("...so the sheet builds",                errOf { sheet.checkPrefixes(tileRows) }, null)
+check("...so the sheet builds",                errOf { sheet.checkIds(tileRows) }, null)
 
 // Fixed width, not derived from the series count: a file growing from 999 to
 // 1001 series must not re-pad every series_id it already had.
-check("index 0 pads to four digits",           sheet.composePrefix("A", 0, "x"), "A_s0000_x")
-check("index 331",                             sheet.composePrefix("A", 331, "x"), "A_s0331_x")
-check("past 9999 it widens, never wraps",      sheet.composePrefix("A", 12345, "x"), "A_s12345_x")
-check("a string index is accepted",            sheet.composePrefix("A", "7", "x"), "A_s0007_x")
+check("index 0 pads to four digits",           sheet.composeSeriesId("A", 0, "x"), "A_s0000_x")
+check("index 331",                             sheet.composeSeriesId("A", 331, "x"), "A_s0331_x")
+check("past 9999 it widens, never wraps",      sheet.composeSeriesId("A", 12345, "x"), "A_s12345_x")
+check("a string index is accepted",            sheet.composeSeriesId("A", "7", "x"), "A_s0007_x")
 
 println ""
 println "=== duplicate basenames warn rather than stop ==="
@@ -323,14 +323,14 @@ check("a newline in a cell is refused",        errOf { TSV.cell("a\nb") }?.conta
 check("null becomes blank",                    TSV.cell(null), "")
 
 println ""
-println "=== Make_SampleSheet writes the sheet, THEN refuses ==="
+println "=== Make_SeriesSheet writes the sheet, THEN refuses ==="
 // The ordering lives in the `#@` front end, so it is exercised the way the
 // fiji-headless-testing skill describes: strip the parameter lines and inject a
 // Binding. It is worth a test rather than a read-through, because the whole
 // point is WHICH HAPPENS FIRST -- a duplicate you cannot open the table to see
 // is a duplicate you cannot fix, and the error message would otherwise be the
 // only artifact of the run.
-def msFile = new File(LIBDIR, "Make_SampleSheet.groovy")
+def msFile = new File(LIBDIR, "Make_SeriesSheet.groovy")
 def msBody = msFile.getText("UTF-8").readLines().findAll { !it.trim().startsWith("#@") }.join("\n")
 def runMakeSheet = { File msFilesArg, File msOutArg, boolean msAllowArg ->
     def b = new Binding()
@@ -346,7 +346,7 @@ def runMakeSheet = { File msFilesArg, File msOutArg, boolean msAllowArg ->
     b.setVariable("reseedAll", false)
     b.setVariable("prune", false)
     b.setVariable("allowDuplicateId", msAllowArg)
-    new GroovyShell(b).evaluate(msBody, "Make_SampleSheet_stripped.groovy")
+    new GroovyShell(b).evaluate(msBody, "Make_SeriesSheet_stripped.groovy")
 }
 
 def msFiles = new File(tmp, "ms_files.tsv")
@@ -400,4 +400,4 @@ check("no extras, no gap",                     bare, ["series_id", "include", "p
 tmp.deleteDir()
 println ""
 println "passed: ${passed}   FAILED: ${failed}"
-if (failed > 0) throw new AssertionError("${failed} sample-sheet check(s) failed")
+if (failed > 0) throw new AssertionError("${failed} series-table check(s) failed")

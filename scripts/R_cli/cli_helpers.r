@@ -589,7 +589,7 @@
   return(NULL)
 }
 
-# --- sample sheet -------------------------------------------------------------
+# --- series table -------------------------------------------------------------
 
 .cli_read_table <- function(path, what = "table") {
   if (!file.exists(path)) stop("No such ", what, ": ", path, call. = FALSE)
@@ -628,7 +628,7 @@
   out[s %in% c("false", "no", "0")] <- FALSE
   out[is.na(s)] <- TRUE
   if (anyNA(out)) {
-    stop("Sample sheet 'include' must be true/false (or yes/no, 1/0); got: ",
+    stop("Series table 'include' must be true/false (or yes/no, 1/0); got: ",
          paste(unique(s[is.na(out)]), collapse = ", "), call. = FALSE)
   }
   return(out)
@@ -659,7 +659,7 @@
 #' The series-table columns the Groovy side writes and overwrites
 #'
 #' These are facts about the image file, not about the experiment, and
-#' `Make_SampleSheet` rewrites them on every regeneration. Carrying them into
+#' `Make_SeriesSheet` rewrites them on every regeneration. Carrying them into
 #' the outputs would put `size_x` and `file_size` on every feature row as though
 #' somebody had typed them as metadata.
 .cli_sheet_machine_columns <- function() {
@@ -673,7 +673,7 @@
   return(as.character(d$column[d$sheet == "series" & d$owner == "machine"]))
 }
 
-.cli_read_sample_sheet <- function(path, id_column = "series_id", keep_machine = character(0)) {
+.cli_read_series_sheet <- function(path, id_column = "series_id", keep_machine = character(0)) {
   # Read the series table (series.tsv) -- or any table keyed the same way
   sheet <- .cli_read_table(path, "series table")
   if (!id_column %in% colnames(sheet)) {
@@ -683,7 +683,7 @@
     if (identical(id_column, "series_id") && "prefix" %in% colnames(sheet)) {
       stop("This series table has a 'prefix' column and no 'series_id': it was written before ",
            "v0.7.0, which renamed the column (and samples.tsv to series.tsv). Rename the column, ",
-           "or regenerate the table -- Make_SampleSheet pointed at the old sheet keeps your edits. ",
+           "or regenerate the table -- Make_SeriesSheet pointed at the old sheet keeps your edits. ",
            "File: ", path, call. = FALSE)
     }
     stop("Series table has no '", id_column, "' column. Found: ",
@@ -791,7 +791,7 @@
   return(v)
 }
 
-# Columns the CLIs write themselves. A sample sheet column of the same name
+# Columns the CLIs write themselves. A series table column of the same name
 # would be silently renamed by bind_cols() to `area...7`, producing a file that
 # violates the documented schema -- and the next stage then cannot find the
 # column it needs.
@@ -801,9 +801,9 @@
                            "parent_containment", "parent_match",
                            "n_detected", "n_invalid", "n_failed", "n_roi")
 
-#' Stop if the sample sheet would collide with a column the CLI writes
+#' Stop if the series table would collide with a column the CLI writes
 #'
-#' @param sheet     the sample sheet
+#' @param sheet     the series table
 #' @param id_column the column holding the series_id (never metadata)
 #' @param extra     further column names this particular CLI writes, beyond the
 #'                  shared reserved set -- feature_stat_cli.r computes its own
@@ -814,7 +814,7 @@
   meta <- setdiff(colnames(sheet), id_column)
   clash <- base::intersect(meta, unique(c(.CLI_RESERVED_COLUMNS, extra)))
   if (length(clash)) {
-    stop("Sample sheet column(s) collide with columns the output already uses: ",
+    stop("Series table column(s) collide with columns the output already uses: ",
          paste(clash, collapse = ", "),
          "\n  rename them in the sheet (e.g. ", clash[1], " -> sample_", clash[1], ")",
          call. = FALSE)
@@ -822,7 +822,7 @@
   return(invisible(NULL))
 }
 
-.cli_apply_sample_sheet <- function(contract_df, sheet, id_column = "series_id") {
+.cli_apply_series_sheet <- function(contract_df, sheet, id_column = "series_id") {
   # The sheet filters the resolved files AND supplies metadata. It never
   # supplies paths -- that is --input's job.
   wanted <- sheet[[id_column]]
@@ -831,18 +831,18 @@
   # The "sample" column is hardcoded here as the contract_df is a pipeline-internal sheet.
   unmatched_sheet <- setdiff(wanted, contract_df$sample)
   if (length(unmatched_sheet)) {
-    warning(length(unmatched_sheet), " sample sheet row(s) matched no input file: ",
+    warning(length(unmatched_sheet), " series table row(s) matched no input file: ",
             paste(utils::head(unmatched_sheet, 5), collapse = ", "),
             if (length(unmatched_sheet) > 5) {", ..."} else {""}, call. = FALSE)
   }
   dropped <- unique(contract_df$sample[!keep])
   if (length(dropped)) {
-    message("  sample sheet excluded ", length(dropped), " sample(s) found on disk: ",
+    message("  series table excluded ", length(dropped), " sample(s) found on disk: ",
             paste(utils::head(dropped, 5), collapse = ", "),
             if (length(dropped) > 5) {", ..."} else {""})
   }
   if (!any(keep)) {
-    stop("The sample sheet and --input have no sample in common. ",
+    stop("The series table and --input have no sample in common. ",
          "On disk: ", paste(utils::head(unique(contract_df$sample), 3), collapse = ", "),
          "; in sheet: ", paste(utils::head(wanted, 3), collapse = ", "), call. = FALSE)
   }

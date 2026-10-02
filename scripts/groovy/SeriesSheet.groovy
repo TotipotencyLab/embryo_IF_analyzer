@@ -1,4 +1,4 @@
-// SampleSheet.groovy
+// SeriesSheet.groovy
 //
 // files.tsv -> series.tsv: one row per SERIES, from one row per FILE.
 //
@@ -26,16 +26,16 @@
 // path + series_index -- NOT on series_id, which you may edit, and not on
 // alias, which changes the series_id when you edit it.
 
-class SampleSheet {
+class SeriesSheet {
 
     String libDir
     Class TSV, RX, SCHEMA_CLS
     Object schema
 
-    static SampleSheet load(String libDir) {
+    static SeriesSheet load(String libDir) {
         def dir = new File(libDir)
-        def gcl = new GroovyClassLoader(SampleSheet.class.classLoader)
-        def s = new SampleSheet()
+        def gcl = new GroovyClassLoader(SeriesSheet.class.classLoader)
+        def s = new SeriesSheet()
         s.libDir = dir.getAbsolutePath()
         s.TSV = gcl.parseClass(new File(dir, "Tsv.groovy"))
         s.RX = gcl.parseClass(new File(dir, "RoiExport.groovy"))
@@ -232,7 +232,7 @@ class SampleSheet {
      * `s` rather than a bare number because `slide05_0331_O1_1_10x` gives a
      * human no way to tell the index from the name.
      */
-    String composePrefix(String alias, Object seriesIndex, String seriesName) {
+    String composeSeriesId(String alias, Object seriesIndex, String seriesName) {
         def idx = String.format(INDEX_FORMAT, (seriesIndex ?: 0) as Integer)
         return RX.sanitize(alias + "_" + idx + "_" + seriesName)
     }
@@ -261,7 +261,7 @@ class SampleSheet {
                       (System.currentTimeMillis() - t0) + " ms")
             series.each { sr ->
                 def row = new LinkedHashMap()
-                row.series_id = composePrefix(fr.alias, sr.series_index, sr.series_name)
+                row.series_id = composeSeriesId(fr.alias, sr.series_index, sr.series_name)
                 row.alias = fr.alias
                 row.path = fr.path
                 row.putAll(sr)
@@ -284,12 +284,12 @@ class SampleSheet {
      * SANITISED string, because two series names differing only in whitespace
      * or punctuation become one filename.
      */
-    static Map duplicatePrefixes(List<Map> rows) {
+    static Map duplicateIds(List<Map> rows) {
         return rows.groupBy { it.series_id }.findAll { k, v -> v.size() > 1 }
     }
 
-    void checkPrefixes(List<Map> rows) {
-        def dup = duplicatePrefixes(rows)
+    void checkIds(List<Map> rows) {
+        def dup = duplicateIds(rows)
         if (dup) {
             def detail = dup.collect { k, v ->
                 k + " <- " + v.collect { it.path + "[" + it.series_index + "] " + it.series_name }.join(" AND ")

@@ -110,7 +110,7 @@ check("every required series column present",
 check("no undeclared series column",
       ser[0].keySet().toList() - SCHEMA.columns("series"), [])
 check("every required sources column present",
-      SCHEMA.required("manifest") - rows[0].keySet().toList(), [])
+      SCHEMA.required("sources") - rows[0].keySet().toList(), [])
 check("include seeded true",      s0.include, "true")
 check("alias is the acquisition", s0.alias, "acq")
 
@@ -134,9 +134,9 @@ check("two aliases share no series id",
        .intersect(ser.collect { it.series_id }.toSet())).toList(), [])
 check("but the same number of them", named.series.size(), ser.size())
 // And it is the repo's own composer, not a second copy of the rule.
-def SSS = gcl.parseClass(new File(LIBDIR + "/SampleSheet.groovy")).load(LIBDIR)
-check("the id rule is SampleSheet.composePrefix",
-      SSS.composePrefix("fucci_rep2", 0, "L26A pos1"),
+def SSS = gcl.parseClass(new File(LIBDIR + "/SeriesSheet.groovy")).load(LIBDIR)
+check("the id rule is SeriesSheet.composeSeriesId",
+      SSS.composeSeriesId("fucci_rep2", 0, "L26A pos1"),
       named.series.find { it.series_index == 0 }.series_id)
 // Whitespace in a stack description must not survive into an id: the outline
 // table is tab-separated and `name` holds this string.

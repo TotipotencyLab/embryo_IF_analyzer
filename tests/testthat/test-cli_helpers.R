@@ -174,7 +174,7 @@ test_that(".cli_parse_contract keeps a sample name containing the feature word",
   expect_identical(got$feature, "nucleus")
 })
 
-# --- sample sheet -------------------------------------------------------------
+# --- series table -------------------------------------------------------------
 
 write_sheet <- function(dir, df){
   p <- file.path(dir, "series.tsv")
@@ -182,16 +182,16 @@ write_sheet <- function(dir, df){
   p
 }
 
-test_that(".cli_read_sample_sheet requires the id column and rejects duplicates", {
+test_that(".cli_read_series_sheet requires the id column and rejects duplicates", {
   d <- withr::local_tempdir()
   ok <- write_sheet(d, data.frame(series_id = c("S1", "S2"), genotype = c("wt", "ko")))
-  expect_identical(nrow(.cli_read_sample_sheet(ok)), 2L)
+  expect_identical(nrow(.cli_read_series_sheet(ok)), 2L)
 
   bad <- write_sheet(d, data.frame(sample = "S1"))
-  expect_error(.cli_read_sample_sheet(bad), "no 'series_id' column")
+  expect_error(.cli_read_series_sheet(bad), "no 'series_id' column")
 
   dup <- write_sheet(d, data.frame(series_id = c("S1", "S1")))
-  expect_error(.cli_read_sample_sheet(dup), "Duplicate")
+  expect_error(.cli_read_series_sheet(dup), "Duplicate")
 })
 
 test_that("a sheet from before v0.7.0 is named as one, not as a missing column", {
@@ -199,32 +199,32 @@ test_that("a sheet from before v0.7.0 is named as one, not as a missing column",
   # looking for a typo; the message has to say which version made the sheet.
   d <- withr::local_tempdir()
   old <- write_sheet(d, data.frame(prefix = c("S1", "S2"), genotype = "wt"))
-  expect_error(.cli_read_sample_sheet(old), "written before v0.7.0")
-  expect_error(.cli_read_sample_sheet(old), "'prefix' column and no 'series_id'")
+  expect_error(.cli_read_series_sheet(old), "written before v0.7.0")
+  expect_error(.cli_read_series_sheet(old), "'prefix' column and no 'series_id'")
   # A caller naming its own id column is not second-guessed: only the default
   # id triggers the old-sheet message.
-  expect_identical(nrow(.cli_read_sample_sheet(old, id_column = "prefix")), 2L)
+  expect_identical(nrow(.cli_read_series_sheet(old, id_column = "prefix")), 2L)
 })
 
-test_that(".cli_apply_sample_sheet filters inputs and reports both mismatches", {
+test_that(".cli_apply_series_sheet filters inputs and reports both mismatches", {
   contract <- data.frame(path = c("a", "b"), sample = c("S1", "S2"),
                          feature = "nucleus", stringsAsFactors = FALSE)
   sheet <- data.frame(series_id = c("S1", "S3"), stringsAsFactors = FALSE)
 
-  expect_warning(suppressMessages(.cli_apply_sample_sheet(contract, sheet)),
+  expect_warning(suppressMessages(.cli_apply_series_sheet(contract, sheet)),
                  "matched no input file")
-  expect_warning(suppressMessages(.cli_apply_sample_sheet(contract, sheet)), "S3")
+  expect_warning(suppressMessages(.cli_apply_series_sheet(contract, sheet)), "S3")
 
-  got <- suppressWarnings(suppressMessages(.cli_apply_sample_sheet(contract, sheet)))
+  got <- suppressWarnings(suppressMessages(.cli_apply_series_sheet(contract, sheet)))
   expect_identical(got$sample, "S1")   # S2 dropped: not in the sheet
 })
 
-test_that(".cli_apply_sample_sheet errors when nothing overlaps", {
+test_that(".cli_apply_series_sheet errors when nothing overlaps", {
   contract <- data.frame(path = "a", sample = "S1", feature = "nucleus",
                          stringsAsFactors = FALSE)
   sheet <- data.frame(series_id = "OTHER", stringsAsFactors = FALSE)
   expect_error(suppressWarnings(suppressMessages(
-    .cli_apply_sample_sheet(contract, sheet))), "no sample in common")
+    .cli_apply_series_sheet(contract, sheet))), "no sample in common")
 })
 
 # --- include ------------------------------------------------------------------
@@ -247,14 +247,14 @@ test_that(".cli_is_included accepts exactly what the Groovy side accepts", {
   expect_error(.cli_is_included(c("true", "maybe")), "true/false")
 })
 
-test_that(".cli_read_sample_sheet honours include and does not carry it through", {
+test_that(".cli_read_series_sheet honours include and does not carry it through", {
   d <- withr::local_tempdir()
   p <- file.path(d, "s.tsv")
   write.table(data.frame(series_id = c("A", "B", "C"),
                          include = c("true", "false", "true"),
                          condition = c("wt", "ko", "wt")),
               p, sep = "\t", quote = FALSE, row.names = FALSE)
-  sheet <- suppressMessages(.cli_read_sample_sheet(p))
+  sheet <- suppressMessages(.cli_read_series_sheet(p))
   expect_identical(sheet$series_id, c("A", "C"))
   # A control column, not metadata: left in, it would land on every output row
   # as a column that is TRUE everywhere by construction.
@@ -270,13 +270,13 @@ test_that("an excluded row may duplicate an included one", {
   p <- file.path(d, "s.tsv")
   write.table(data.frame(series_id = c("A", "A"), include = c("true", "false")),
               p, sep = "\t", quote = FALSE, row.names = FALSE)
-  expect_identical(nrow(suppressMessages(.cli_read_sample_sheet(p))), 1L)
+  expect_identical(nrow(suppressMessages(.cli_read_series_sheet(p))), 1L)
 
   # Both included is still fatal.
   p2 <- file.path(d, "s2.tsv")
   write.table(data.frame(series_id = c("A", "A"), include = c("true", "true")),
               p2, sep = "\t", quote = FALSE, row.names = FALSE)
-  expect_error(suppressMessages(.cli_read_sample_sheet(p2)), "Duplicate")
+  expect_error(suppressMessages(.cli_read_series_sheet(p2)), "Duplicate")
 })
 
 test_that("a sheet with every row excluded is an error, not an empty run", {
@@ -284,7 +284,7 @@ test_that("a sheet with every row excluded is an error, not an empty run", {
   p <- file.path(d, "s.tsv")
   write.table(data.frame(series_id = c("A", "B"), include = c("false", "no")),
               p, sep = "\t", quote = FALSE, row.names = FALSE)
-  expect_error(suppressMessages(.cli_read_sample_sheet(p)), "include=false")
+  expect_error(suppressMessages(.cli_read_series_sheet(p)), "include=false")
 })
 
 # --- the schema file ----------------------------------------------------------
@@ -293,7 +293,7 @@ test_that("machine columns come from the schema and are not carried through", {
   machine <- .cli_sheet_machine_columns()
   skip_if(!length(machine), "schema/sheet_columns.tsv not found from here")
   # Read from schema/sheet_columns.tsv, not duplicated here: these are facts
-  # about the image file that Make_SampleSheet rewrites on every regeneration.
+  # about the image file that Make_SeriesSheet rewrites on every regeneration.
   expect_true(all(c("size_x", "pixel_width", "file_size", "series_index") %in% machine))
   expect_false("series_id" %in% machine)
 
@@ -302,11 +302,11 @@ test_that("machine columns come from the schema and are not carried through", {
   write.table(data.frame(series_id = "A", condition = "wt",
                          size_x = 2048L, pixel_width = 0.22, file_size = 99L),
               p, sep = "\t", quote = FALSE, row.names = FALSE)
-  sheet <- suppressMessages(.cli_read_sample_sheet(p))
+  sheet <- suppressMessages(.cli_read_series_sheet(p))
   expect_identical(colnames(sheet), c("series_id", "condition"))
   # Dropped loudly, not silently: somebody who wanted pixel_width should be
   # told where it went.
-  expect_message(.cli_read_sample_sheet(p), "machine column")
+  expect_message(.cli_read_series_sheet(p), "machine column")
 })
 
 # --- the Fiji _config.txt -----------------------------------------------------

@@ -523,12 +523,12 @@ test_that("the same sheet at both stages is the ordinary case, not a collision",
   feat <- withr::local_tempdir()
   suppressMessages(annotate_features_cli(c(
     "--input", fixture_dir(), "--feature", "nucleus", "--outdir", feat,
-    "--sample_sheet", sheet)))
+    "--series_sheet", sheet)))
 
   out <- withr::local_tempdir()
   st <- suppressWarnings(suppressMessages(feature_stat_cli(c(
     "--input", feat, "--outdir", out, "--res_dir", fixture_dir(),
-    "--no_plot", "--sample_sheet", sheet))))
+    "--no_plot", "--series_sheet", sheet))))
 
   # Present ONCE. A re-join would give genotype.x / genotype.y, after which
   # --group_by genotype resolves to neither.
@@ -551,7 +551,7 @@ test_that("a sheet that disagrees with the annotation is refused, not merged", {
   feat <- withr::local_tempdir()
   suppressMessages(annotate_features_cli(c(
     "--input", fixture_dir(), "--feature", "nucleus", "--outdir", feat,
-    "--sample_sheet", one)))
+    "--series_sheet", one)))
 
   # Same sample, different genotype: the features were annotated from another
   # sheet. Quietly preferring either one would attach the wrong metadata to
@@ -563,7 +563,7 @@ test_that("a sheet that disagrees with the annotation is refused, not merged", {
   expect_error(
     suppressWarnings(suppressMessages(feature_stat_cli(c(
       "--input", feat, "--outdir", out, "--res_dir", fixture_dir(),
-      "--no_plot", "--sample_sheet", two)))),
+      "--no_plot", "--series_sheet", two)))),
     "disagree with what is already on the features")
 })
 
@@ -586,6 +586,6 @@ test_that("a column only the sheet has is still joined", {
   out <- withr::local_tempdir()
   st <- suppressWarnings(suppressMessages(feature_stat_cli(c(
     "--input", feat, "--outdir", out, "--res_dir", fixture_dir(),
-    "--no_plot", "--sample_sheet", sheet))))
+    "--no_plot", "--series_sheet", sheet))))
   expect_identical(unique(st$timepoint), "E3.5")
 })

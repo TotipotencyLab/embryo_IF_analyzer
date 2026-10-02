@@ -26,7 +26,7 @@ R reads those, merges per-slice ROIs into 3D objects, and does the analysis.
 
    Every other column is your own metadata. It is carried onto the outputs and
    can be used to group the results. The sheet is optional: the CLIs also run
-   sample-unaware.
+   without one.
 
 2. **Run the Fiji side** to produce the outline and measurement tables
    (see below).
@@ -37,7 +37,7 @@ R reads those, merges per-slice ROIs into 3D objects, and does the analysis.
    # outlines -> features, with nucleoli placed inside their nuclei
    scripts/R_cli/annotate_features_cli.r \
        --input raw_measurements/ --feature nucleus nucleolus \
-       --outdir results/ --sample_sheet config/series.tsv \
+       --outdir results/ --series_sheet config/series.tsv \
        --max_z_dist 'default=3' 'nucleolus=1' \
        --min_z_span 'default=5' 'nucleolus=2' \
        --within 'nucleolus=nucleus' --qc_plot
@@ -51,7 +51,7 @@ R reads those, merges per-slice ROIs into 3D objects, and does the analysis.
    # features -> counts, grouped by your metadata
    scripts/R_cli/count_features_cli.r \
        --input results/ --outdir results/ \
-       --sample_sheet config/series.tsv --group_by genotype --plot
+       --series_sheet config/series.tsv --group_by genotype --plot
 
    # per-feature statistics + distribution plots, for choosing thresholds
    scripts/R_cli/feature_stat_cli.r \
@@ -298,7 +298,7 @@ has to be made or sanity-checked by eye.
 ```bash
 scripts/R_cli/group_montage_cli.r \
   --image_dir overviews --image_suffix _overview_ch1.png \
-  --sample_sheet sheets/series.tsv --group_by section_id --outdir montages
+  --series_sheet sheets/series.tsv --group_by section_id --outdir montages
 ```
 
 Two of its behaviours are deliberate and worth knowing before you read a

@@ -467,7 +467,7 @@ class BatchRunner {
         def included = rows.findAll { isIncluded(it.include) }
         say("=== batch: " + included.size() + " of " + rows.size() + " row(s) included ===")
 
-        // Make_SampleSheet writes a sheet with duplicates on purpose, so they can
+        // Make_SeriesSheet writes a sheet with duplicates on purpose, so they can
         // be seen and fixed. Here they are fatal: the series_id names the output
         // files, so two rows sharing one would overwrite each other and the R
         // side would merge them into a single series. Only INCLUDED rows matter

@@ -136,7 +136,7 @@ one (position, time point), and that is what §6.17 records reversing.
 
 | id | means | unique within | written by |
 |---|---|---|---|
-| `series_id` | one series — one row of the series table | the series table | `Make_SampleSheet` / `Make_LuxendoSheets` |
+| `series_id` | one series — one row of the series table | the series table | `Make_SeriesSheet` / `Make_LuxendoSheets` |
 | `t` | which time point, within a series | a `series_id` | the frame index, written by Fiji into the output tables (`time_axis`) |
 | `feature_id` | one object **at one time point** | a `series_id` | `define_feature_group()` |
 | `track_id` | one object **through time** | a `series_id` | `tracking` (TrackMate) |
@@ -255,7 +255,7 @@ the sources, `pixel_type` `uint16`.
 🔒 **`alias` is a parameter, not the folder name.** The folder name is only its
 default, exactly as `files.tsv`'s alias defaults to the basename — the point of
 the column is that a run need not be named after whatever the camera called the
-directory. `prefix` carries it, built by `SampleSheet.composePrefix()` rather
+directory. `prefix` carries it, built by `SeriesSheet.composeSeriesId()` rather
 than a second copy of the rule, which is what makes a series id unique
 **across** acquisitions and not merely within one. Measured: two real
 acquisitions shared all 14 stack identities, so all 56 of the smaller one's
@@ -265,7 +265,7 @@ series ids collided before the alias was added, and 0 after.
 
 Until 2026-10-02 a Luxendo series was one (position, time point), so the stack
 number repeated once per time point — 56 rows, 14 values — and
-`SampleSheet.mergeKey()`, which is `(path, series_index)`, collapsed 56 rows to
+`SeriesSheet.mergeKey()`, which is `(path, series_index)`, collapsed 56 rows to
 14. The plan then was two new columns, `position_id` and `t`. Making the series
 the whole position fixes it at the root instead: one row per stack, so
 `(path, series_index)` is unique and stable, `mergeKey` needs no change, and H10
@@ -274,7 +274,7 @@ is gone. It persists only for tables made with `gatherFrames` off (§4).
 🔒 **A running counter per row stays ruled out**, for the record: it restores
 uniqueness and destroys stability — an acquisition grows, and every counter
 after the new time points shifts, orphaning results folders. `CLAUDE.md`
-settled the same shape for prefix padding, and `SampleSheet.groovy:313` records
+settled the same shape for prefix padding, and `SeriesSheet.groovy:313` records
 what it cost last time.
 
 🔒 **A rescan must refuse a renumbering.** The stack number is written into
@@ -339,7 +339,7 @@ column is duplicated.
 
 🔒 **The outline table is authoritative for `z`.** Before dropping the
 measurement table's `z`, **assert the two agree on the overlap**, then drop, and
-**report the drop** the way `.cli_read_sample_sheet()` already reports dropped
+**report the drop** the way `.cli_read_series_sheet()` already reports dropped
 columns. Worth a small shared helper — `t` will want the same treatment as soon
 as a second table carries it.
 
@@ -459,7 +459,7 @@ step means permanently holding two copies of an 800 GB acquisition.
 ⚠️ **Step 1 → step 4 has a human edit in between**, and it is where a two-table
 design first goes wrong. Regeneration must match on `series_id`, never
 re-propagate a seeded column silently, and report every carry-over — the
-discipline `Make_SampleSheet` already has. A join matching nothing must be a
+discipline `Make_SeriesSheet` already has. A join matching nothing must be a
 loud error: a silent empty run is the failure this repo is built around.
 
 - [x] 🔒 **`Make_LuxendoSheets.groovy`** — one scan, two tables. Named for what
@@ -495,7 +495,7 @@ loud error: a silent empty run is the failure this repo is built around.
       measured on two real ones, all 14 stack identities were identical, so all
       56 of the smaller run's series ids collided and two runs in one output
       directory would have overwritten each other's results. Built with
-      `SampleSheet.composePrefix()`, so the prefix rule stays in one place.
+      `SeriesSheet.composeSeriesId()`, so the prefix rule stays in one place.
       This was a bug in Part 2 as first written — `CLAUDE.md`'s "unique by
       construction" rule was broken without anyone noticing.
 
@@ -601,8 +601,8 @@ Everything that reads or writes `files.tsv`, `series.tsv` and `sources.tsv`.
       `series_id`, the §3.2 descriptions of `series_index` and `alias`.
       `SheetSchema.SERIES` / `ID_COLUMN` name them once on the Groovy side.
 - [x] `samples.tsv` → `series.tsv` everywhere it is named;
-      `config/sample_sheet_template.tsv` → `config/series_template.tsv`.
-- [x] Groovy: `SampleSheet`, `Make_SampleSheet` (`allowDuplicatePrefix` →
+      `config/series_sheet_template.tsv` → `config/series_template.tsv`.
+- [x] Groovy: `SeriesSheet`, `Make_SeriesSheet` (`allowDuplicatePrefix` →
       `allowDuplicateId`), `BatchRunner` (and the `series_id` column of
       `batch_summary.tsv`), `Run_Overview_Batch`, `SheetSchema`, `LuxendoScan`,
       `Make_LuxendoTiff`.
@@ -611,36 +611,42 @@ Everything that reads or writes `files.tsv`, `series.tsv` and `sources.tsv`.
       table cannot collide on a stack number. One join,
       `LuxendoScan.withSeriesId()`.
 - [x] `gatherFrames` removed; asking for it is refused, naming `frames`.
-- [x] R: `.cli_read_sample_sheet()` (default `id_column = "series_id"`, the
+- [x] R: `.cli_read_series_sheet()` (default `id_column = "series_id"`, the
       `sheet == "series"` literal), the CLIs' `--id_column` default,
       `group_montage_cli.r` (and `montage_index.tsv`'s `series_id` column, since
       that file is read back in as a sheet).
 - [x] 🔒 **`merge()` refuses a renumbering**: same `(path, series_index)`,
       different `series_name`; nothing is written.
 - [x] ⚠️ **An old sheet is named as one**, on both sides (`SheetSchema.requireId`,
-      `.cli_read_sample_sheet()`), before the duplicate check can misreport it;
-      `Make_SampleSheet` pointed at an old sheet renames `prefix` in place,
-      edits kept (`SampleSheet.migrateOldId`).
+      `.cli_read_series_sheet()`), before the duplicate check can misreport it;
+      `Make_SeriesSheet` pointed at an old sheet renames `prefix` in place,
+      edits kept (`SeriesSheet.migrateOldId`).
 - [x] The glossary, `note/data_formats.md` §1, `tests/testthat/test-data_formats.R`,
       `README.md`, `config/`.
 
-**Not done here, deliberately:** code identifiers keep the old word —
-`Make_SampleSheet`, `SampleSheet`, `composePrefix()`, `.cli_read_sample_sheet()`,
-the R CLIs' `--sample_sheet` flag, and the schema's `manifest` sheet name for
-`sources.tsv`. They name no data and change no output; renaming them would
-double the diff. The `sample` column of R's outputs is PR 2.
+**Code identifiers followed, in the same PR** (asked for at review): the old
+word was gone from the data but not from the code, so `Make_SampleSheet` →
+`Make_SeriesSheet`, `SampleSheet` → `SeriesSheet` (and `Test_SeriesSheet`),
+`composePrefix()` → `composeSeriesId()`, `duplicatePrefixes`/`checkPrefixes` →
+`duplicateIds`/`checkIds`, `.cli_read_sample_sheet()` / `.cli_apply_sample_sheet()`
+→ `.cli_read_series_sheet()` / `.cli_apply_series_sheet()`, the R CLIs'
+`--sample_sheet` → `--series_sheet`, and the schema's `manifest` sheet → `sources`.
+⚠️ `--series_sheet` breaks every saved CLI command — fine below 1.0 with one
+caller (`CLAUDE.md` § Versioning records that a flag rename is a command
+change, not an output one), and argparser fails loudly on the old flag. The
+`sample` column of R's outputs is PR 2.
 
 **Verification, as carried out.** R 4.6.1: 964 passed, 0 failed (main: 955; the
-one warning is the same on main). Groovy, every file: `Test_SampleSheet` 106,
+one warning is the same on main). Groovy, every file: `Test_SeriesSheet` 106,
 `Test_BatchRunner` 131, `Test_LuxendoScan` 111, `Test_TiffAssembler` 117,
 `Test_LuxendoFile` 37, `Test_LuxendoSidecar` 49, `Test_RunConfig` 90,
 `Test_NucleusPipeline` 62, `Test_Overview` 126, `Test_RoiExport` 28,
 `Test_BuildMask` 108, `Test_NucleolusDetect` 26 — 0 failed. Real data, read
 only, outputs in scratch:
 - the rnf4 oocyte project's `files.tsv` (two tile-merged `.lif`, 111 series):
-  `main`'s and this branch's `Make_SampleSheet` agree on every row and cell,
+  `main`'s and this branch's `Make_SeriesSheet` agree on every row and cell,
   only the id column's header differs;
-- its hand-edited `samples.tsv`, migrated by `Make_SampleSheet`: identical apart
+- its hand-edited `samples.tsv`, migrated by `Make_SeriesSheet`: identical apart
   from the renamed header and an `ovary` column the merge adds because
   `files.tsv` has it and the old sheet did not (behaviour already on `main`);
   every `use`, `section_id` and `include` edit kept;
@@ -683,7 +689,7 @@ identical **after dropping `name`**, and that `name` differs only by the removed
 `output_prefix`. That fails if anything else moved.
 
 **Then release v0.7.0**, with release notes saying old sheets stop loading and
-are regenerated with `Make_SampleSheet` / `Make_LuxendoSheets`.
+are regenerated with `Make_SeriesSheet` / `Make_LuxendoSheets`.
 
 **Moved to `time_axis`** (2026-10-02): `feature_id` as `<feature_type>_<NNNN>`,
 numbered globally within a series. Today it is `nucleus_1` — unpadded, per
@@ -1243,7 +1249,7 @@ across time, which is the goal.
 ### 6.3 `image_id` instead of `series_id`
 
 **Rejected: the literal argument wins.** A row of that table *is* a Bio-Formats
-series — `Make_SampleSheet` builds it by enumerating series. The objection that
+series — `Make_SeriesSheet` builds it by enumerating series. The objection that
 three `series_*` names crowd one table does not survive inspection, because they
 are not redundant: `series_index` and `series_name` are unique *within a file*
 (which is exactly why neither can be the identity across a batch — a Leica
@@ -1345,7 +1351,7 @@ Two separate rejections of the same shape.
 
 **One row per file: rejected, it breaks a cross-language invariant.** `prefix`
 would stop being unique per row, and three things enforce that it is —
-`BatchRunner.runEach()`'s duplicate refusal, `.cli_read_sample_sheet()`'s on the
+`BatchRunner.runEach()`'s duplicate refusal, `.cli_read_series_sheet()`'s on the
 R side, and the standing decision that `prefix` is unique *by construction*. So
 it does not merely make `include` confusing: **every R CLI stops loading the
 sheet**, which is the whole downstream half of the repo.
@@ -1451,7 +1457,7 @@ time point, since there is no row for it — a frame selection has to do that.
 acquisition grows while it is being worked on — so every prefix after the
 inserted timepoints changes on a rescan, orphaning results folders and pointing
 `mergeKey` at the wrong rows. `CLAUDE.md` already rejected the same shape for
-prefix padding, and `SampleSheet.groovy:313` records what it cost last time.
+prefix padding, and `SeriesSheet.groovy:313` records what it cost last time.
 Full reasoning in §3.2b.
 
 ### 6.19 `stack_id`, `position_id` or `image_id` instead of `series`
@@ -1473,7 +1479,7 @@ Full reasoning in §3.2b.
 **Dropped with §6.17.** Planned as `seeded` columns so a position could span
 rows; with the series being the position, `position_id` would always equal
 `series_id`, and `t` belongs to the output tables. The design work that went
-into making them seeded rather than machine (`.cli_read_sample_sheet()` drops
+into making them seeded rather than machine (`.cli_read_series_sheet()` drops
 machine columns) is moot rather than wrong — bring it back if a format ever
 splits one field of view across rows.
 
@@ -1568,7 +1574,7 @@ milestone.
 **H7 — the two tables can disagree.** The series and sources tables join on
 `series_id`, and a person edits the series table between the scan and the run.
 Regeneration must match on `series_id`, never silently re-propagate a seeded
-column, and report every carry-over — `Make_SampleSheet`'s discipline. A join
+column, and report every carry-over — `Make_SeriesSheet`'s discipline. A join
 matching nothing must be a **loud error**, not an empty run. The `luxendo`
 milestone; the renumbering refusal of §3.2b is the `vocab` half.
 

@@ -60,7 +60,7 @@ test_that("count_features_cli joins metadata and groups by it", {
   out <- withr::local_tempdir()
   res <- suppressMessages(count_features_cli(c(
     "--input", feat_dir, "--outdir", out,
-    "--sample_sheet", sheet, "--group_by", "genotype")))
+    "--series_sheet", sheet, "--group_by", "genotype")))
 
   expect_true("genotype" %in% colnames(res))
   expect_true(file.exists(file.path(out, "feature_counts_summary.tsv")))

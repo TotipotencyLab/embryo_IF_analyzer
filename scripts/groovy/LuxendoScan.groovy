@@ -90,7 +90,7 @@ class LuxendoScan {
     Object SC           // LuxendoSidecar class
     Object IX           // LuxendoIndex class
     Object RX           // RoiExport class, for sanitize()
-    Object SS           // SampleSheet instance, for composePrefix()
+    Object SS           // SeriesSheet instance, for composeSeriesId()
     String libDir
 
     static LuxendoScan load(String libDir) {
@@ -101,11 +101,11 @@ class LuxendoScan {
         s.SC = gcl.parseClass(new File(dir, "LuxendoSidecar.groovy"))
         s.IX = gcl.parseClass(new File(dir, "LuxendoIndex.groovy"))
         s.RX = gcl.parseClass(new File(dir, "RoiExport.groovy"))
-        // THE PREFIX RULE LIVES IN ONE PLACE. composePrefix() is the repo's
+        // THE PREFIX RULE LIVES IN ONE PLACE. composeSeriesId() is the repo's
         // own `sanitise(<alias>_s<NNNN>_<series_name>)`, and Luxendo follows it
         // rather than reimplementing it -- so a change to the rule lands on
         // both paths at once.
-        s.SS = gcl.parseClass(new File(dir, "SampleSheet.groovy")).load(libDir)
+        s.SS = gcl.parseClass(new File(dir, "SeriesSheet.groovy")).load(libDir)
         return s
     }
 
@@ -367,7 +367,7 @@ class LuxendoScan {
             // separately into one output directory, silently overwrite each
             // other's _outline.txt, _res.txt and _config.txt. That is exactly
             // what `CLAUDE.md`'s "unique by construction" rule exists to stop.
-            def serId = SS.composePrefix(alias, sc.stack, sc.stackDescription ?: "")
+            def serId = SS.composeSeriesId(alias, sc.stack, sc.stackDescription ?: "")
             sources << [
                 source_path  : relative(dir, f),
                 // THE JOIN KEY, and both halves are machine-owned -- see the

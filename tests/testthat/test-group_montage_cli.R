@@ -65,7 +65,7 @@ gm_bbox <- function(path, colour) {
 gm_run <- function(fx, extra = character(0), out = NULL) {
   if (is.null(out)) out <- file.path(fx$dir, paste0("out", as.integer(runif(1, 1, 1e6))))
   idx <- suppressMessages(suppressWarnings(group_montage_cli(c(
-    "--sample_sheet", fx$sheet, "--group_by", "section_id",
+    "--series_sheet", fx$sheet, "--group_by", "section_id",
     "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
     "--outdir", out, "--cell_max_px", "300", "--ncol", "3", extra))))
   list(idx = idx, out = out)
@@ -118,7 +118,7 @@ test_that("a shape the sheet does not describe is warned about, in physical mode
     seen <- character(0)
     withCallingHandlers(
       suppressMessages(group_montage_cli(c(
-        "--sample_sheet", fx$sheet, "--group_by", "section_id",
+        "--series_sheet", fx$sheet, "--group_by", "section_id",
         "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
         "--outdir", file.path(fx$dir, paste0("w", length(extra))),
         "--cell_max_px", "200", extra))),
@@ -130,7 +130,7 @@ test_that("a shape the sheet does not describe is warned about, in physical mode
   }
 
   phys <- grab()
-  expect_true(any(grepl("not the shape the sample sheet describes", phys, fixed = TRUE)))
+  expect_true(any(grepl("not the shape the series table describes", phys, fixed = TRUE)))
   expect_true(any(grepl("B_s0001", phys, fixed = TRUE)))
 
   # ...and NOT under --scale pixel, where the sheet's dimensions are never
@@ -142,7 +142,7 @@ test_that("a shape the sheet does not describe is warned about, in physical mode
   # work. Verified: removing that test fails nothing. It is asserted here as
   # the behaviour, not as a guard on the implementation.
   pix <- grab(c("--scale", "pixel"))
-  expect_false(any(grepl("not the shape the sample sheet describes", pix, fixed = TRUE)))
+  expect_false(any(grepl("not the shape the series table describes", pix, fixed = TRUE)))
   # The fixture still warns about its missing image, so an empty result would
   # not prove the check was skipped rather than the warnings being swallowed.
   expect_true(any(grepl("not found", pix, fixed = TRUE)))
@@ -162,7 +162,7 @@ test_that("a correctly shaped image is not warned about", {
   seen <- character(0)
   withCallingHandlers(
     suppressMessages(group_montage_cli(c(
-      "--sample_sheet", fx$sheet, "--group_by", "section_id",
+      "--series_sheet", fx$sheet, "--group_by", "section_id",
       "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
       "--outdir", file.path(fx$dir, "ok"), "--cell_max_px", "200"))),
     warning = function(cond) {
@@ -188,7 +188,7 @@ test_that("a missing image still occupies a labelled cell", {
   out <- file.path(fx$dir, "miss")
   expect_warning(
     idx <- suppressMessages(group_montage_cli(c(
-      "--sample_sheet", fx$sheet, "--group_by", "section_id",
+      "--series_sheet", fx$sheet, "--group_by", "section_id",
       "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
       "--outdir", out, "--cell_max_px", "300", "--ncol", "3"))),
     "not found")
@@ -263,7 +263,7 @@ test_that("cells are sized per column and per row, not one size for the group", 
   run <- function(ncol) {
     o <- file.path(d, paste0("n", ncol))
     suppressMessages(suppressWarnings(group_montage_cli(c(
-      "--sample_sheet", sp, "--group_by", "section_id", "--image_dir", img,
+      "--series_sheet", sp, "--group_by", "section_id", "--image_dir", img,
       "--image_suffix", "_overview_ch1.png", "--outdir", o,
       "--ncol", as.character(ncol), "--cell_max_px", "100", "--no_scale_bar"))))
   }
@@ -323,7 +323,7 @@ test_that("a placeholder takes the slot its siblings occupy, not one the sheet p
 
   for (mode in c("pixel", "physical")) {
     idx <- suppressMessages(suppressWarnings(group_montage_cli(c(
-      "--sample_sheet", sp, "--group_by", "section_id", "--image_dir", img,
+      "--series_sheet", sp, "--group_by", "section_id", "--image_dir", img,
       "--image_suffix", "_overview_ch1.png", "--outdir", file.path(d, mode),
       "--ncol", "1", "--cell_max_px", "650", "--scale", mode, "--no_scale_bar"))))
     expect_identical(sum(idx$status == "missing"), 2L)
@@ -348,7 +348,7 @@ test_that("a group with no image at all still gets a montage, at the budget", {
   utils::write.table(sheet, sp, sep = "\t", quote = FALSE, row.names = FALSE)
 
   idx <- suppressMessages(suppressWarnings(group_montage_cli(c(
-    "--sample_sheet", sp, "--group_by", "section_id", "--image_dir", img,
+    "--series_sheet", sp, "--group_by", "section_id", "--image_dir", img,
     "--image_suffix", "_overview_ch1.png", "--outdir", file.path(d, "none"),
     "--ncol", "1", "--cell_max_px", "300", "--scale", "pixel", "--no_scale_bar"))))
   expect_identical(sum(idx$status == "missing"), 2L)
@@ -396,7 +396,7 @@ test_that("a grouping column that separates nothing is warned about", {
   fx <- gm_fixture()
   expect_warning(
     suppressMessages(group_montage_cli(c(
-      "--sample_sheet", fx$sheet, "--group_by", "series_index",
+      "--series_sheet", fx$sheet, "--group_by", "series_index",
       "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
       "--outdir", file.path(fx$dir, "degen"), "--cell_max_px", "150"))),
     "every sample in its own group")
@@ -419,7 +419,7 @@ test_that("a grouping column that separates nothing is warned about", {
   seen <- character(0)
   withCallingHandlers(
     suppressMessages(group_montage_cli(c(
-      "--sample_sheet", fx2$sheet, "--group_by", "section_id",
+      "--series_sheet", fx2$sheet, "--group_by", "section_id",
       "--image_dir", fx2$img, "--image_suffix", "_overview_ch1.png",
       "--outdir", file.path(fx2$dir, "mixed"), "--cell_max_px", "150"))),
     warning = function(cond) {
@@ -443,7 +443,7 @@ test_that("a group whose images are ALL missing still gets a montage", {
   fx <- gm_fixture()
   out <- file.path(fx$dir, "allmissing")
   idx <- suppressMessages(suppressWarnings(group_montage_cli(c(
-    "--sample_sheet", fx$sheet, "--group_by", "series_index",
+    "--series_sheet", fx$sheet, "--group_by", "series_index",
     "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
     "--outdir", out, "--cell_max_px", "150"))))
 
@@ -458,7 +458,7 @@ test_that("--on_missing error refuses rather than drawing a placeholder", {
   fx <- gm_fixture()
   expect_error(
     suppressMessages(group_montage_cli(c(
-      "--sample_sheet", fx$sheet, "--group_by", "section_id",
+      "--series_sheet", fx$sheet, "--group_by", "section_id",
       "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
       "--outdir", file.path(fx$dir, "err"), "--on_missing", "error"))),
     "not found")
@@ -483,7 +483,7 @@ test_that("--order_by works on a MACHINE column, e.g. series_index", {
   # the CLI has to ask for the ones it needs by name. It asked only for the four
   # physical-size columns, so "--order_by series_index" -- the obvious thing to
   # want, since with serial sections the order IS the information -- failed with
-  # "--order_by names no column of the sample sheet".
+  # "--order_by names no column of the series table".
   fx <- gm_fixture()
   r <- gm_run(fx, c("--order_by", "series_index"))
   a <- r$idx[r$idx$group == "A", ]
@@ -501,7 +501,7 @@ test_that("--label_by and --group_by also accept a machine column", {
   # refuses the flag twice.
   out2 <- file.path(fx$dir, "bymachine")
   idx2 <- suppressMessages(suppressWarnings(group_montage_cli(c(
-    "--sample_sheet", fx$sheet, "--group_by", "series_index",
+    "--series_sheet", fx$sheet, "--group_by", "series_index",
     "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
     "--outdir", out2, "--cell_max_px", "150"))))
   # one group per row, since series_index is unique
@@ -511,7 +511,7 @@ test_that("--label_by and --group_by also accept a machine column", {
 test_that("--order_by on a column that is in no sheet still fails, and says what is there", {
   fx <- gm_fixture()
   expect_error(gm_run(fx, c("--order_by", "not_a_column")),
-               "names no column of the sample sheet")
+               "names no column of the series table")
   expect_error(gm_run(fx, c("--order_by", "not_a_column")), "available: ")
 })
 
@@ -537,7 +537,7 @@ test_that("a blank grouping key is refused, not collected into a bucket", {
   utils::write.table(s, fx$sheet, sep = "\t", quote = FALSE, row.names = FALSE)
   expect_error(
     suppressMessages(group_montage_cli(c(
-      "--sample_sheet", fx$sheet, "--group_by", "section_id",
+      "--series_sheet", fx$sheet, "--group_by", "section_id",
       "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
       "--outdir", file.path(fx$dir, "blank")))),
     "have no 'section_id'")
@@ -552,7 +552,7 @@ test_that("two samples resolving to one image is an error", {
   utils::write.table(s, fx$sheet, sep = "\t", quote = FALSE, row.names = FALSE)
   expect_error(
     suppressMessages(group_montage_cli(c(
-      "--sample_sheet", fx$sheet, "--group_by", "section_id",
+      "--series_sheet", fx$sheet, "--group_by", "section_id",
       "--image_path_by", "img",
       "--outdir", file.path(fx$dir, "dup")))),
     "claimed by more than one sample")
@@ -566,13 +566,13 @@ test_that("--image_path_by takes paths from the sheet, and excludes the built fo
 
   out <- file.path(fx$dir, "bycol")
   idx <- suppressMessages(suppressWarnings(group_montage_cli(c(
-    "--sample_sheet", fx$sheet, "--group_by", "section_id",
+    "--series_sheet", fx$sheet, "--group_by", "section_id",
     "--image_path_by", "img", "--outdir", out, "--cell_max_px", "200"))))
   expect_identical(sum(idx$status == "ok"), 4L)
 
   expect_error(
     suppressMessages(group_montage_cli(c(
-      "--sample_sheet", fx$sheet, "--group_by", "section_id",
+      "--series_sheet", fx$sheet, "--group_by", "section_id",
       "--image_path_by", "img", "--image_dir", fx$img,
       "--outdir", file.path(fx$dir, "both")))),
     "one or the other")
@@ -597,13 +597,13 @@ test_that("physical scaling refuses a row with no pixel size", {
 
 test_that("the sheet reader keeps only the machine columns it is asked for", {
   fx <- gm_fixture()
-  kept <- .cli_read_sample_sheet(fx$sheet, keep_machine = c("size_x", "pixel_width"))
+  kept <- .cli_read_series_sheet(fx$sheet, keep_machine = c("size_x", "pixel_width"))
   expect_true(all(c("size_x", "pixel_width") %in% colnames(kept)))
   expect_false("size_y" %in% colnames(kept))
   expect_false("include" %in% colnames(kept))      # a control column, never metadata
   expect_identical(nrow(kept), 5L)                 # C_s0001 is include=false
 
-  expect_error(.cli_read_sample_sheet(fx$sheet, keep_machine = "section_id"),
+  expect_error(.cli_read_series_sheet(fx$sheet, keep_machine = "section_id"),
                "not machine columns")
 })
 

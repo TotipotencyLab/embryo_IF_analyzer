@@ -48,7 +48,7 @@
 // note/luxendo_file_format.md for the format.
 //
 // The columns are declared in schema/sheet_columns.tsv under sheets `series`
-// and `manifest`, which both languages read at run time -- so this script does
+// and `sources`, which both languages read at run time -- so this script does
 // not name them.
 //
 // Headless:
@@ -95,7 +95,7 @@ def sources = res.sources
 // and a scanner that forgot a declared column is a bug rather than a bad input.
 outdir.mkdirs()
 [[name: "series.tsv",  sheet: "series",   rows: series],
- [name: "sources.tsv", sheet: "manifest", rows: sources]].each { spec ->
+ [name: "sources.tsv", sheet: "sources",  rows: sources]].each { spec ->
     def cols = SCHEMA.columns(spec.sheet)
     def missing = cols - spec.rows[0].keySet().toList()
     if (missing) {

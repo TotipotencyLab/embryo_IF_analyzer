@@ -107,7 +107,7 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = "directory to write results into")
   p <- add_argument(p, "--feature", short = "-f", type = "character", nargs = Inf, default = NULL,
                     help = "feature name(s) to annotate [default: nucleus]")
-  p <- add_argument(p, "--sample_sheet", short = "-S", type = "character",
+  p <- add_argument(p, "--series_sheet", short = "-S", type = "character",
                     help = "optional series table (series.tsv), keyed by its 'series_id' column; filters inputs and joins metadata")
   p <- add_argument(p, "--id_column", short = "-I", type = "character", default = "series_id",
                     help = "series table column holding the series_id -- the file prefix")
@@ -254,9 +254,9 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
          "--feature_area"        = feature_area),
     known = unique(c(jobs$feature, jobs$roi_prefix)))
 
-  if (!is.na(argv$sample_sheet)) {
-    sheet <- .cli_read_sample_sheet(path = argv$sample_sheet, id_column = argv$id_column)
-    jobs <- .cli_apply_sample_sheet(contract_df = jobs, sheet = sheet, id_column = argv$id_column)
+  if (!is.na(argv$series_sheet)) {
+    sheet <- .cli_read_series_sheet(path = argv$series_sheet, id_column = argv$id_column)
+    jobs <- .cli_apply_series_sheet(contract_df = jobs, sheet = sheet, id_column = argv$id_column)
   } else {
     sheet <- NULL
   }

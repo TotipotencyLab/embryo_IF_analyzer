@@ -7,12 +7,12 @@
 #
 # The case it exists for is counting by eye. An ovary is cut into serial
 # sections that are imaged as separate series, so one specimen's sections are
-# scattered across a sample sheet; looking at them together is how you judge
+# scattered across a series table; looking at them together is how you judge
 # whether a count is plausible, and how you count at all when automatic
 # filtering cannot be trusted.
 #
 #   ./group_montage_cli.r --image_dir overviews --image_suffix _overview_ch1.png \
-#       --sample_sheet sheets/series.tsv --group_by section_id --outdir montages
+#       --series_sheet sheets/series.tsv --group_by section_id --outdir montages
 #
 # TWO THINGS HERE ARE NOT PREFERENCES.
 #
@@ -88,7 +88,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   p <- arg_parser("Tile every image of a sample group into one montage", hide.opts = TRUE)
 
-  p <- add_argument(p, "--sample_sheet", short = "-s", type = "character",
+  p <- add_argument(p, "--series_sheet", short = "-s", type = "character",
                     help = "series.tsv; its series_id column names each image")
   p <- add_argument(p, "--group_by", short = "-g", type = "character",
                     help = "sheet column whose value names the group, e.g. section_id")
@@ -139,7 +139,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   argv <- parse_args(p, argv = args)
   .gm_source_helpers(argv$rlib_path)
-  .cli_require(argv, c("sample_sheet", "group_by", "outdir"))
+  .cli_require(argv, c("series_sheet", "group_by", "outdir"))
 
   scale_mode <- match.arg(tolower(.gm_one(.cli_resolve_arg(argv$scale, "--scale"), "physical")),
                           c("physical", "pixel"))
@@ -173,7 +173,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   #     correct thing to ask for -- with serial sections the order IS the
   #     information -- and series_index is a machine column, so asking only for
   #     the physical four made a sensible command fail with "--order_by names no
-  #     column of the sample sheet". --group_by, --label_by and --image_path_by
+  #     column of the series table". --group_by, --label_by and --image_path_by
   #     can each name one just as easily.
   group_col <- .gm_one(.cli_resolve_arg(argv$group_by, "--group_by"))
   order_col <- .gm_one(.cli_resolve_arg(argv$order_by, "--order_by"))
@@ -193,11 +193,11 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   want <- base::intersect(unique(c(physical_cols, named_cols)),
                           .cli_sheet_machine_columns())
 
-  sheet <- .cli_read_sample_sheet(.gm_one(.cli_resolve_arg(argv$sample_sheet, "--sample_sheet")),
+  sheet <- .cli_read_series_sheet(.gm_one(.cli_resolve_arg(argv$series_sheet, "--series_sheet")),
                                   keep_machine = want)
 
   if (!group_col %in% colnames(sheet)) {
-    stop("--group_by names no column of the sample sheet: ", group_col,
+    stop("--group_by names no column of the series table: ", group_col,
          "\n  available: ", paste(colnames(sheet), collapse = ", "), call. = FALSE)
   }
   groups <- trimws(as.character(sheet[[group_col]]))
@@ -217,7 +217,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   # --- resolve one path per row -------------------------------------------------
   if (!is.na(path_by)) {
     if (!path_by %in% colnames(sheet)) {
-      stop("--image_path_by names no column of the sample sheet: ", path_by,
+      stop("--image_path_by names no column of the series table: ", path_by,
            "\n  available: ", paste(colnames(sheet), collapse = ", "), call. = FALSE)
     }
     paths <- trimws(as.character(sheet[[path_by]]))
@@ -316,12 +316,12 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   out_prefix <- .gm_one(.cli_resolve_arg(argv$output_prefix, "--output_prefix"), "")
 
   if (!is.na(order_col) && !order_col %in% colnames(sheet)) {
-    stop("--order_by names no column of the sample sheet: ", order_col,
+    stop("--order_by names no column of the series table: ", order_col,
          "\n  available: ", paste(colnames(sheet), collapse = ", "), call. = FALSE)
   }
   absent_l <- setdiff(label_cols, colnames(sheet))
   if (length(absent_l)) {
-    stop("--label_by names no column of the sample sheet: ",
+    stop("--label_by names no column of the series table: ",
          paste(absent_l, collapse = ", "), call. = FALSE)
   }
 
@@ -507,7 +507,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   if (length(odd)) {
     ex <- utils::head(odd, 3)
-    warning(length(odd), " image(s) are not the shape the sample sheet describes, ",
+    warning(length(odd), " image(s) are not the shape the series table describes, ",
             "so they are fitted into it with blank space rather than stretched to ",
             "match: ",
             paste(vapply(ex, function(o) sprintf("%s (%.2f vs %.2f)",

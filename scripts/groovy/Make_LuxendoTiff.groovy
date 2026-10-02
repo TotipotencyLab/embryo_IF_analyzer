@@ -99,7 +99,7 @@ def readSheet = { File f, String sheet ->
     if (sheet == SCHEMA.SERIES) SCHEMA.requireId(rows, f.getName())
     def absent = SCHEMA.required(sheet) - rows[0].keySet().toList()
     if (absent) {
-        def old = (sheet == "manifest" && rows[0].containsKey("series_id"))
+        def old = (sheet == "sources" && rows[0].containsKey("series_id"))
         throw new IllegalArgumentException(
             f.getName() + " is missing required " + sheet + " column(s): " + absent.join(", ") +
             "\n  found: " + rows[0].keySet().join(", ") +
@@ -110,7 +110,7 @@ def readSheet = { File f, String sheet ->
 }
 
 def seriesRows  = readSheet(seriesFile,  SCHEMA.SERIES)
-def sourceRows  = readSheet(sourcesFile, "manifest")
+def sourceRows  = readSheet(sourcesFile, "sources")
 
 // Tsv reads everything as text; the assembler does arithmetic on these.
 def ints = ["t", "channel", "size_x", "size_y", "size_z", "source_bytes"]

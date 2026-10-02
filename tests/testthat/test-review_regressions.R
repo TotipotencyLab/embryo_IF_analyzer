@@ -80,9 +80,9 @@ test_that("the count plot draws bars only when not grouping", {
   expect_false("GeomBoxplot" %in% ungrouped)
 })
 
-# --- 3. sample sheet column collisions ----------------------------------------
+# --- 3. series table column collisions ----------------------------------------
 
-test_that("a sample sheet column that collides with an output column is refused", {
+test_that("a series table column that collides with an output column is refused", {
   d <- withr::local_tempdir()
   p <- file.path(d, "s.tsv")
 
@@ -91,11 +91,11 @@ test_that("a sample sheet column that collides with an output column is refused"
   # cannot read.
   write.table(data.frame(series_id = "GRV_Position010", area = "BIG"),
               p, sep = "\t", quote = FALSE, row.names = FALSE)
-  expect_error(.cli_read_sample_sheet(p), "collide")
+  expect_error(.cli_read_series_sheet(p), "collide")
 
   write.table(data.frame(series_id = "X", feature_type = "a", sample = "b"),
               p, sep = "\t", quote = FALSE, row.names = FALSE)
-  expect_error(.cli_read_sample_sheet(p), "feature_type")
+  expect_error(.cli_read_series_sheet(p), "feature_type")
 })
 
 test_that("the id column itself is not treated as a collision", {
@@ -104,12 +104,12 @@ test_that("the id column itself is not treated as a collision", {
   # --id_column sample is legitimate: it is the key, not metadata.
   write.table(data.frame(sample = c("A", "B"), genotype = c("wt", "ko")),
               p, sep = "\t", quote = FALSE, row.names = FALSE)
-  expect_identical(nrow(.cli_read_sample_sheet(p, id_column = "sample")), 2L)
+  expect_identical(nrow(.cli_read_series_sheet(p, id_column = "sample")), 2L)
 })
 
 test_that("the shipped template has no reserved column names", {
   tmpl <- file.path(repo_root(), "config", "series_template.tsv")
-  expect_no_error(.cli_read_sample_sheet(tmpl))
+  expect_no_error(.cli_read_series_sheet(tmpl))
 })
 
 # --- 4. the montage extent -----------------------------------------------------

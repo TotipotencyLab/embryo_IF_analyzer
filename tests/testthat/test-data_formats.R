@@ -11,7 +11,7 @@ test_that("the series table template loads through the real reader", {
   tmpl <- file.path(repo_root(), "config", "series_template.tsv")
   expect_true(file.exists(tmpl))
 
-  sheet <- .cli_read_sample_sheet(tmpl)
+  sheet <- .cli_read_series_sheet(tmpl)
   expect_true("series_id" %in% colnames(sheet))
   expect_gt(nrow(sheet), 0)
   expect_false(anyDuplicated(sheet$series_id) > 0)
@@ -21,7 +21,7 @@ test_that("the template's first sample is the fixture, so it can be run as-is", 
   tmpl <- file.path(repo_root(), "config", "series_template.tsv")
   skip_if_no_fixture(fixture_file("nucleus", "outline"))
 
-  sheet <- .cli_read_sample_sheet(tmpl)
+  sheet <- .cli_read_series_sheet(tmpl)
   fixture_sample <- sub("_nucleus_outline\\.txt$", "",
                         basename(fixture_file("nucleus", "outline")))
   expect_true(fixture_sample %in% sheet$series_id)
@@ -32,20 +32,20 @@ test_that("only series_id is required; other columns are free metadata", {
   p <- file.path(d, "minimal.tsv")
   write.table(data.frame(series_id = c("A", "B")), p,
               sep = "\t", quote = FALSE, row.names = FALSE)
-  expect_identical(nrow(.cli_read_sample_sheet(p)), 2L)
+  expect_identical(nrow(.cli_read_series_sheet(p)), 2L)
 })
 
-test_that("the sample sheet reader accepts tsv, txt and csv", {
+test_that("the series table reader accepts tsv, txt and csv", {
   d <- withr::local_tempdir()
   df <- data.frame(series_id = "A", genotype = "wt")
   for (ext in c("tsv", "txt")) {
     p <- file.path(d, paste0("s.", ext))
     write.table(df, p, sep = "\t", quote = FALSE, row.names = FALSE)
-    expect_identical(.cli_read_sample_sheet(p)$genotype, "wt", info = ext)
+    expect_identical(.cli_read_series_sheet(p)$genotype, "wt", info = ext)
   }
   p <- file.path(d, "s.csv")
   write.csv(df, p, row.names = FALSE)
-  expect_identical(.cli_read_sample_sheet(p)$genotype, "wt")
+  expect_identical(.cli_read_series_sheet(p)$genotype, "wt")
 })
 
 # --- the Fiji output contract -------------------------------------------------
@@ -92,14 +92,14 @@ test_that("the config file is a two-column parameter/value table", {
 
 test_that("the sheet column schema is readable and its owners are known", {
   # schema/sheet_columns.tsv exists so this list does NOT live twice, once in
-  # Groovy and once in R. This is the R half reading it; Test_SampleSheet is
+  # Groovy and once in R. This is the R half reading it; Test_SeriesSheet is
   # the Groovy half.
   f <- file.path(repo_root(), "schema", "sheet_columns.tsv")
   skip_if_not(file.exists(f), "schema/sheet_columns.tsv not found")
   d <- read.delim(f, stringsAsFactors = FALSE)
   expect_identical(colnames(d),
                    c("sheet", "column", "owner", "type", "required", "description"))
-  expect_true(all(d$sheet %in% c("files", "series", "manifest")))
+  expect_true(all(d$sheet %in% c("files", "series", "sources")))
   expect_true(all(d$owner %in% c("machine", "seeded", "user")))
   expect_true(all(d$type %in% c("string", "integer", "double", "boolean")))
   expect_true(all(d$required %in% c("yes", "no")))
@@ -115,16 +115,16 @@ test_that("the sheet column schema is readable and its owners are known", {
   expect_false(any(d$sheet == "samples"))
   expect_false(any(d$column == "prefix"))
 
-  # `manifest` is the Luxendo SOURCES table -- one row per .lux.h5, keyed to the
+  # `sources` is the Luxendo SOURCES table -- one row per .lux.h5, keyed to the
   # series it feeds. It is never handed to a CLI.
-  man <- d$column[d$sheet == "manifest"]
+  man <- d$column[d$sheet == "sources"]
   expect_true(all(c("source_path", "alias", "series_index", "channel", "t") %in% man))
   # The join to series.tsv is (alias, series_index) -- two MACHINE columns on
   # the series table -- and NOT series_id, which is editable: a join on an id
   # the operator may change would orphan every source the moment they did.
   expect_false("series_id" %in% man)
   for (col in c("alias", "series_index")) {
-    expect_identical(d$required[d$sheet == "manifest" & d$column == col], "yes")
+    expect_identical(d$required[d$sheet == "sources" & d$column == col], "yes")
     expect_identical(d$owner[d$sheet == "series" & d$column == col], "machine")
   }
   # NO include here: it is a property of the series, so it lives on the series
@@ -140,7 +140,7 @@ test_that("the sheet column schema is readable and its owners are known", {
   expect_true("channel_name" %in% man)
   # pixel_depth must be optional here for the same reason it is blank in
   # _config.txt: a single plane has no z step to record.
-  expect_identical(d$required[d$sheet == "manifest" & d$column == "pixel_depth"], "no")
+  expect_identical(d$required[d$sheet == "sources" & d$column == "pixel_depth"], "no")
   # The four series columns a Luxendo row reads its own way must stay REQUIRED
   # -- defined to be true for every format, not relaxed for one.
   for (col in c("path", "series_index", "series_name", "alias")) {
@@ -151,7 +151,7 @@ test_that("the sheet column schema is readable and its owners are known", {
   doc <- paste(readLines(file.path(repo_root(), "note", "data_formats.md"),
                          warn = FALSE), collapse = "\n")
   words <- unlist(regmatches(doc, gregexpr("[A-Za-z_]+", doc)))
-  for (sh in c("series", "manifest")) {
+  for (sh in c("series", "sources")) {
     undocumented <- setdiff(d$column[d$sheet == sh], words)
     expect_identical(undocumented, character(0))
   }
@@ -388,7 +388,7 @@ test_that("every run-config parameter is written back, and the rule is recorded"
   expect_true(any(grepl("Every `PARAM_TYPES` key must be written back", cl, fixed = TRUE)))
   # The four couplings, as a table naming where each is asserted.
   expect_true(any(grepl("what `saveRunConfig()` actually writes", cl, fixed = TRUE)))
-  # And why the sample sheet needs none of it: one run-time schema file, read by
+  # And why the series table needs none of it: one run-time schema file, read by
   # both languages. Someone "fixing" the sheet to look like the config would be
   # going backwards.
   expect_true(any(grepl("read at \\*run time\\* by `SheetSchema.groovy`", cl)))
@@ -430,8 +430,8 @@ test_that("the series_id carries the series index, and the doc says so", {
   # files. Forced always, never only where names happen to collide: an id that
   # depends on which other series share its name is an id that changes when a
   # file is re-acquired.
-  ss <- file.path(repo_root(), "scripts", "groovy", "SampleSheet.groovy")
-  skip_if_not(file.exists(ss), "SampleSheet.groovy not found")
+  ss <- file.path(repo_root(), "scripts", "groovy", "SeriesSheet.groovy")
+  skip_if_not(file.exists(ss), "SeriesSheet.groovy not found")
   src <- paste(readLines(ss, warn = FALSE), collapse = "\n")
   # Fixed width, not derived from the series count.
   expect_match(src, 'INDEX_FORMAT = "s%04d"', fixed = TRUE)
@@ -452,7 +452,7 @@ test_that("a duplicate series_id is refused downstream, allowed at sheet time", 
   # The asymmetry is deliberate: the sheet step is a draft for a person to read,
   # so it writes the file and THEN fails -- a duplicate you cannot open the
   # table to see is one you cannot fix. The analysis step has no such excuse.
-  ms <- file.path(repo_root(), "scripts", "groovy", "Make_SampleSheet.groovy")
+  ms <- file.path(repo_root(), "scripts", "groovy", "Make_SeriesSheet.groovy")
   br <- file.path(repo_root(), "scripts", "groovy", "BatchRunner.groovy")
   skip_if_not(all(file.exists(ms, br)), "Groovy front ends not found")
 
@@ -603,7 +603,7 @@ test_that("count writes the documented columns", {
   out2 <- withr::local_tempdir()
   suppressMessages(count_features_cli(c(
     "--input", feat, "--outdir", out2,
-    "--sample_sheet", sheet, "--group_by", "genotype")))
+    "--series_sheet", sheet, "--group_by", "genotype")))
   s <- read.delim(file.path(out2, "feature_counts_summary.tsv"),
                   stringsAsFactors = FALSE)
   expect_identical(colnames(s),

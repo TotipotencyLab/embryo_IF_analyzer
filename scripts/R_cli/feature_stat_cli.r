@@ -90,7 +90,7 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = "directory to write results into")
   p <- add_argument(p, "--res_dir", short = "-e", type = "character", nargs = Inf, default = NULL,
                     help = "directory holding the Fiji *_res.txt [default: beside the features]")
-  p <- add_argument(p, "--sample_sheet", short = "-S", type = "character",
+  p <- add_argument(p, "--series_sheet", short = "-S", type = "character",
                     help = "optional series table (series.tsv), keyed by its 'series_id' column; joins metadata")
   p <- add_argument(p, "--id_column", short = "-I", type = "character", default = "series_id",
                     help = "series table column holding the series_id -- the file prefix")
@@ -179,8 +179,8 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   if (!dir.exists(outdir)) stop("Could not create --outdir: ", outdir, call. = FALSE)
 
   sheet <- NULL
-  if (!is.na(argv$sample_sheet)) {
-    sheet <- .cli_read_sample_sheet(path = argv$sample_sheet, id_column = argv$id_column)
+  if (!is.na(argv$series_sheet)) {
+    sheet <- .cli_read_series_sheet(path = argv$series_sheet, id_column = argv$id_column)
   }
 
   # --- summarise ---------------------------------------------------------------
@@ -462,15 +462,15 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       if (!isTRUE(all.equal(a, b))) disagree <- c(disagree, col)
     }
     if (length(disagree)) {
-      stop("Sample sheet column(s) disagree with what is already on the features: ",
+      stop("Series table column(s) disagree with what is already on the features: ",
            paste(disagree, collapse = ", "),
-           "\n  The features were annotated from a different sample sheet, or a ",
+           "\n  The features were annotated from a different series table, or a ",
            "sheet column is named after a statistic this step computes.",
            "\n  Re-run annotate_features_cli.r with this sheet, or rename the ",
            "column (e.g. ", disagree[1], " -> sample_", disagree[1], ").",
            call. = FALSE)
     }
-    message("  sample sheet: ", length(shared),
+    message("  series table: ", length(shared),
             " column(s) already on the features, not re-joined (",
             paste(utils::head(shared, 6), collapse = ", "),
             if (length(shared) > 6) ", ..." else "", ")")
@@ -479,7 +479,7 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   unmatched <- setdiff(stats$sample, meta$sample)
   if (length(unmatched)) {
-    warning(length(unmatched), " sample(s) are not in the sample sheet: ",
+    warning(length(unmatched), " sample(s) are not in the series table: ",
             paste(utils::head(unmatched, 5), collapse = ", "), call. = FALSE)
   }
   if (ncol(meta) <= 1L) {

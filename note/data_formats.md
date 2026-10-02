@@ -12,8 +12,8 @@ Column names below are exact, including case.
 
 ## 1. The sheets
 
-`files.tsv` (one row per **file**) → `Make_SampleSheet.groovy` → `series.tsv`
-(one row per **series**) → the batch runner, and the R CLIs' `--sample_sheet`.
+`files.tsv` (one row per **file**) → `Make_SeriesSheet.groovy` → `series.tsv`
+(one row per **series**) → the batch runner, and the R CLIs' `--series_sheet`.
 
 `series.tsv` is the **series table** the R side reads. It can be written by hand
 with `series_id` plus your metadata, or generated, with machine-read columns
@@ -27,13 +27,13 @@ image (`nucleus_stack_histogram` pools over z).
 ⚠️ **Renamed in v0.7.0:** `samples.tsv` → `series.tsv`, and its id column
 `prefix` → `series_id`. An old sheet is refused with a message naming the
 version, on both sides, rather than read with every id blank.
-`Make_SampleSheet` pointed at an old sheet renames the column in place, keeping
+`Make_SeriesSheet` pointed at an old sheet renames the column in place, keeping
 your edits.
 
 The column list both are checked against is
 [`schema/sheet_columns.tsv`](../schema/sheet_columns.tsv) — internal, read by
 both languages, and the reason there is no second copy to drift. Its first
-column says which sheet a row describes — `files`, `series`, and `manifest`
+column says which sheet a row describes — `files`, `series`, and `sources`
 for Luxendo's `sources.tsv` at the end of this section — so one file declares
 them all.
 
@@ -94,11 +94,11 @@ count, which would re-pad every id in a file that grew from 999 series to
 1001.
 
 A duplicate `series_id` can therefore only be introduced **by editing the
-column**. `Make_SampleSheet` writes the sheet anyway and then fails, so the table
+column**. `Make_SeriesSheet` writes the sheet anyway and then fails, so the table
 can be opened and corrected — the error message must not be the only artifact of
 the run. `allowDuplicateId` downgrades that to a warning. The batch refuses
 outright, for included rows, because there two rows sharing an id overwrite
-each other's output files; `.cli_read_sample_sheet()` on the R side refuses too.
+each other's output files; `.cli_read_series_sheet()` on the R side refuses too.
 
 Column **order** is presentation only — every reader on both sides works by
 column name, and the merge matches on `path` + `series_index` — so the sheet is
@@ -124,7 +124,7 @@ genotype` resolves to neither), and one whose values *disagree* is a hard error
 either copy would attach the wrong metadata to real numbers.
 
 **The R side reads this sheet too, and reads it the same way.** `include` is
-honoured by `.cli_read_sample_sheet()` with exactly the vocabulary
+honoured by `.cli_read_series_sheet()` with exactly the vocabulary
 `BatchRunner.isIncluded()` accepts (`true/yes/1`, `false/no/0`, blank or absent
 = included); a word neither side agrees on is an error rather than a guess. It
 is applied **before** the duplicate-id check, so setting `include=false` on
@@ -135,7 +135,7 @@ everywhere by construction.
 
 The **machine columns are dropped too**, read from `schema/sheet_columns.tsv`
 rather than listed again in R. They are facts about the image file that
-`Make_SampleSheet` rewrites on every regeneration, and a generated sheet carries
+`Make_SeriesSheet` rewrites on every regeneration, and a generated sheet carries
 sixteen of them — joined through, they would put `size_x` and `file_size` on
 every feature row as though somebody had typed them as metadata. The run reports
 which were dropped. A CLI copied out of the repo finds no schema, keeps
@@ -202,7 +202,7 @@ pair with the cardinality reversed.
 | | rows | sheet in `schema/sheet_columns.tsv` |
 |---|---|---|
 | `series.tsv` | one per series — one per **stack**, every time point inside | `series` — **the same table every format writes** |
-| `sources.tsv` | one per `.lux.h5` | `manifest` |
+| `sources.tsv` | one per `.lux.h5` | `sources` |
 
 `series.tsv` being the ordinary series table is the point: the R CLIs read it
 unchanged, and it is where `include` lives and where you add your own columns.
@@ -230,7 +230,7 @@ Everything else follows from the sources: `size_c` is the channel count,
 
 ⚠️ **`series_id` carries the alias, and it has to.** It is generated as
 `sanitise(<alias>_s<NNNN>_<stack_description>)` — the repo's own
-`composePrefix()`, not a second copy of the rule.
+`composeSeriesId()`, not a second copy of the rule.
 `s<NNNN>_<stack_description>` is unique only *within* one acquisition:
 measured on two real acquisitions, **all 14 stack identities were identical**
 (`stack_0-L26A pos1` in both), so without the alias both runs produce the same
@@ -701,11 +701,11 @@ cells and a count taken from the picture has to be reconcilable with the table:
 
 **It is designed to be read back in.** It carries `group`, `series_id` and
 `image_path`, so re-running exactly what you looked at is
-`--sample_sheet montage_index.tsv --image_path_by image_path --group_by group`.
+`--series_sheet montage_index.tsv --image_path_by image_path --group_by group`.
 That is the provenance answer rather than writing resolved paths back into
 `series.tsv`: the sheet is shared with the Fiji side and its columns have
 declared owners in `schema/sheet_columns.tsv`, so an R CLI adding one would need
-a schema entry and `Make_SampleSheet` would have to know about it.
+a schema entry and `Make_SeriesSheet` would have to know about it.
 
 **Panels are scaled by physical size.** `size_x * pixel_width` is the extent;
 the PNG's own dimensions are not, because Fiji has usually already resized the

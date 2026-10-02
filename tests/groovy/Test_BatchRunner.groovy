@@ -448,7 +448,7 @@ check("...and blank when nothing opened it",   RC.PROVENANCE_KEYS.contains("open
 
 println ""
 println "=== the analysis step refuses what the sheet step allowed ==="
-// Make_SampleSheet writes a sheet with duplicate series_ids on purpose, so they
+// Make_SeriesSheet writes a sheet with duplicate series_ids on purpose, so they
 // can be opened and fixed. Here they must be fatal BEFORE anything runs: the
 // series_id names the output files, so two rows sharing one overwrite each other
 // on disk and merge into a single sample in R.

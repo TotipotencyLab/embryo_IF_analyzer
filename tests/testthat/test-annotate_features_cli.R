@@ -200,7 +200,7 @@ test_that("annotate_features_cli requires its required arguments", {
   expect_error(annotate_features_cli(c("--input", "x")), "--outdir")
 })
 
-test_that("annotate_features_cli honours a sample sheet without needing one", {
+test_that("annotate_features_cli honours a series table without needing one", {
   skip_if_no_sf()
   skip_if_no_pkg(c("argparser", "ggplot2"))
   source_cli("annotate_features_cli.r")
@@ -214,7 +214,7 @@ test_that("annotate_features_cli honours a sample sheet without needing one", {
   out <- withr::local_tempdir()
   res <- suppressMessages(annotate_features_cli(c(
     "--input", fixture_file("nucleus", "outline"),
-    "--outdir", out, "--sample_sheet", sheet)))
+    "--outdir", out, "--series_sheet", sheet)))
 
   expect_true("genotype" %in% colnames(res))
   expect_true(all(res$genotype == "wt"))
@@ -233,6 +233,6 @@ test_that("annotate_features_cli stops when the sheet excludes everything", {
 
   expect_error(suppressWarnings(suppressMessages(annotate_features_cli(c(
     "--input", fixture_file("nucleus", "outline"),
-    "--outdir", withr::local_tempdir(), "--sample_sheet", sheet)))),
+    "--outdir", withr::local_tempdir(), "--series_sheet", sheet)))),
     "no sample in common")
 })

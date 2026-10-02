@@ -10,10 +10,10 @@
 #@ Boolean (persist=false, label="Drop sheet rows whose file has left files.tsv", value=false) prune
 #@ Boolean (persist=false, label="Finish quietly even if some series_ids are duplicated", value=false) allowDuplicateId
 
-// Make_SampleSheet.groovy
+// Make_SeriesSheet.groovy
 //
 // files.tsv -> series.tsv. A `#@` block and one call; the work is in
-// SampleSheet.groovy so it can be tested without a dialog.
+// SeriesSheet.groovy so it can be tested without a dialog.
 //
 // Two modes:
 //
@@ -29,7 +29,7 @@
 //
 // Headless:
 //
-//   ImageJ-macosx --headless --console --run scripts/groovy/Make_SampleSheet.groovy \
+//   ImageJ-macosx --headless --console --run scripts/groovy/Make_SeriesSheet.groovy \
 //     "filesSheet='/path/files.tsv',outSheet='/path/series.tsv',imageRoot='/path/raw'"
 
 import ij.IJ
@@ -44,7 +44,7 @@ def resolveLibDir = {
     return null
 }
 def libDir = resolveLibDir()
-if (libDir == null || !new File(libDir, "SampleSheet.groovy").exists()) {
+if (libDir == null || !new File(libDir, "SeriesSheet.groovy").exists()) {
     IJ.error("Cannot locate the Groovy library files.\n\nSave this script into scripts/groovy/ and run it from there.")
     return
 }
@@ -53,7 +53,7 @@ def LIBDIR = libDir.getAbsolutePath()
 def SCHEMA_CLS = new GroovyClassLoader(this.class.classLoader)
              .parseClass(new File(LIBDIR + "/SheetSchema.groovy"))
 def SS = new GroovyClassLoader(this.class.classLoader)
-             .parseClass(new File(LIBDIR + "/SampleSheet.groovy"))
+             .parseClass(new File(LIBDIR + "/SeriesSheet.groovy"))
 def TSV = new GroovyClassLoader(this.class.classLoader)
              .parseClass(new File(LIBDIR + "/Tsv.groovy"))
 def sheet = SS.load(LIBDIR)
@@ -93,10 +93,10 @@ sheet.checkFiles(fileRows, root).each { IJ.log("WARNING: " + it) }
 // Which file columns are seeded onto the series rows. Default: everything that
 // is not already a series column, so metadata typed once per file lands on all
 // of its series without being asked for.
-def sampleCols = sheet.schema.columns(SCHEMA_CLS.SERIES)
+def seriesCols = sheet.schema.columns(SCHEMA_CLS.SERIES)
 def inheritCols = splitList(inherit)
 if (inheritCols.isEmpty()) {
-    inheritCols = fileRows[0].keySet().findAll { !(it in ["path", "alias", "include"]) && !(it in sampleCols) }.toList()
+    inheritCols = fileRows[0].keySet().findAll { !(it in ["path", "alias", "include"]) && !(it in seriesCols) }.toList()
 }
 if (inheritCols) IJ.log("  seeding onto each series: " + inheritCols.join(", "))
 
@@ -148,7 +148,7 @@ def rows = merged.rows
 // The series_id is checked AFTER the merge, because an edited id is as
 // capable of colliding as a generated one -- and now that the index is part of
 // every generated id, an edit is the only way one can arise.
-def dupPrefixes = SS.duplicatePrefixes(rows)
+def dupPrefixes = SS.duplicateIds(rows)
 
 // WRITE FIRST, refuse after. This step is a draft for a person to read, and a
 // duplicate you cannot open the table to see is a duplicate you cannot fix: the

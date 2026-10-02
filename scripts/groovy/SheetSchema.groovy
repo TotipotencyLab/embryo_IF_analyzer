@@ -2,7 +2,7 @@
 //
 // Reads schema/sheet_columns.tsv -- the one place that says what the columns of
 // files.tsv, series.tsv and sources.tsv are, who owns each, and what type it
-// holds. Sheets: `files`, `series`, `manifest` (sources.tsv).
+// holds. Sheets: `files`, `series`, `sources`.
 //
 // It is a file rather than a constant because BOTH languages need the list.
 // The R side already keeps a reserved-column list in code and a copy of it in
@@ -47,7 +47,7 @@ class SheetSchema {
             throw new IllegalArgumentException(
                 what + " has a `" + OLD_ID_COLUMN + "` column and no `" + ID_COLUMN + "`: it was " +
                 "written before v0.7.0, which renamed the column (and samples.tsv to series.tsv). " +
-                "Rename the column by hand, or regenerate: Make_SampleSheet pointed at the old sheet " +
+                "Rename the column by hand, or regenerate: Make_SeriesSheet pointed at the old sheet " +
                 "renames it and keeps your edits; Make_LuxendoSheets writes a fresh one.")
         }
         throw new IllegalArgumentException(

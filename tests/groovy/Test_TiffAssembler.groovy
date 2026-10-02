@@ -17,7 +17,7 @@ if (!new File(LIBDIR, "TiffAssembler.groovy").exists()) {
 def gcl = new GroovyClassLoader()
 def TA  = gcl.parseClass(new File(LIBDIR + "/TiffAssembler.groovy"))
 def LS  = gcl.parseClass(new File(LIBDIR + "/LuxendoScan.groovy"))
-def SS  = gcl.parseClass(new File(LIBDIR + "/SampleSheet.groovy"))
+def SS  = gcl.parseClass(new File(LIBDIR + "/SeriesSheet.groovy"))
 def FIX = gcl.parseClass(new File("tests/groovy/LuxFixture.groovy"))
 def asm = TA.load(LIBDIR)
 def scanner = LS.load(LIBDIR)
@@ -52,7 +52,7 @@ check("2^32 would be wrong", TA.CLASSIC_TIFF_MAX < 4294967296L, true)
 check("just under fits",   TA.fitsClassicTiff(4183818239L), true)
 check("exactly at does not", TA.fitsClassicTiff(4183818240L), false)
 
-println "\n=== size is predicted from the manifest, no trial write ==="
+println "\n=== size is predicted from the sources table, no trial write ==="
 // One real Luxendo position, all four time points in one file, is the case the
 // plan sizes: 2048 x 2048 x 39 x 3 channels x 2 bytes.
 def big = (0..2).collect { [size_x: 2048, size_y: 2048, size_z: 39, channel: it] }
@@ -144,7 +144,7 @@ check("second slice is channel 2", imp.getStack().getSliceLabel(2).contains("GFP
 imp.close(); imp.flush()
 
 println "\n=== over the limit is a per-output failure, not an aborted run ==="
-// A manifest claiming a stack too large for classic TIFF. No pixels are read:
+// A sources table claiming a stack too large for classic TIFF. No pixels are read:
 // the refusal happens on the prediction, before anything is opened.
 def huge = (0..2).collect { c ->
     [series_id: "huge", t: 0, channel: c,
