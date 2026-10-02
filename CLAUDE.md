@@ -32,6 +32,12 @@ sharing a common library, not one program.
    failure showed up is what is worth reading in a year. Note explicitly what
    was *not* verified.
 6. **PR, squash merge**, tag if releasing (bump `VERSION` in the tagged commit).
+   A milestone that changes the contract over several PRs may have a **home
+   branch** instead (`time_axis`): its PRs are `<home>-<what>` branches
+   squash-merged into it, it carries `VERSION` `<next>-dev` so its output cannot
+   pass for the last release, and it is merged into `main` — a normal merge —
+   once all of them are in, with the release `VERSION` as its last commit and
+   the merge commit tagged. `main` then never holds a half-changed contract.
 7. **Doc-sync.** Two different things, and they are not handled the same way.
 
    **a. Format documentation travels with the change — write it, do not
