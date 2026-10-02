@@ -185,6 +185,12 @@ loop, including how to diff.
   `LuxendoSidecar.groovy` reads the `.json` Luxendo writes beside every image
   for everything else.
 
+  **A series is the whole position — x, y, z, c and t.** That is Bio-Formats'
+  own meaning of "series", and how it presents `bdv.xml`; `gatherFrames` is on
+  by default. The consequence to know before touching the batch: a 96-frame
+  position is ~94 GB against a ~9 GB heap, so nothing may hold a Luxendo series
+  whole — it has to be streamed frame by frame, which is the `time_axis` work.
+
   **`Make_LuxendoSheets.groovy` writes `series.tsv` + `sources.tsv`.** Two
   tables because Luxendo breaks the assumption every other format here
   satisfies: one series spread **across** several files (one per channel, one
@@ -198,11 +204,14 @@ loop, including how to diff.
   `cli_helpers.r`.
 
   **`Make_LuxendoTiff.groovy` is for tuning and drag-and-drop, not a required
-  step.** The batch runner reads the `.lux.h5` through the same two tables and
-  assembles channels in memory, so it never reads what this writes. That is
-  deliberate: the sources *are* the pixels and TIFF does not compress them, so a
-  mandatory conversion would mean holding two copies of an 800 GB acquisition.
-  Set `include=false` on all but a few series first.
+  step.** The batch runner is meant to read the `.lux.h5` through the same two
+  tables and never touch what this writes — deliberately: the sources *are* the
+  pixels and TIFF does not compress them, so a mandatory conversion would mean
+  holding two copies of an 800 GB acquisition. ⚠️ **That route is not built
+  yet**: the resolver moved into `time_axis` because it has to hand over one
+  frame at a time, and today the batch opens files only. Set `include=false` on
+  all but a few series first, and choose time points with `frames` — each
+  becomes its own `<series_id>_t<TTTT>` file.
 
   ⚠️ **The series id carries the alias**, built with the repo's own
   `composePrefix()` rather than a second copy of the rule. `s<NNNN>_<stack
@@ -210,10 +219,20 @@ loop, including how to diff.
   identities — so without it two runs overwrite each other's results in a shared
   output directory. The alias is the operator's, defaulting to the folder name.
 
-  Identity comes from each file's own sidecar, never from its path, and a row
-  needs **both** the `.lux.h5` and its `.json` — which is also the index-file
-  test, since `main_raw.lux.h5` has no sidecar. The one narrow exception is
-  `quickScan`, which takes the *time point* from the filename after confirming
+  **The file list comes from `bdv.h5` + `bdv.xml`** when Luxendo wrote them
+  (`listing=auto`): one external link per (time point, setup), so `raw/` is not
+  walked — ~1 minute against ~3–4 over samba. The index is a file list and a
+  cross-check, never identity, and every placed file is checked against it. ⚠️
+  **`bdv.xml`'s `<tile>` is not the stack number** — it is the setup's ordinal in
+  *text* order of the stack (0, 1, 10, …, 2) and matches for 6 of 42 setups.
+  The index is written at the end of an acquisition and can be stale;
+  `listing=walk` is the only route that sees a file it does not list.
+
+  Identity comes from the sidecars, never from a path. On the walk a row needs
+  **both** the `.lux.h5` and its `.json` — which is also the index-file test,
+  since `main_raw.lux.h5` has no sidecar; on the index route with `quickScan`,
+  only one sidecar per directory is read, so the others are not checked for.
+  The one narrow exception is `quickScan`, which takes the *time point* from the filename after confirming
   the mapping against a real sidecar in the same directory, and falls back to
   reading every sidecar when they disagree. Whether a position's time points
   become one file or many is settled in the tables, at scan time, not by the
@@ -587,8 +606,24 @@ user — the point is that the number not be misleading, not that it be derivabl
 | | when |
 |---|---|
 | **PATCH** | bug fixes; new parameters or columns appear and nothing existing breaks; a small addition to the contract |
-| **MINOR** | a schema change of limited scope, or a key new capability in the pipeline |
-| **MAJOR** | a schema change large enough to break existing code or data, or a milestone for the repo as a whole — a complete end-to-end IF analysis pipeline would be one, and we are not there |
+| **MINOR** | a schema change of limited scope, or a key new capability in the pipeline — and, below 1.0, a *breaking* schema change too (see below) |
+| **MAJOR** | a milestone for the repo as a whole — a complete end-to-end IF analysis pipeline would be one, and we are not there |
+
+**Below 1.0 a breaking schema change is a MINOR, not a major.** With one user,
+migrating a sheet is re-running `Make_SampleSheet`; spending the major on that
+would leave nothing to mark the milestone the row above reserves it for. What
+makes this tolerable is that a stale sheet *stops* rather than half-loading:
+`.cli_read_sample_sheet()` names the missing id column outright, and on the
+Groovy side the duplicate-prefix check fires before any image opens, because
+every row's id reads as blank and so they all collide. ⚠️ That second one is
+loud but **misleading** — it reports rows sharing a prefix rather than a sheet
+written by older code — and it only fires with two or more included rows; a
+one-row sheet gets as far as the per-row failure instead. A renaming migration
+should add the upfront column check that `Make_LuxendoTiff` already does, so the
+error names the real cause. Say so in the release notes, which is where someone
+looks when a sheet stops loading. The `vocab` milestone
+(`prefix` → `series_id`, `samples.tsv` → `series.tsv`) is the worked example, as
+0.7.0. Revisit at 1.0, when there is an installed base for a major to protect.
 
 `readParams` rejects unknown keys but tolerates missing ones, so adding a
 parameter leaves every older config runnable — which is why that is not a major.

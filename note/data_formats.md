@@ -201,17 +201,22 @@ true here:
 | column | Luxendo meaning |
 |---|---|
 | `path` | ⚠️ the **acquisition directory** — the root `source_path` resolves against, not a file |
-| `series_index` | ⚠️ the `stack` number — the **position**, so it repeats once per time point and is **not unique** |
+| `series_index` | the `stack` number. A Luxendo stack is one series in Bio-Formats' own sense — x, y, z, c **and t** — so this is the series index, unique per row, by default. ⚠️ Not with `gatherFrames` off: see below |
 | `series_name` | `stack_description`, before sanitising |
 | `alias` | a short handle for the acquisition, **the operator's**, defaulting to the folder name |
 
 Everything else follows from the sources: `size_c` is the channel count,
-`size_t` the frame count (1 per time point, N when gathered), `file_size` the
-sum of the sources, `pixel_type` `uint16`.
+`size_t` the frame count (every time point of the position by default, 1 with
+`gatherFrames` off), `file_size` the sum of the sources, `pixel_type` `uint16`.
+
+**One series per position is the default** (`gatherFrames`, on since this
+release). The per-time-point layout v0.6.0 wrote by default is still available
+by turning it off; nothing downstream can analyse either across time until the
+`time_axis` work, but the folded layout is the one it is being built for.
 
 ⚠️ **`prefix` carries the alias, and it has to.** It is
-`sanitise(<alias>_s<NNNN>_<stack_description>)` plus `_t<TTTT>` when not
-gathered — the repo's own `composePrefix()`, not a second copy of the rule.
+`sanitise(<alias>_s<NNNN>_<stack_description>)`, plus `_t<TTTT>` only with
+`gatherFrames` off — the repo's own `composePrefix()`, not a second copy of the rule.
 `s<NNNN>_<stack_description>` is unique only *within* one acquisition:
 measured on two real acquisitions, **all 14 stack identities were identical**
 (`stack_0-L26A pos1` in both), so without the alias both produce
@@ -224,16 +229,13 @@ name, exactly as `files.tsv`'s alias defaults to the basename. The point of the
 column is that a run need not be named after whatever the camera called the
 directory.
 
-⚠️ **`series_index` is a known-false label, carried deliberately.** It holds the
-*position*, so `(path, series_index)` — which `SampleSheet.mergeKey()` uses as a
-row's identity across regenerations — is **not unique** for a Luxendo table: 56
-rows collapse to 14 keys. Harmless only because nothing regenerates one of these
-tables. A running counter would restore uniqueness and lose stability, which is
-worse: an acquisition grows while it is being analysed, so every counter after
-the new time points shifts. The identity is two-dimensional and needs two
-columns, which is why `position_id` and `t` arrive on the series table in the
-`vocab` work. **Until then, do not build a rescan that preserves a person's
-edits.** `note/time_series_plan.md` §3.2b has the full reasoning.
+⚠️ **With `gatherFrames` off, `series_index` is not unique.** It still holds the
+stack, which then repeats once per time point, so `(path, series_index)` — which
+`SampleSheet.mergeKey()` uses as a row's identity across regenerations —
+collapses 56 rows to 14 keys. Harmless only because nothing regenerates one of
+these tables. With the default layout the key is unique and the question does
+not arise, which is one of the reasons the default changed;
+`note/time_series_plan.md` has the reasoning.
 
 #### `sources.tsv` — one row per file
 
@@ -260,6 +262,30 @@ lives on `series.tsv` — one value, which makes "the channels of this output
 disagree about `include`" a state that cannot be written down rather than one
 that has to be handled.
 
+#### Where the file list comes from — `listing`
+
+| `listing` | file list | |
+|---|---|---|
+| `auto` (default) | the index when `bdv.h5` **and** `bdv.xml` are both in the acquisition directory, else the walk | |
+| `index` | the external links in `bdv.h5`; refuses if there is no index | no directory walk |
+| `walk` | every directory under the acquisition, pairing `.lux.h5` with `.json` | the v0.6.0 route |
+
+The scan logs which it took. On the 800 GB, 4032-file acquisition over samba the
+index route took **77–79 s** end to end against **175–231 s** for the walk, and
+the tables were byte-identical. `note/luxendo_file_format.md` §7 has the
+measurements and what the index does and does not hold.
+
+On the index route **every listed file is stat-ed** — for `source_bytes`, to prove
+it is on disk, and for the size check below — and a file the index lists that is
+missing stops the scan. Every placed file is then checked against the index:
+time point, channel, stack (read from the setup *name*, `st:N`, never from
+`<tile>`), size and voxel size. A disagreement stops the scan.
+
+⚠️ **The index is written at the end of an acquisition**, so a run that crashed
+may have none or a stale one, and a file the index does not list is invisible to
+the index route. `listing=walk` is the check: with an index present it compares
+the two file sets and warns on any difference.
+
 #### Identity comes from the `.json` sidecar
 
 Luxendo writes `Cam_long_00000.json` beside every `Cam_long_00000.lux.h5`, and
@@ -267,10 +293,12 @@ it holds the same `processingInformation` as the image's own `/metadata` **plus*
 the dimensions and voxel size. Verified on 25 spread files: it agrees with the
 HDF5 and with the real dimensions in 25 of 25.
 
-**A row needs both halves.** A `.lux.h5` with no sidecar is skipped and
-reported; a `.json` with no image is ignored. That pairing *is* the index-file
-test — `main_raw.lux.h5` is link-only and has no sidecar — so nothing has to be
-opened to recognise it.
+**On the walk, a row needs both halves.** A `.lux.h5` with no sidecar is skipped
+and reported; a `.json` with no image is ignored. That pairing *is* the
+index-file test — `main_raw.lux.h5` is link-only and has no sidecar — so nothing
+has to be opened to recognise it. The index route never sees `main_raw.lux.h5`,
+and with `quickScan` it reads only the sampled sidecars, so an unsampled file's
+`.json` is not checked for there.
 
 ⚠️ **`quickScan` (default on) reads one sidecar per *directory*.** The
 dimensions and voxel size are constant within a channel directory, and the one
@@ -294,7 +322,16 @@ gather_summary.tsv        one row per OUTPUT: status, reason, bytes, checksum, v
 `batch_summary.tsv` — with `output_path, series_id, t, frames, channels, format,
 scale_percent, status, reason, bytes, checksum, verified`. A `status` of
 `written` / `skipped` / `failed` with a `reason`, so a half-completed run is
-legible. `frames` is 1 unless the scan gathered a position.
+legible. `frames` is the number of time points in that output.
+
+**`frames` on `Make_LuxendoTiff` chooses time points** — `0`, `0,47,95`, `0-3`.
+Each chosen time point of a multi-frame series becomes **its own file**, named
+`<series_id>_t<TTTT>`, which is the same name and the same pixels the
+per-time-point layout gives that frame. A series holding one frame keeps its own
+name. Blank writes every frame of a series into one file, as before — which for
+a 96-frame position is ~94 GB, so it fails as a row: over the classic TIFF limit
+for `tiff`, and over 75% of the heap for either format, both decided from the
+tables before anything is read.
 
 `checksum` is a CRC32 over the pixels **as written** — after any downscale, so
 it cannot pass a scaling bug off as a correct downscale — and `verified=yes`
@@ -306,9 +343,11 @@ round trip: a truncated write, or channels, slices and frames transposed.
 `_gather.txt` names **every** source: one `channel_<c>_source` line per channel,
 or `t<N>_channel_<c>_source` when the output gathered several frames.
 
-⚠️ **The TIFFs are not a required step.** The batch runner reads the `.lux.h5`
-through the same two tables and assembles channels in memory, so it never reads
-them. Converting is for tuning a threshold interactively and for drag-and-drop.
+⚠️ **The TIFFs are not a required step.** The batch runner is to read the
+`.lux.h5` through the same two tables and assemble channels in memory, so it
+never reads them. (That route — one resolver shared by the batch,
+`Make_LuxendoTiff` and the overview — is planned, not built: today the batch
+opens files only.) Converting is for tuning a threshold interactively and for drag-and-drop.
 The sources *are* the pixels and TIFF does not compress them, so a mandatory
 conversion would mean holding two copies of the acquisition.
 

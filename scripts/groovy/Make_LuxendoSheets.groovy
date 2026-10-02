@@ -4,8 +4,9 @@
 #@ String  (persist=false, label="Alias (blank = the acquisition folder name)", description="A short handle for this acquisition. It becomes the first part of every series id, so two acquisitions of the same positions do not collide: without it, both produce s0000_L26A_pos1_t0000. Blank uses the folder name, exactly as files.tsv's alias defaults to the basename.", value="") alias
 #@ String  (visibility=MESSAGE, value=" ", required=false) help_sep0
 #@ String  (visibility=MESSAGE, value="Behavior control:", required=false) help_msg1
-#@ Boolean (persist=false, label="Gather time frames", description="One series per imaging position holding every time point, instead of one series per time point. Off is the default: a per-time-point series is what Fiji opens by drag-and-drop, lets you analyse t=0 while t=3 is still acquiring, and costs one file rather than a whole position when something goes wrong.", value=false) gatherFrames
+#@ Boolean (persist=false, label="Gather time frames", description="One series per imaging position holding every time point -- the default, and what the time-axis work builds on: a Luxendo stack is one series, as Bio-Formats itself presents it. Off gives one series per time point, the layout v0.6.0 made by default.", value=true) gatherFrames
 #@ Boolean (persist=false, label="Quick scan", description="Read one .json sidecar per directory instead of one per file. The dimensions are constant within a channel directory, and every file's size is checked against its siblings so a timepoint of a different depth is still read in full. On a network mount this is the difference between about a minute and about an hour.", value=true) quickScan
+#@ String  (persist=false, label="File list from", description="auto: the bdv.h5 + bdv.xml index Luxendo writes at the end of an acquisition when both are present, else a walk of the directory tree. index: require the index. walk: always walk -- slower over a network mount, but the only way to see a file the index does not list, and with an index present it reports any difference.", value="auto", choices={"auto","index","walk"}) listing
 
 // Make_LuxendoSheets.groovy
 //
@@ -36,6 +37,11 @@
 // acquisitions shared all 14 stack identities), and two runs landing in one
 // output directory would overwrite each other's results without it.
 //
+// THE FILE LIST comes from the bdv.h5 index Luxendo writes beside raw/ when it
+// is there, rather than from walking raw/ -- about a minute instead of three or
+// four over samba on a 4032-file acquisition. `listing=walk` still walks, and
+// is how to find a file the index does not list. LuxendoIndex says why both.
+//
 // IDENTITY COMES FROM EACH FILE'S OWN SIDECAR, never from its path. See
 // LuxendoScan for why, LuxendoSidecar for what it costs, and
 // note/luxendo_file_format.md for the format.
@@ -47,7 +53,7 @@
 // Headless:
 //   /Applications/Fiji.app/Contents/MacOS/ImageJ-macosx --headless --console \
 //     --run scripts/groovy/Make_LuxendoSheets.groovy \
-//     "luxDir='/path/to/2026-09-10_184731',outdir='/path/out',alias='fucci_rep2',quickScan=true"
+//     "luxDir='/path/to/2026-09-10_184731',outdir='/path/out',alias='fucci_rep2',quickScan=true,listing='auto'"
 
 import ij.IJ
 
@@ -81,7 +87,8 @@ IJ.log("  series : " + (gatherFrames ? "one per POSITION, all time points inside
 
 long t0 = System.currentTimeMillis()
 def res = LS.load(LIBDIR).scan(luxDir,
-             [alias: alias, gatherFrames: gatherFrames, quickScan: quickScan]) { IJ.log(it) }
+             [alias: alias, gatherFrames: gatherFrames, quickScan: quickScan,
+              listing: LS.checkListing(listing)]) { IJ.log(it) }
 def series  = res.series
 def sources = res.sources
 
@@ -111,6 +118,7 @@ outdir.mkdirs()
 
 IJ.log("")
 IJ.log("  " + sources.size() + " source file(s) -> " + series.size() + " series")
+IJ.log("  file list  : " + (res.listing == "index" ? "from the bdv.h5 index" : "from a directory walk"))
 IJ.log("  time points: " + sources.collect { it.t }.unique().sort())
 IJ.log("  channels   : " + sources.collect { it.channel }.unique().sort())
 IJ.log("  took " + String.format("%.1f", (System.currentTimeMillis() - t0) / 1000.0d) + " s")
