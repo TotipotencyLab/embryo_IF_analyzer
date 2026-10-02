@@ -767,9 +767,9 @@ are in, with `VERSION` 0.8.0 as its last commit, and the merge commit is tagged.
 | 4 | `time_axis-resume` | skip finished frames, refuse a resume under other settings, clean up, the stop-at-frame-k test | PR 3 |
 | 5 | `time_axis-threshold_scope` | `nucleus_threshold_scope`, the two-pass histogram, choosing its default on real data | PR 3; real data |
 
-#### PR 1 — `time_axis-contract`
+#### PR 1 — `time_axis-contract`  ✅ done
 
-- [ ] 🔒 **The frame loop processes one single-frame image per `t`.** An open
+- [x] 🔒 **The frame loop processes one single-frame image per `t`.** An open
       multi-frame image is one source of frames (a `Duplicator` copy of one
       frame at a time); PR 3 adds the streaming source and reuses the same
       per-frame code rather than restructuring it. A single-frame image is
@@ -780,42 +780,55 @@ are in, with `VERSION` 0.8.0 as its last commit, and the merge commit is tagged.
       [RoiDetect.groovy:162](../scripts/groovy/RoiDetect.groovy),
       [RoiExport.groovy:121](../scripts/groovy/RoiExport.groovy)) only ever
       see one frame.
-- [ ] `_outline.txt` gains `t`; `_res.txt` gains `roi, z, t, ch`; `stack` leaves
+- [x] `_outline.txt` gains `t`; `_res.txt` gains `roi, z, t, ch`; `stack` leaves
       Set Measurements; ROI ids gain `TTTT-` when frames > 1. Results are
       written once, at the end, from all frames — the ROIs and table rows are
       small; only pixels are not.
-- [ ] 🔒 **`<series_id>_threshold_stats.tsv`, always**: one row per frame —
+- [x] 🔒 **`<series_id>_threshold_stats.tsv`, always**: one row per frame —
       `t`, `nucleus_threshold_used`, `nucleus_mask_pct`,
       `nucleus_circ_rejected`, `nucleus_count`, `nucleolus_count`. The
       nucleolus threshold is not in it (per nucleus per slice). `_config.txt`
       keeps the totals; its `nucleus_threshold_used` and `nucleus_mask_pct`
       are unchanged for one frame and the literal `per-frame` for several.
-- [ ] `_config.txt` gains `image_frames`, and `frame_interval` + `frame_unit`
+- [x] `_config.txt` gains `image_frames`, and `frame_interval` + `frame_unit`
       (provenance; blank for one frame or when unknown — never 1).
-- [ ] A multi-frame image writes **no overview** in PR 1, and says so in the
+- [x] A multi-frame image writes **no overview** in PR 1, and says so in the
       log; its overview is PR 3's TIFF. A single frame's PNGs are unchanged.
-- [ ] ⚠️ `saveRoiZip()` leaves a **189-byte partial zip** when it throws.
+- [x] ⚠️ `saveRoiZip()` leaves a **189-byte partial zip** when it throws.
       Write to a temp path and rename on success.
-- [ ] 🔒 **The 1-based rule on the Luxendo side**: `sources.tsv`'s `channel`
+- [x] 🔒 **The 1-based rule on the Luxendo side**: `sources.tsv`'s `channel`
       and `t`, `Make_LuxendoTiff`'s `frames=`, the `_t<TTTT>` names and the
       `_gather.txt` keys count from 1. ⚠️ An older `sources.tsv` would be off
       by one *silently* — but every one of them has `t = 0` and `channel = 0`
       rows, so "both ≥ 1" refuses every old table, naming v0.8.0.
-- [ ] R: the outline and measurement readers take `t` (absent means 1);
+- [x] R: the outline and measurement readers take `t` (absent means 1);
       measurements join outlines on `(roi, t)`; the explicit columns win over
       the `Label` parse, after **asserting they agree**; `feature_stats.r`
       keys on `(roi, ch, t)` (H5). Annotating a table with more than one `t`
       is **refused** until PR 2 — grouping across frames would merge one
       object's frames into one feature.
-- [ ] ⚠️ 🔒 **Any new run parameter lands in four places at once** (CLAUDE.md
+- [x] ⚠️ 🔒 **Any new run parameter lands in four places at once** (CLAUDE.md
       § The output contract). PR 1 adds none: `image_frames`,
       `frame_interval` and `frame_unit` are provenance.
 
-**Verification.** Single-frame: the fixture's columns that existed are
-byte-identical apart from the dropped `Ch`/`Slice`, and the new `roi`, `z`,
-`ch` equal what R parses out of `Label` today. Multi-frame: a synthesised
-4-frame stack gives four times the ROIs with distinct ids, each frame's
-measurements equal to the same frame analysed alone, and `t` counted 1–4.
+**Decided at implementation:** `t` is part of the per-feature key in
+`feature_stats.tsv` (a feature is one object at one time point), and a feature
+spanning frames stops the run. Multi-frame ROIs are stored with their
+hyperstack position.
+
+**Verification, as carried out.** Groovy, all twelve files, 0 failed
+(`Test_NucleusPipeline` 103: a synthesised 2c × 3z × 4t stack gives 24 ROIs
+with distinct ids, `t` 1–4, each channel-2 `Mean` equal to its own frame's
+signal, every frame equal to that frame analysed alone). R 4.6.1: 995 / 0.
+Real data, read only:
+- the fixture TIFF, `main` against this branch: outlines identical but the new
+  `t`; measurement values identical once ImageJ's `Ch`/`Slice` and our four
+  columns are set aside, and our `roi`, `z`, `ch` equal the `Label` and the old
+  `Ch` on every row; zips and PNGs identical;
+- R on both: every statistic identical, signals and `volume` included;
+- the 33 GB Luxendo acquisition: `series.tsv` byte-identical, `sources.tsv`
+  identical but `t` and `channel` each +1; `frames=1` writes the pixels
+  `main`'s `frames=0` did (same checksum); an old table and `frames=0` refused.
 
 #### PR 2 — `time_axis-features`
 
