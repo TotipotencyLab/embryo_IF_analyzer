@@ -483,10 +483,14 @@ The way bugs actually get found here: run the old and new paths on the same inpu
 with the same settings, then diff. Counts alone are not enough: a wrong size
 filter and a wrong circularity filter both produce plausible-looking counts.
 
-1. **Use the same output prefix** for both runs, in different directories, so
-   filenames match and `diff` is direct.
+1. **Give both runs the same series id** (`series_id` in the parameters, or the
+   `Series id` field), in different directories, so filenames match and `diff`
+   is direct. Before v0.7.0 this was the output prefix; a run of `main` from
+   then needs `output_prefix` + `position_pattern` to produce the same name.
 2. **Normalise incidental columns.** The outline `name` column carries the
-   basename; `sed 's/^PREFIX/POS/'` both sides before diffing.
+   series id; if the two runs' ids differ, `sed` one into the other on both
+   sides before diffing. `_res.txt`'s `Label` carries the image *title*, which
+   an interactive run's duplicated window suffixes with `-1`.
 3. **ROI zips:** compare entry names and lengths, ignoring timestamps —
    `unzip -l f.zip | awk 'NR>3&&NF>=4{print $1,$4}' | sort`. A raw md5 always
    differs because ZIP entries store mtimes.
