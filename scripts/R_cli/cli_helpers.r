@@ -355,11 +355,12 @@
 
 # --- identity from file content -----------------------------------------------
 
-# The ROI id's tail is fixed-shape and anchored: <feature>_SSSS-NNNN-YYYY. A
+# The ROI id's tail is fixed-shape and anchored: <feature>_SSSS-NNNN-YYYY, with a
+# leading TTTT- when the image has several frames. A
 # GREEDY prefix is correct here, and is what makes multi-word feature names such
 # as "growing_oocyte" work -- the opposite of the filename case above, where
 # there is no anchor and greedy takes too much.
-.ROI_ID_RX <- "^(.+)_\\d{4}-\\d{4}-\\d{4}$"
+.ROI_ID_RX <- "^(.+)_(\\d{4}-)?\\d{4}-\\d{4}-\\d{4}$"
 
 #' Feature name(s) carried by a vector of ROI ids
 #'

@@ -88,9 +88,11 @@ check("and it is reported",        strayLog.any { it.contains("no .lux.h5 beside
 new File(root, "raw/notes.json").delete()
 
 println "\n=== identity comes from the sidecar, not the path ==="
-def r0 = rows.find { it.series_index == 0 && it.t == 0 && it.channel == 1 }
+// Luxendo's channel 1 / time point 0 is the table's channel 2 / t 1: every
+// image axis this repo writes counts from 1, as ImageJ shows it.
+def r0 = rows.find { it.series_index == 0 && it.t == 1 && it.channel == 2 }
 check("channel_name", r0.channel_name, "GFP")
-check("unnamed channel stays blank", rows.find { it.channel == 2 }.channel_name, "")
+check("unnamed channel stays blank", rows.find { it.channel == 3 }.channel_name, "")
 def s0 = ser.find { it.series_index == 0 }
 check("series_id",                          s0.series_id, "acq_s0000_L26A_pos1")
 check("series_name is the raw description", s0.series_name, "L26A pos1")
@@ -169,8 +171,8 @@ println "\n=== sources order is series, then time, then channel ==="
 def keys = rows.collect { it.alias + "|" + String.format("%04d", it.series_index as int) + "|" +
                           String.format("%04d", it.t as int) + "|" + it.channel }
 check("already in sorted order", keys, keys.sort(false))
-check("first row is series 0, t 0, channel 0",
-      "s" + rows[0].series_index + "/t" + rows[0].t + "/c" + rows[0].channel, "s0/t0/c0")
+check("first row is series 0, t 1, channel 1",
+      "s" + rows[0].series_index + "/t" + rows[0].t + "/c" + rows[0].channel, "s0/t1/c1")
 // and it is reproducible run to run
 def rows2 = scanner.scan(root) { }.sources
 check("second scan gives the same order",
@@ -291,7 +293,7 @@ throwsWith("channels disagree on z", "disagree on dimensions",
 println "\n=== one series holds every frame, and that is not a duplicate ==="
 // One series legitimately holds channel 0 once per frame, so the duplicate
 // check has to key on the time point or it would reject every real table.
-check("t is on every source",            rows.collect { it.t }.unique().sort(), [0, 1])
+check("t is on every source, from 1",    rows.collect { it.t }.unique().sort(), [1, 2])
 check("frames are not mistaken for duplicate sources",
       scanner.validate(ser, rows) { }.findAll { it.contains("same series channel") }, [])
 
@@ -329,7 +331,7 @@ def tpDir = new File(tmp, "tp"); tpDir.mkdirs()
 }
 def tpRes = scanner.scan(tpDir, [quickScan: true]) { }
 check("every time point survives quickScan",
-      tpRes.sources.collect { it.t }.sort(), [0, 1, 2, 3])
+      tpRes.sources.collect { it.t }.sort(), [1, 2, 3, 4])
 check("in one series of four frames", tpRes.series.collect { it.size_t }, [4])
 check("and it matches the slow path",
       scanner.scan(tpDir, [quickScan: false]) { }.sources, tpRes.sources)
@@ -341,7 +343,7 @@ FIX.writeLux(new File(oddNames, "c0/first.lux.h5"),  2, 6, 4, [stack: 0, channel
 FIX.writeLux(new File(oddNames, "c0/second.lux.h5"), 2, 6, 4, [stack: 0, channel: 0, tp: 1])
 def onLog = []
 def onRes = scanner.scan(oddNames, [quickScan: true]) { onLog << it }
-check("both time points still read", onRes.sources.collect { it.t }.sort(), [0, 1])
+check("both time points still read", onRes.sources.collect { it.t }.sort(), [1, 2])
 check("and the fallback is reported",
       onLog.any { it.contains("does not encode the time point") }, true)
 
@@ -361,7 +363,8 @@ FIX.writeLux(new File(gap, "t0/Cam_long_00000.lux.h5"), 2, 6, 4, [stack: 0, chan
 FIX.writeLux(new File(gap, "t2/Cam_long_00002.lux.h5"), 2, 6, 4, [stack: 0, channel: 0, tp: 2])
 def gLog = []
 scanner.scan(gap) { gLog << it }
-check("time point gap warns", gLog.any { it.contains("not a run from 0") }, true)
+check("time point gap warns", gLog.any { it.contains("not a run from 1") }, true)
+check("...naming the gap in the table's count", gLog.any { it.contains("[1, 3]") }, true)
 
 println "\n=== bySeries groups one series' sources together ==="
 def grouped = LS.bySeries(rows)
@@ -369,7 +372,21 @@ check("group count", grouped.size(), 2)
 check("keyed by (alias, series_index)", grouped.keySet().toList(), [["acq", "0"], ["acq", "1"]])
 check("channels x frames per group", grouped.values().collect { it.size() }.unique(), [6])
 check("channels in index order, frame by frame",
-      grouped[["acq", "0"]].collect { it.channel }, [0, 1, 2, 0, 1, 2])
+      grouped[["acq", "0"]].collect { it.channel }, [1, 2, 3, 1, 2, 3])
+
+println "\n=== counted from 1: the one conversion, and an old table refused ==="
+// Luxendo counts from 0; the tables count from 1. The conversion happens once,
+// where a source row is made -- so the smallest t and channel are 1, never 0.
+check("no t below 1",       rows.collect { it.t as int }.min(), 1)
+check("no channel below 1", rows.collect { it.channel as int }.min(), 1)
+// A table written before v0.8.0 would be off by one with no error. Every such
+// table has a t = 0 row, so the one join refuses it, naming the version.
+def oldRows = rows.collect { it + [t: (it.t as int) - 1, channel: (it.channel as int) - 1] }
+throwsWith("a 0-based sources table is refused", "written before v0.8.0",
+           { LS.withSeriesId(oldRows, ser) })
+throwsWith("...even with only t from 0", "counts t and channel from 0",
+           { LS.withSeriesId(rows.collect { it + [t: (it.t as int) - 1] }, ser) })
+check("a 1-based table still joins", LS.withSeriesId(rows, ser).sources.size(), rows.size())
 
 println "\n=== the two tables must agree on (alias, series_index) ==="
 // A join that matches nothing is the failure this repo is built around, so the

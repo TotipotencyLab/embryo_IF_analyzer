@@ -68,11 +68,16 @@ Before deleting anything, confirm git actually holds it — `**/tmp/` and
 Fiji writes, per feature per image:
 
 ```
-<series_id>_<feature>_outline.txt        name, roi, z, x, y   (one row per polygon vertex)
+<series_id>_<feature>_outline.txt        name, roi, t, z, x, y   (one row per polygon vertex)
 <series_id>_<feature>_outline_ROIs.zip   ImageJ ROIs
-<series_id>_<feature>_res.txt            measurements, one row per ROI per channel
+<series_id>_<feature>_res.txt            measurements, one row per ROI per channel per frame
 <series_id>_config.txt                   every parameter used for that run
+<series_id>_threshold_stats.tsv          what the nucleus threshold did, one row per frame
 ```
+
+An image may have several frames; each is analysed as an image of its own, and
+**every image axis this repo writes counts from 1** — channel, z and t, as
+ImageJ shows them (`note/fiji_vocabulary.md`). A single frame is `t = 1`.
 
 ⚠️ **The file stem and the `name` column are one string.** The R side reads the
 series id out of `name` and finds `_config.txt` and `_res.txt` by it, so a
@@ -130,18 +135,24 @@ R side cannot read, and the template is a generated duplicate of it. That is why
 one needs tests where the other does not — and why making the sheet look more
 like the config would be a step backwards.
 
-- `scripts/R/read_fiji_result.r` identifies the roi column by matching
-  `\d{4}-\d{4}-\d{4}$` and joins measurements to outlines through the roi id
-  **embedded in the `Label` column**. The measurement numbers can be perfectly
-  correct while the join yields nothing.
+- Measurements join outlines on **`(roi, t)`**. Since v0.8.0 `_res.txt` carries
+  `roi`, `z`, `t` and `ch` written by Fiji; `read_fiji_result.r` takes them as
+  given and stops if the `Label` disagrees. For an older table it still digs
+  the roi id **out of the `Label` column** — the measurement numbers can be
+  perfectly correct while that join yields nothing.
 - The measurement columns come from `Set Measurements`, which is a *persistent
   Fiji user preference*. The Groovy scripts force it explicitly:
-  `area mean standard min centroid shape integrated median stack display`.
-  Never rely on the operator's Fiji settings.
+  `area mean standard min centroid shape integrated median display`.
+  Never rely on the operator's Fiji settings. ⚠️ **Not `stack`**: ImageJ's
+  `Ch`/`Slice`/`Frame` mean different things on different image shapes
+  (`Slice` is the *time* on a 1-channel, 1-slice time course), and beside our
+  own `ch` they collide once R lower-cases the names.
 
 ROI names are `<feature>_SSSS-NNNN-YYYY` — slice, per-slice index, y-centre of the
-ROI bounds. Reproduced in Groovy so output stays compatible after moving off the
-ROI Manager.
+ROI bounds — with a leading `TTTT-` (the frame) when the image has several
+frames: four frames of one object would otherwise share a name, which the ROI
+zip refuses. Every reader takes both shapes. Reproduced in Groovy so
+single-frame output stays compatible after moving off the ROI Manager.
 
 When changing anything that writes these files, verify against a reference run
 rather than by eye. See the `fiji-headless-testing` skill; it describes the whole

@@ -20,7 +20,7 @@ The Groovy scripts force `Set Measurements` explicitly, so the columns do not
 depend on the operator's preferences:
 
 ```
-area mean standard min centroid shape integrated median stack display
+area mean standard min centroid shape integrated median display
 ```
 
 | Column | Meaning | Notes |

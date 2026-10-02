@@ -472,6 +472,137 @@ def bareCloses = { String path ->
     return bad
 }
 
+println ""
+println "=== the time axis: every image gets t, a multi-frame one is analysed per frame ==="
+def RX = GCL.parseClass(new File(LIBDIR, "RoiExport.groovy"))
+def readTsv = { File f ->
+    def lines = f.readLines()
+    def head = lines[0].split("\t", -1).toList()
+    return [head: head, rows: lines.drop(1).collect { l ->
+        def v = l.split("\t", -1)
+        def m = [:]; head.eachWithIndex { h, i -> m[h] = (i < v.length ? v[i] : "") }; m }]
+}
+
+// Single frame first: the columns are there, counted from 1, and ImageJ's own
+// position columns are not.
+def outOne = new File(tmp, "single"); outOne.mkdirs()
+pipe.run(makeImp("one"), outOne, baseParams + [series_id: "one"])
+def oOne = readTsv(new File(outOne, "one_nucleus_outline.txt"))
+check("outline header has t, before z",        oOne.head, ["name", "roi", "t", "z", "x", "y"])
+check("one frame is t = 1 everywhere",         oOne.rows.collect { it.t }.unique(), ["1"])
+def rOne = readTsv(new File(outOne, "one_nucleus_res.txt"))
+check("res carries roi, z, t, ch",             rOne.head.containsAll(["roi", "z", "t", "ch"]), true)
+check("...and not ImageJ's Ch or Slice",       rOne.head.findAll { it in ["Ch", "Slice", "Frame"] }, [])
+// The explicit columns against the Label, which carries the same facts in
+// ImageJ's words: <title>:<roi name>:<slice label>.
+check("res roi is the name in the Label",
+      rOne.rows.every { it.Label.split(":")[1] == it.roi }, true)
+check("res z is the slice the roi name says",
+      rOne.rows.every { (it.roi =~ /_(\d{4})-\d{4}-\d{4}$/)[0][1] as int == it.z as int }, true)
+check("res ch is the measured channel",        rOne.rows.collect { it.ch }.unique(), ["1"])
+def tsOne = readTsv(new File(outOne, "one_threshold_stats.tsv"))
+check("threshold stats: one row for one frame", tsOne.rows.size(), 1)
+check("...with the documented columns",        tsOne.head, RX.THRESHOLD_STATS_COLUMNS)
+def cfgOne = readCfg(new File(outOne, "one_config.txt"))
+check("config: image_frames 1",                cfgOne.image_frames, "1")
+check("config: no frame interval for one frame", cfgOne.frame_interval, "")
+check("config: the threshold as a range, as before", cfgOne.nucleus_threshold_used ==~ /\d+-\d+/, true)
+check("...and it equals the stats row's",      cfgOne.nucleus_threshold_used, tsOne.rows[0].nucleus_threshold_used)
+check("config: measurements no longer ask for stack",
+      cfgOne.measurements.split(" ").contains("stack"), false)
+
+// Four frames, two channels. The discs move and the signal brightens frame by
+// frame, so a frame measured as another, or all frames measured as the first,
+// cannot pass.
+def makeTimeImp = { String title ->
+    def st = new ImageStack(200, 200)
+    (1..4).each { int t ->
+        (1..3).each { int z ->
+            def dna = new ByteProcessor(200, 200)
+            dna.setColor(255)
+            dna.fill(new OvalRoi(30 + 5 * t, 30, 50, 50))
+            dna.fill(new OvalRoi(120, 110 + 5 * t, 50, 50))
+            def sig = new ByteProcessor(200, 200)
+            sig.setColor(20 * t + 10 * z)
+            sig.fill(new Roi(0, 0, 200, 200))
+            st.addSlice("c:1/2 z:" + z + "/3 t:" + t + "/4", dna)
+            st.addSlice("c:2/2 z:" + z + "/3 t:" + t + "/4", sig)
+        }
+    }
+    def imp = new ImagePlus(title, st)
+    imp.setDimensions(2, 3, 4)
+    imp.setOpenAsHyperStack(true)
+    imp.getCalibration().frameInterval = 30d
+    imp.getCalibration().setTimeUnit("sec")
+    return imp
+}
+def mParams = baseParams + [channels_measured: "1,2"]
+def outTL = new File(tmp, "multi"); outTL.mkdirs()
+def timeImp = makeTimeImp("tl")
+def resTL = pipe.run(timeImp, outTL, mParams + [series_id: "tl", save_overview: true])
+def oTL = readTsv(new File(outTL, "tl_nucleus_outline.txt"))
+def rTL = readTsv(new File(outTL, "tl_nucleus_res.txt"))
+check("4 frames x 2 discs x 3 slices = 24 ROIs", resTL.nucRois.size(), 24)
+check("every ROI id is distinct",               resTL.nucNames.unique(false).size(), 24)
+check("ids carry TTTT- equal to their frame",
+      oTL.rows.every { (it.roi =~ /^nucleus_(\d{4})-\d{4}-\d{4}-\d{4}$/)[0][1] as int == it.t as int }, true)
+check("outline t runs 1..4",                    oTL.rows.collect { it.t as int }.unique().sort(), [1, 2, 3, 4])
+check("res t runs 1..4",                        rTL.rows.collect { it.t as int }.unique().sort(), [1, 2, 3, 4])
+check("res rows = ROIs x 2 channels",           rTL.rows.size(), 48)
+check("res ch is 1 and 2",                      rTL.rows.collect { it.ch }.unique().sort(), ["1", "2"])
+// The signal is 20t + 10z in channel 2, so its Mean says which frame and slice
+// were measured -- not just which were written in the t column.
+check("each ch2 Mean is its own frame's signal",
+      rTL.rows.findAll { it.ch == "2" }.every { (it.Mean as double) == 20d * (it.t as int) + 10d * (it.z as int) }, true)
+// The frame copy keeps the series' title, so the Label still names the image.
+check("the Label names the image, not a DUP_ copy",
+      rTL.rows.every { it.Label.startsWith("tl:") }, true)
+
+// Each frame analysed in the loop must equal that frame analysed ALONE -- the
+// proof that the loop hands over the frame rather than a neighbour, and adds
+// nothing but t and the id's frame field.
+def frameAloneSame = (1..4).every { int t ->
+    def outAlone = new File(tmp, "alone" + t); outAlone.mkdirs()
+    pipe.run(NP.frameOf(timeImp, t), outAlone, mParams + [series_id: "tl"])
+    def alone = readTsv(new File(outAlone, "tl_nucleus_res.txt")).rows
+    def inLoop = rTL.rows.findAll { it.t == t.toString() }
+    def strip = { List rows -> rows.collect { r ->
+        r.findAll { k, v -> !(k in ["roi", "t", "Label", " "]) } +
+        [roi: r.roi.replaceFirst(/_\d{4}-(\d{4}-\d{4}-\d{4})$/, '_$1')] } }
+    strip(alone) == strip(inLoop)
+}
+check("every frame equals that frame analysed alone", frameAloneSame, true)
+
+def tsTL = readTsv(new File(outTL, "tl_threshold_stats.tsv"))
+check("threshold stats: one row per frame",     tsTL.rows.collect { it.t }, ["1", "2", "3", "4"])
+check("...counts sum to the total",             tsTL.rows.sum { it.nucleus_count as int }, 24)
+def cfgTL = readCfg(new File(outTL, "tl_config.txt"))
+check("config: image_frames 4",                 cfgTL.image_frames, "4")
+check("config: frame interval from the calibration", [cfgTL.frame_interval, cfgTL.frame_unit], ["30.0", "sec"])
+check("config: threshold is `per-frame`",       [cfgTL.nucleus_threshold_used, cfgTL.nucleus_mask_pct], ["per-frame", "per-frame"])
+check("config: the count is the total",         cfgTL.nucleus_count, "24")
+check("no overview PNG for a multi-frame image",
+      outTL.list().findAll { it.endsWith(".png") }.toList(), [])
+check("...and the config says none was written", [cfgTL.overview_saved, cfgTL.overview_channels], ["false", ""])
+def zipped = RX.loadRoiZip(new File(outTL, "tl_nucleus_outline_ROIs.zip").getPath())
+check("the zip holds all 24",                   zipped.size(), 24)
+check("each zipped ROI sits on its own frame",
+      zipped.every { r -> r.getTPosition() == ((r.getName() =~ /^nucleus_(\d{4})-/)[0][1] as int) }, true)
+check("...and its own slice",
+      zipped.every { r -> r.getZPosition() == ((r.getName() =~ /-(\d{4})-\d{4}-\d{4}$/)[0][1] as int) }, true)
+
+println ""
+println "=== a failed ROI zip leaves nothing behind ==="
+def zipDir = new File(tmp, "zipfail"); zipDir.mkdirs()
+def zipPath = new File(zipDir, "x_ROIs.zip").getPath()
+// A repeated entry name is what four frames of one object would have produced
+// without TTTT-: ZipOutputStream throws on the second.
+def oneRoi = new OvalRoi(10, 10, 20, 20)
+String zipErr = null
+try { RX.saveRoiZip([oneRoi, oneRoi], ["dup", "dup"], zipPath) } catch (Throwable t) { zipErr = t.getClass().getSimpleName() }
+check("a repeated name throws",                 zipErr != null, true)
+check("...and leaves no zip and no part file",  zipDir.list().toList(), [])
+
 def unpaired = []
 ["scripts/groovy/NucleusPipeline.groovy",
  "scripts/groovy/Overview.groovy",

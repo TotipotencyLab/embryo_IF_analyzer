@@ -22,7 +22,10 @@
 #' @param roi character vector of ROI ids
 #' @return length-1 character, or NA when no id matches
 feature_roi_prefix <- function(roi){
-  rx <- "^(.+)_\\d{4}-\\d{4}-\\d{4}$"
+  # <feature>_SSSS-NNNN-YYYY, or <feature>_TTTT-SSSS-NNNN-YYYY for an image of
+  # several frames. Without the optional field a 4-field id matches nothing and
+  # this returns NA -- the measurement table is then never looked for.
+  rx <- "^(.+)_(\\d{4}-)?\\d{4}-\\d{4}-\\d{4}$"
   hit <- unique(roi[!is.na(roi) & grepl(rx, roi)])
   if(length(hit) == 0){
     return(NA_character_)
@@ -112,6 +115,10 @@ summarise_feature_stats <- function(st_df, res = NULL, channel_stat = "wmean",
   is_valid <- !is.na(tab$feature_id) &
     startsWith(tab$feature_id, paste0(tab$feature_type, "_"))
   valid <- tab[is_valid, , drop = FALSE]
+  # A feature table written before the time axis is one frame.
+  if(!"t" %in% colnames(valid)){
+    valid$t <- rep(1, nrow(valid))
+  }
   if(nrow(valid) == 0){
     warning("No valid features in this table", call. = FALSE)
     return(tibble::tibble())
@@ -127,18 +134,41 @@ summarise_feature_stats <- function(st_df, res = NULL, channel_stat = "wmean",
       if(!all(c("roi", "ch", "mean") %in% colnames(res_df))){
         stop("Measurement table needs roi, ch and mean columns", call. = FALSE)
       }
-      keep <- c("roi", "ch", "mean", intersect(c("median", "circ"), colnames(res_df)))
+      # A table without t is one frame (read_fiji_result() says t = 1 for an
+      # old one); so is a feature table written before the time axis.
+      if(!"t" %in% colnames(res_df)){
+        res_df$t <- 1
+      }
+      # The outline table is authoritative for z. The measurement table's z is
+      # checked against it on the rows both have, then left behind -- carried
+      # into the join it would arrive as z.x/z.y, and every later reference to
+      # z would find neither.
+      if("z" %in% colnames(res_df)){
+        zz <- dplyr::inner_join(unique(valid[, c("roi", "t", "z")]),
+                                unique(res_df[, c("roi", "t", "z")]),
+                                by = c("roi", "t"), suffix = c("", ".res"))
+        disagree <- !is.na(zz$z.res) & zz$z != zz$z.res
+        if(any(disagree)){
+          stop("The measurement table puts ", sum(disagree), " ROI(s) on a different z ",
+               "from the outline table, first ", zz$roi[disagree][1], " (", zz$z[disagree][1],
+               " vs ", zz$z.res[disagree][1], ")", call. = FALSE)
+        }
+      }
+      keep <- c("roi", "t", "ch", "mean", intersect(c("median", "circ"), colnames(res_df)))
       res_df <- unique(res_df[, keep, drop = FALSE])
-      # One ROI measured once per channel. Anything else means the join would
-      # multiply rows, which would silently reweight every average below.
-      dup <- duplicated(res_df[, c("roi", "ch")])
+      # One ROI measured once per channel per frame. Anything else means the
+      # join would multiply rows, which would silently reweight every average
+      # below. Keyed on t: an ROI id names one frame of one image, and two
+      # frames of an older 3-field id would otherwise look like a duplicate and
+      # keep only the first frame's numbers.
+      dup <- duplicated(res_df[, c("roi", "t", "ch")])
       if(any(dup)){
         warning("Measurement table has ", sum(dup),
-                " duplicate roi/channel row(s); keeping the first of each",
+                " duplicate roi/frame/channel row(s); keeping the first of each",
                 call. = FALSE)
         res_df <- res_df[!dup, , drop = FALSE]
       }
-      valid <- dplyr::left_join(valid, res_df, by = "roi",
+      valid <- dplyr::left_join(valid, res_df, by = c("roi", "t"),
                                 relationship = "many-to-many")
     }
   }
@@ -256,8 +286,22 @@ summarise_feature_stats <- function(st_df, res = NULL, channel_stat = "wmean",
     geo <- dplyr::left_join(geo, sig, by = c("series_id", "feature_id"))
   }
 
+  # --- the frame ----------------------------------------------------------------------
+  # A feature is one object at ONE time point, so it has one t, carried beside
+  # its id. A feature whose ROIs span two frames means grouping ran across
+  # time, and every statistic above would be an average over the time course
+  # -- stopped here rather than reported.
+  frame <- unique(valid[, c("series_id", "feature_id", "t"), drop = FALSE])
+  spans <- frame[duplicated(frame[, c("series_id", "feature_id")]), , drop = FALSE]
+  if(nrow(spans) > 0){
+    stop("Feature ", spans$feature_id[1], " of ", spans$series_id[1], " has ROIs in more than ",
+         "one frame: a feature is one object at one time point", call. = FALSE)
+  }
+  geo <- dplyr::left_join(geo, frame, by = c("series_id", "feature_id"))
+  geo <- dplyr::relocate(geo, "t", .after = "feature_id")
+
   # --- metadata ---------------------------------------------------------------------
-  meta_cols <- intersect(meta_cols, colnames(tab))
+  meta_cols <- intersect(setdiff(meta_cols, "t"), colnames(tab))
   if(length(meta_cols) > 0){
     meta <- unique(valid[, c("series_id", "feature_id", meta_cols), drop = FALSE])
     if(nrow(meta) > nrow(geo)){

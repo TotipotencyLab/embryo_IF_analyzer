@@ -297,6 +297,20 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       # memory, confirm the tail agrees rather than assuming it.
       .cli_check_identity(roi_df$roi, path, roi_prefix)
 
+      # One frame per table until grouping learns time (time_axis PR 2):
+      # grouping across frames would join one object's frames into a single
+      # feature, by z overlap alone, and report a plausible count of nothing.
+      # Refused, not attempted. The frame is put back on the rows afterwards.
+      frames <- sort(unique(roi_df$t))
+      if (length(frames) > 1L) {
+        stop("Outline table ", basename(path), " holds ", length(frames),
+             " frames (t = ", paste(utils::head(frames, 5), collapse = ", "),
+             if (length(frames) > 5) ", ..." else "", "). Grouping ROIs into features ",
+             "across time is not supported yet: one frame per table.", call. = FALSE)
+      }
+      frame_t <- frames[1]
+      roi_df$t <- NULL
+
       # Optional circularity pre-filter, which needs the measurement table.
       circ_keys <- unique(c(feat, roi_prefix))
       circ_cut <- if (any(circ_keys %in% names(min_circ)) || "default" %in% names(min_circ)) {
@@ -342,6 +356,10 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       )
       feature_group$feature_type <- feat
       feature_group$series_id <- sid
+      # Beside roi, as in the outline table: (roi, t) is the key the
+      # measurements join on.
+      feature_group$t <- frame_t
+      feature_group <- dplyr::relocate(feature_group, "t", .after = "roi")
       per_feature[[feat]] <- feature_group
       
       n_valid <- length(unique(feature_group$feature_id[grepl(paste0("^", feat, "_"), feature_group$feature_id)]))
@@ -436,10 +454,12 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   if (length(absent)) {
     stop("Outline table ", basename(path), " is missing column(s): ",
          paste(absent, collapse = ", "),
-         "\n  (expected the output contract: name, roi, z, x, y)", call. = FALSE)
+         "\n  (expected the output contract: name, roi, t, z, x, y)", call. = FALSE)
   }
+  # A table from before the time axis has no t: it is one frame, t = 1.
+  if (!"t" %in% colnames(df)) df$t <- 1
   # @Chad: You have make sure that all of `need` columns exist anyway, so no need to overcomplicated thing
-  return(tibble::as_tibble(df[, needed, drop = FALSE]))
+  return(tibble::as_tibble(df[, c("roi", "t", "z", "x", "y"), drop = FALSE]))
 }
 
 #' Report how many inner features found a parent, and how

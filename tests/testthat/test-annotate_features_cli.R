@@ -167,8 +167,10 @@ test_that("annotate_features_cli finds 6 nuclei and 7 nucleoli on the fixture", 
   # The tidy table must not lose or invent rows.
   expect_identical(nrow(res), 97L)
   expect_setequal(colnames(res),
-                  c("roi", "z", "area", "is_bridge", "feature_id", "feature_type",
+                  c("roi", "t", "z", "area", "is_bridge", "feature_id", "feature_type",
                     "series_id", "run_id"))
+  # The fixture predates the time axis: no t column, so one frame, t = 1.
+  expect_identical(unique(res$t), 1)
 })
 
 test_that("annotate_features_cli writes a QC plot only when asked", {
@@ -235,4 +237,40 @@ test_that("annotate_features_cli stops when the sheet excludes everything", {
     "--input", fixture_file("nucleus", "outline"),
     "--outdir", withr::local_tempdir(), "--series_sheet", sheet)))),
     "no series in common")
+})
+
+# --- the time axis --------------------------------------------------------------
+
+test_that("an outline table holding several frames is refused, not grouped across time", {
+  skip_if_no_sf()
+  skip_if_no_pkg("argparser")
+  source_cli("annotate_features_cli.r")
+  # Grouping by z overlap alone would join one object's frames into a single
+  # feature and report a plausible count. Until grouping learns time, a table
+  # with more than one t stops -- naming the frames.
+  d <- withr::local_tempdir()
+  sq <- function(roi, t, z) data.frame(name = "tl", roi = roi, t = t, z = z,
+                                       x = c(10, 20, 20, 10), y = c(10, 10, 20, 20))
+  write.table(rbind(sq("nucleus_0001-0001-0001-0015", 1, 1),
+                    sq("nucleus_0002-0001-0001-0015", 2, 1)),
+              file.path(d, "tl_nucleus_outline.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+  expect_error(suppressMessages(annotate_features_cli(c(
+    "--input", d, "--feature", "nucleus", "--outdir", withr::local_tempdir(),
+    "--min_z_span", "default=1"))), "holds 2 frames")
+})
+
+test_that("a one-frame v0.8.0 outline keeps its t on every feature row", {
+  skip_if_no_sf()
+  skip_if_no_pkg("argparser")
+  source_cli("annotate_features_cli.r")
+  d <- withr::local_tempdir()
+  sq <- function(roi, z) data.frame(name = "one", roi = roi, t = 1, z = z,
+                                    x = c(10, 20, 20, 10), y = c(10, 10, 20, 20))
+  write.table(rbind(sq("nucleus_0001-0001-0015", 1), sq("nucleus_0002-0001-0015", 2)),
+              file.path(d, "one_nucleus_outline.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+  out <- withr::local_tempdir()
+  res <- suppressMessages(annotate_features_cli(c(
+    "--input", d, "--feature", "nucleus", "--outdir", out, "--min_z_span", "default=1")))
+  expect_identical(unique(res$t), 1L)
+  expect_identical(colnames(res)[1:3], c("roi", "t", "z"))
 })

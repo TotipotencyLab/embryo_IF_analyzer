@@ -114,11 +114,15 @@ between runs: an id names one image. Since v0.7.0 there is no output prefix; to
 keep two runs apart, type the id you want or use another output directory.
 
 ```
-<series_id>_<feature>_outline.txt        name, roi, z, x, y
+<series_id>_<feature>_outline.txt        name, roi, t, z, x, y
 <series_id>_<feature>_outline_ROIs.zip   ImageJ ROIs
-<series_id>_<feature>_res.txt            measurements, one row per ROI per channel
+<series_id>_<feature>_res.txt            measurements, one row per ROI per channel per frame
 <series_id>_config.txt                   every parameter used for this run
+<series_id>_threshold_stats.tsv          what the nucleus threshold did, per frame
 ```
+
+A time-lapse is analysed frame by frame into the same files, told apart by `t`.
+Channel, z and t all count from 1, as Fiji shows them.
 
 The `name` column holds the same id, and the R side relies on that to find the
 `_res.txt` and `_config.txt` beside an outline table.

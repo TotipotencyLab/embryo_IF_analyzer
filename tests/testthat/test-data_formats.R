@@ -67,12 +67,38 @@ test_that("ROI ids match the documented <feature>_SSSS-NNNN-YYYY form", {
 test_that("read_fiji_result returns the documented columns", {
   skip_if_no_fixture(fixture_file("nucleus", "res"))
   source_r_scripts("read_fiji_result.r")
+  # The fixture is from before v0.8.0: ImageJ's ch/slice, the position parsed
+  # out of Label, and t = 1 because a table without t is one frame.
   res <- read_fiji_result(fixture_file("nucleus", "res"))
   expect_identical(
     colnames(res),
     c("label", "area", "mean", "stddev", "min", "max", "x", "y", "circ",
       "intden", "median", "rawintden", "ch", "slice", "ar", "round",
-      "solidity", "filename", "roi", "pos", "z"))
+      "solidity", "filename", "roi", "pos", "z", "t"))
+  expect_identical(unique(res$t), 1)
+})
+
+test_that("a v0.8.0 measurement table is read from its own columns, checked against Label", {
+  source_r_scripts("read_fiji_result.r")
+  d <- withr::local_tempdir()
+  p <- file.path(d, "tl_nucleus_res.txt")
+  # The shape Fiji now writes: no Ch/Slice, then roi, z, t, ch; a multi-frame
+  # id with its TTTT- field. The Label repeats roi and z in ImageJ's words.
+  writeLines(c(
+    " \tLabel\tArea\tMean\troi\tz\tt\tch",
+    "1\ttl:nucleus_0002-0003-0001-0050:c:1/2 z:3/3 t:2/4\t10\t70\tnucleus_0002-0003-0001-0050\t3\t2\t1",
+    "2\ttl:nucleus_0002-0003-0001-0050:c:2/2 z:3/3 t:2/4\t10\t90\tnucleus_0002-0003-0001-0050\t3\t2\t2"), p)
+  res <- read_fiji_result(p)
+  expect_identical(colnames(res), c("label", "area", "mean", "roi", "z", "t", "ch"))
+  expect_identical(res$t, c(2, 2))
+  expect_identical(res$ch, c(1, 2))
+  expect_identical(res$z, c(3, 3))
+
+  # A table whose own columns disagree with its Label is refused, not joined.
+  bad <- readLines(p)
+  bad[3] <- sub("\t3\t2\t2$", "\t2\t2\t2", bad[3])   # z 2, but the Label says z:3
+  writeLines(bad, p)
+  expect_error(read_fiji_result(p), "disagree with the Label")
 })
 
 test_that("the config file is a two-column parameter/value table", {
@@ -549,7 +575,7 @@ test_that("annotate writes the documented columns", {
     "--min_z_span", "default=5", "nucleolus=2",
     "--within", "nucleolus=nucleus")))
 
-  documented <- c("roi", "z", "area", "is_bridge", "feature_id", "feature_type",
+  documented <- c("roi", "t", "z", "area", "is_bridge", "feature_id", "feature_type",
                   "series_id", "run_id", "parent_feature_id", "parent_feature_type",
                   "parent_containment", "parent_match")
   expect_identical(colnames(tsv), documented)
@@ -635,7 +661,7 @@ test_that("feature_stat writes the documented columns", {
   st <- suppressMessages(feature_stat_cli(c(
     "--input", feat, "--outdir", out, "--res_dir", fixture_dir(), "--no_plot")))
 
-  documented <- c("series_id", "feature_type", "feature_id", "n_roi", "n_z",
+  documented <- c("series_id", "feature_type", "feature_id", "t", "n_roi", "n_z",
                   "z_min", "z_max", "z_span", "area_med", "area_mean",
                   "area_max", "area_sum", "z_gaps", "circ_med", "circ_min")
   expect_true(all(documented %in% colnames(st)),
@@ -685,7 +711,9 @@ test_that(".read_outline survives a name column containing spaces", {
     "Image005 Denoised\tnucleus_0001-0001-0433\t1\t5.5\t0.5"), p)
 
   got <- .read_outline(p)
-  expect_identical(colnames(got), c("roi", "z", "x", "y"))
+  # No t in this (older) table: one frame, t = 1.
+  expect_identical(colnames(got), c("roi", "t", "z", "x", "y"))
+  expect_identical(unique(got$t), 1)
   expect_identical(nrow(got), 3L)
   expect_identical(unique(got$roi), "nucleus_0001-0001-0433")
   expect_equal(got$x, c(1.5, 3.5, 5.5))

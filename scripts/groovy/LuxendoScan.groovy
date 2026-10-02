@@ -374,9 +374,14 @@ class LuxendoScan {
                 // header for why it is not series_id.
                 alias        : alias,
                 series_index : sc.stack,
-                channel      : sc.channel,
+                // Counted from 1, as ImageJ shows them -- the repo's rule for
+                // every image axis it writes (note/fiji_vocabulary.md). The
+                // ONE place Luxendo's 0-based count becomes ours: the sidecar
+                // values stay as Luxendo wrote them everywhere else, and are
+                // compared with the index in that count.
+                channel      : sc.channel + 1,
                 channel_name : (sc.channelDescription ?: ""),
-                t            : sc.timePoint,
+                t            : sc.timePoint + 1,
                 size_x       : sc.sizeX,
                 size_y       : sc.sizeY,
                 size_z       : sc.sizeZ,
@@ -509,6 +514,32 @@ class LuxendoScan {
     }
 
     /**
+     * Refuse a sources table written before v0.8.0, which counted `t` and
+     * `channel` from 0.
+     *
+     * Read by today's code it would be off by one SILENTLY -- frame 0 assembled
+     * as if it were the first of a 1-based run, channel 0 measured as ch0, which
+     * matches no ch1 anywhere. But every such table has t = 0 and channel = 0
+     * rows (every acquisition has a first frame and a first channel), and a
+     * table written since cannot hold a 0, so "both at least 1" catches every
+     * old one and never a new one.
+     */
+    static void requireOneBased(List<Map> sources) {
+        def zero = sources.find { r ->
+            (r.t != null && r.t.toString().trim() == "0") ||
+            (r.channel != null && r.channel.toString().trim() == "0")
+        }
+        if (zero != null) {
+            throw new IllegalArgumentException(
+                "This sources table counts t and channel from 0 (" + zero.source_path +
+                " has t=" + zero.t + ", channel=" + zero.channel + "): it was written before v0.8.0, " +
+                "which counts every image axis from 1, as ImageJ shows them. Run Make_LuxendoSheets " +
+                "into another directory and take only its sources.tsv: the series table is " +
+                "unchanged by this, so yours, with its edits, still pairs with the new one.")
+        }
+    }
+
+    /**
      * Each source row with its series' `series_id` attached, looked up through
      * seriesKey() -- the one join between the two tables, used by everything
      * that needs it (Make_LuxendoTiff, the tests, and the resolver to come).
@@ -521,6 +552,7 @@ class LuxendoScan {
      * @return [sources: copies with series_id set, unsourced: [series_id, ...]]
      */
     static Map withSeriesId(List<Map> sources, List<Map> series) {
+        requireOneBased(sources)
         def idByKey = [:]
         series.each { r ->
             def k = seriesKey(r)
@@ -655,12 +687,12 @@ class LuxendoScan {
                          odd.collect { k, v -> name(k.take(2)) + " t=" + k[2] + " has " + v }.join(", "))
         }
 
-        // Time points should be a run from 0. A gap means a file is missing,
+        // Time points should be a run from 1. A gap means a file is missing,
         // which is worth knowing BEFORE the tracking step reports a broken track.
         sources.groupBy { seriesKey(it) }.each { List k, List<Map> v ->
             def ts = v.collect { it.t as int }.unique().sort()
-            if (ts != (0..<ts.size()).toList()) {
-                warnings << ("Series " + name(k) + " has time points " + ts + ", not a run from 0")
+            if (ts != (1..ts.size()).toList()) {
+                warnings << ("Series " + name(k) + " has time points " + ts + ", not a run from 1")
             }
         }
 
