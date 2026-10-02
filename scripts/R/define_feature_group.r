@@ -69,7 +69,101 @@
   return(dplyr::mutate(b, feature_id = paste0(fail_prefix, "bridge")))
 }
 
-define_feature_group <- function(roi_df,
+#' Format feature ids: `<prefix><NNNN>`
+#'
+#' Four digits, fixed. Deriving the width from the count would re-pad every id
+#' in a series that grew past 9999 -- the same instability the series id avoids
+#' by fixing its `s<NNNN>`. Fixed width also makes the ids sort as numbers.
+#'
+#' @param prefix e.g. `"nucleus_"` or `"invalid_nucleus_"`.
+#' @param n Integer feature numbers.
+#' @return Character vector.
+.feature_ids <- function(prefix, n){
+  return(sprintf("%s%04d", prefix, as.integer(n)))
+}
+
+#' Group ROIs into features, optionally one partition at a time
+#'
+#' One object is followed through z by overlap; the arguments are documented
+#' on `.define_feature_group_one()`, which does the grouping.
+#'
+#' `partition` names columns -- `"t"` for a time course -- whose values must
+#' never be grouped together. Each partition is grouped on its own, in sorted
+#' order, and **numbered on from the last**: frame 2's first nucleus is
+#' `nucleus_0007` when frame 1 ended at `nucleus_0006`, so a `feature_id` names
+#' one object at one time point anywhere in the series. Numbering per partition
+#' would hand every frame its own `nucleus_0001`, and a join on
+#' `series_id` + `feature_id` would then attach one frame's values to every
+#' frame -- matching at 100% while being wrong. Without a partition, ROIs from
+#' several frames would be grouped by z overlap alone, joining one object's
+#' frames into a single feature.
+#'
+#' The partition columns are put back on every row, beside `roi`. With one
+#' partition value the result is exactly the unpartitioned one plus that column.
+#'
+#' @param roi_df Outline table (`roi`, `z`, `x`, `y`, ...) or a polygon table.
+#' @param ... Passed to `.define_feature_group_one()`.
+#' @param partition Column name(s) of `roi_df` to group within, or NULL.
+#' @return One row per ROI, with `feature_id`.
+define_feature_group <- function(roi_df, ..., partition = NULL){
+  if(is.null(partition)){
+    out <- .define_feature_group_one(roi_df, ...)
+    attr(out, "n_feature") <- NULL
+    return(out)
+  }
+
+  absent <- setdiff(partition, colnames(roi_df))
+  if(length(absent)){
+    stop("partition column(s) not in the ROI table: ", paste(absent, collapse = ", "),
+         call. = FALSE)
+  }
+  plain <- as.data.frame(roi_df)[, partition, drop = FALSE]
+  if(anyNA(plain)){
+    stop("partition column(s) ", paste(partition, collapse = ", "), " hold NA: ",
+         "every ROI must belong to a partition", call. = FALSE)
+  }
+  keys <- unique(plain)
+  keys <- keys[do.call(order, unname(as.list(keys))), , drop = FALSE]
+  row_key <- do.call(paste, c(unname(as.list(plain)), sep = "\r"))
+  several <- nrow(keys) > 1
+
+  next_id <- c(valid = 1L, invalid = 1L)
+  parts <- vector("list", nrow(keys))
+  for(i in seq_len(nrow(keys))){
+    key <- do.call(paste, c(unname(as.list(keys[i, , drop = FALSE])), sep = "\r"))
+    sub <- roi_df[row_key == key, , drop = FALSE]
+    for(p in partition){ sub[[p]] <- NULL }
+
+    # A warning from one partition names it, or "All ROIs were filtered out"
+    # from frame 37 of 96 reads as a statement about the whole series. Not
+    # prefixed when there is only one: a single-frame run reads as it did.
+    label <- paste0(partition, " = ", unlist(keys[i, , drop = FALSE]), collapse = ", ")
+    out <- withCallingHandlers(
+      .define_feature_group_one(sub, ..., first_id = next_id),
+      warning = function(w){
+        if(!several){ return(invisible(NULL)) }
+        warning(label, ": ", conditionMessage(w), call. = FALSE)
+        invokeRestart("muffleWarning")
+      })
+
+    used <- attr(out, "n_feature")
+    if(!is.null(used)){ next_id <- next_id + used }
+    attr(out, "n_feature") <- NULL
+    for(p in partition){ out[[p]] <- rep(keys[[p]][i], nrow(out)) }
+    parts[[i]] <- out
+  }
+  out <- dplyr::bind_rows(parts)
+  return(dplyr::relocate(out, dplyr::all_of(partition), .after = "roi"))
+}
+
+#' Group the ROIs of one partition into features
+#'
+#' @param first_id Numbers the first valid and first invalid feature take, so
+#'   that `define_feature_group()` can number on across partitions.
+#' @return One row per ROI, with `feature_id`; attribute `n_feature` holds how
+#'   many valid and invalid numbers were used.
+#' @keywords internal
+.define_feature_group_one <- function(roi_df,
                                  # ROI filtering
                                  pre_roi_filter_colname = "include", roi_area_range = c(0, Inf), roi_regex = NULL,
                                  # Which pre-grouping rejects bridge instead of dropping
@@ -80,6 +174,7 @@ define_feature_group <- function(roi_df,
                                  max_z_dist=1, min_z_span=5, min_avg_area=NULL, feature_area_range=NULL,
                                  # Output control
                                  feature_prefix = "feature_", invalid_feature_prefix = "invalid_feature_", fail_ROI_feature_prefix = "failed_ROI_",
+                                 first_id = c(valid = 1L, invalid = 1L),
                                  verbose = FALSE){
   
   # Identify a group of ROIs across z-stacks that potentially represent part of the cellular feature/compartment.
@@ -407,11 +502,11 @@ define_feature_group <- function(roi_df,
   
   ## Assign feature_id --------------------------------------------------------------------------------
   # valid nuc
-  valid_feature_id_map <- paste0(feature_prefix, seq_along(valid_feature_group))
+  valid_feature_id_map <- .feature_ids(feature_prefix, seq_along(valid_feature_group) + first_id[["valid"]] - 1L)
   names(valid_feature_id_map) <- sort(valid_feature_group)
   # invalid nuc
   invalid_feature_group <- unique(roi_node_df$feature_group) %>% subset(., !(. %in% valid_feature_group))
-  invalid_feature_id_map <- paste0(invalid_feature_prefix, seq_along(invalid_feature_group))
+  invalid_feature_id_map <- .feature_ids(invalid_feature_prefix, seq_along(invalid_feature_group) + first_id[["invalid"]] - 1L)
   names(invalid_feature_id_map) <- invalid_feature_group
   
   ## Assign feature_id
@@ -433,6 +528,8 @@ define_feature_group <- function(roi_df,
     # Merged back with the held out ROIs
     out_df <- add_row(out_df, roi_fail_df)
   }
+  attr(out_df, "n_feature") <- c(valid = length(valid_feature_group),
+                                 invalid = length(invalid_feature_group))
   return(out_df)
 }
 

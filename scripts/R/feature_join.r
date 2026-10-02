@@ -3,7 +3,7 @@
 # Provenance for the R side, and the join that depends on it.
 #
 # feature_id is sequential WITHIN AN IMAGE and carries no meaning across runs:
-# nucleus_1 from two annotate runs are unrelated objects. So joining one run's
+# nucleus_0001 from two annotate runs are unrelated objects. So joining one run's
 # per-feature table onto another run's annotation matches on series_id+feature_id
 # at essentially 100% and attaches every class to the wrong object. The match
 # rate -- the obvious guard -- reads perfect in exactly the case that is broken.

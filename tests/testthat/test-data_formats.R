@@ -603,8 +603,8 @@ test_that("feature_id uses the documented vocabulary", {
     "--min_z_span", "default=5", "nucleolus=2")))
 
   ids <- unique(tsv$feature_id[!is.na(tsv$feature_id)])
-  ok <- grepl("^(nucleus|nucleolus)_\\d+$", ids) |
-    grepl("^invalid_(nucleus|nucleolus)_\\d+$", ids) |
+  ok <- grepl("^(nucleus|nucleolus)_\\d{4}$", ids) |
+    grepl("^invalid_(nucleus|nucleolus)_\\d{4}$", ids) |
     grepl("^failed_(nucleus|nucleolus)_(excluded|name|area|overlap)$", ids)
   expect_true(all(ok), info = paste(ids[!ok], collapse = ", "))
 })
@@ -623,7 +623,7 @@ test_that("count writes the documented columns", {
   out <- withr::local_tempdir()
   counts <- suppressMessages(count_features_cli(c("--input", feat, "--outdir", out)))
   expect_identical(colnames(counts),
-                   c("series_id", "feature_class", "feature_type", "n_detected",
+                   c("series_id", "t", "feature_class", "feature_type", "n_detected",
                      "n_invalid", "n_failed", "n_roi"))
   # With the default --feature_class_by the composite IS the feature type, so
   # the extra column is a rename of nothing rather than a change of meaning.
@@ -640,7 +640,7 @@ test_that("count writes the documented columns", {
   s <- read.delim(file.path(out2, "feature_counts_summary.tsv"),
                   stringsAsFactors = FALSE)
   expect_identical(colnames(s),
-                   c("genotype", "feature_type", "n_series", "mean_detected",
+                   c("genotype", "t", "feature_type", "n_series", "mean_detected",
                      "sd_detected", "total_detected"))
 })
 

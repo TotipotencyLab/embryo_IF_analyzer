@@ -145,7 +145,7 @@ which were dropped. A CLI copied out of the repo finds no schema, keeps
 everything, and still runs.
 
 ⚠️ A metadata column may not be named after one the CLIs write themselves —
-`roi`, `z`, `area`, `is_bridge`, `geometry`, `series_id`, `run_id`, `feature_id`,
+`roi`, `t`, `z`, `area`, `is_bridge`, `geometry`, `series_id`, `run_id`, `feature_id`,
 `feature_type`, `parent_*`, `feature_class`, `n_detected`, `n_invalid`,
 `n_failed`, `n_roi`. The sheet is rejected with the offending name rather than
 the column being silently renamed to `area...7`. (The `--id_column` itself is
@@ -886,7 +886,7 @@ both runners give identical per-feature statistics and identical channel signals
 
 ```
 <outdir>/<series_id>_features.rds     sf, one row per ROI      <- canonical
-<outdir>/<series_id>_features_qc.png  only with --qc_plot
+<outdir>/<series_id>_features_qc.png  only with --qc_plot, and one frame
 <outdir>/<output_prefix>features.tsv  the same, geometry dropped
 ```
 
@@ -896,7 +896,7 @@ cannot read R. Columns, in both:
 | Column | Type | Notes |
 |---|---|---|
 | `roi` | chr | ROI id from Fiji |
-| `t` | int | frame, from 1 — from the outline table; `1` for one written before v0.8.0. ⚠️ An outline table holding **more than one frame is refused** until grouping learns time (`time_axis` PR 2) |
+| `t` | int | frame, from 1 — from the outline table; `1` for one written before v0.8.0. **Each frame is grouped on its own**, so a feature never spans two (§5) |
 | `z` | int | slice |
 | `area` | dbl | µm², from the polygon |
 | `is_bridge` | lgl | `TRUE` if this ROI only forms graph edges, see §5 |
@@ -914,17 +914,27 @@ cannot read R. Columns, in both:
 ⚠️ The `.rds` is a registered `sf` object, but the tibble that
 `define_feature_group()` returns is **not** — see the `sf` primer note.
 
+The QC plot draws one image, so a series of several frames gets none — the run
+says so. `--within` relates each frame on its own: the same nucleus one time
+point later sits in nearly the same place, so it would score, and could win.
+
 ### `count_features_cli.r`
 
 ```
-<outdir>/<output_prefix>feature_counts.tsv          one row per series per feature type
+<outdir>/<output_prefix>feature_counts.tsv          one row per series per frame per feature type
 <outdir>/<output_prefix>feature_counts_summary.tsv  only with --group_by
 <outdir>/<output_prefix>feature_counts.png          only with --plot
 ```
 
-`feature_counts.tsv`: `series_id`, `feature_class`, the `--feature_class_by`
+`feature_counts.tsv`: `series_id`, `t`, `feature_class`, the `--feature_class_by`
 component columns (`feature_type` by default), `n_detected`, `n_invalid`,
 `n_failed`, `n_roi`, plus metadata columns.
+
+**Counted per frame.** A time course's nuclei added up over its frames are not
+a count of anything; `t = 1` for one frame, and for an annotation from before
+v0.8.0. The plot follows: one bar per series for a single frame, one line per
+series over `t` once there are several — never a bar, because bars sharing an
+x stack, and the bar would silently show the sum.
 
 #### `--feature_class_by` — what is being counted
 
@@ -963,7 +973,7 @@ different annotate run would otherwise match at ~100% and be wrong.
 whose objects mostly failed the z-span filter must not look like a series that
 genuinely has few objects.
 
-`feature_counts_summary.tsv`: the `--group_by` columns, `feature_type`,
+`feature_counts_summary.tsv`: the `--group_by` columns, `t`, `feature_type`,
 `n_series` (`n_sample` before v0.7.0), `mean_detected`, `sd_detected`,
 `total_detected`.
 
@@ -1178,6 +1188,10 @@ different settings can be compared with `--facet source_file`.
 
 ### `montage_qc_cli.r`
 
+Three renderings of one image, so a features file holding **several frames is
+refused**: they would be drawn on top of each other, beside an overview a
+multi-frame image does not have.
+
 Panel (iii) takes the same `--feature_table` / `--feature_class_by` /
 `--class_sep` as `count_features_cli.r`, so an outline can be coloured by
 `class` rather than by `feature_type`.
@@ -1270,23 +1284,31 @@ repeated entry. Every reader takes both shapes:
 `^(.+)_(\d{4}-)?\d{4}-\d{4}-\d{4}$`, where the greedy prefix is the feature
 name.
 
-### `feature_id` — R assigns these, per image
+### `feature_id` — R assigns these, per series
 
 | Pattern | Meaning |
 |---|---|
-| `<feature>_N` | a real detected feature — **this is what gets counted** |
-| `invalid_<feature>_N` | a group that failed `min_z_span` or `min_avg_area` |
+| `<feature>_NNNN` | a real detected feature — **this is what gets counted** |
+| `invalid_<feature>_NNNN` | a group that failed `min_z_span` or `min_avg_area` |
 | `failed_<feature>_<reason>` | an ROI that never reached grouping; `<reason>` is `excluded`, `name`, `area`, `overlap` or `bridge` |
 | `NA` | an ROI that reached no group at all |
 
-`N` is sequential within an image and carries **no meaning across images** —
-`nucleus_1` in two series are unrelated objects. Always group by
+`NNNN` is four digits, fixed, from `0001` (`nucleus_1` before v0.8.0). It is
+sequential within a **series** and carries **no meaning across series** —
+`nucleus_0001` in two series are unrelated objects. Always group by
 `series_id` + `feature_id`.
+
+A series of several frames is grouped **one frame at a time** — by z overlap
+alone, one object's frames would join into a single feature — and numbered on
+from the last frame: if frame 1 ends at `nucleus_0006`, frame 2 starts at
+`nucleus_0007`. So a `feature_id` names one object at one time point, and is
+unique in the series. It does **not** follow an object through time: that is a
+track, which is a separate column (the `tracking` milestone).
 
 `<feature>` here is the **reporting** name, which `--rename 'nucleus=oocyte'`
 changes. The `roi` column keeps Fiji's original prefix either way, because that
 is what the grouping step matches on — so after a rename a row reads
-`feature_id = oocyte_1`, `roi = nucleus_0001-0001-0433`. That is not a
+`feature_id = oocyte_0001`, `roi = nucleus_0001-0001-0433`. That is not a
 mismatch; it is provenance.
 
 To test whether a row is a real detected feature, compare against the row's own
@@ -1300,9 +1322,9 @@ and a fingerprint of the resolved input files (basename and size). Written by
 `annotate_features_cli.r` onto every row, and carried through by
 `feature_stat_cli.r`.
 
-It exists because **`feature_id` is sequential within an image and means
+It exists because **`feature_id` is sequential within a series and means
 nothing across runs.** Two annotate runs over the same images produce the same
-series ids *and* the same `nucleus_1`, `nucleus_2`, … So joining one run's
+series ids *and* the same `nucleus_0001`, `nucleus_0002`, … So joining one run's
 per-feature table onto another run's annotation matches on
 `series_id` + `feature_id` at essentially **100%** and attaches every value to the
 wrong object. The obvious guard — reporting the match rate — reads *perfect*

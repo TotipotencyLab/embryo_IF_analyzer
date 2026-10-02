@@ -297,20 +297,6 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       # memory, confirm the tail agrees rather than assuming it.
       .cli_check_identity(roi_df$roi, path, roi_prefix)
 
-      # One frame per table until grouping learns time (time_axis PR 2):
-      # grouping across frames would join one object's frames into a single
-      # feature, by z overlap alone, and report a plausible count of nothing.
-      # Refused, not attempted. The frame is put back on the rows afterwards.
-      frames <- sort(unique(roi_df$t))
-      if (length(frames) > 1L) {
-        stop("Outline table ", basename(path), " holds ", length(frames),
-             " frames (t = ", paste(utils::head(frames, 5), collapse = ", "),
-             if (length(frames) > 5) ", ..." else "", "). Grouping ROIs into features ",
-             "across time is not supported yet: one frame per table.", call. = FALSE)
-      }
-      frame_t <- frames[1]
-      roi_df$t <- NULL
-
       # Optional circularity pre-filter, which needs the measurement table.
       circ_keys <- unique(c(feat, roi_prefix))
       circ_cut <- if (any(circ_keys %in% names(min_circ)) || "default" %in% names(min_circ)) {
@@ -352,14 +338,15 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
         feature_area_range  = eff_feat_area,
         feature_prefix         = paste0(feat, "_"),
         invalid_feature_prefix = paste0("invalid_", feat, "_"),
-        fail_ROI_feature_prefix = paste0("failed_", feat, "_")
+        fail_ROI_feature_prefix = paste0("failed_", feat, "_"),
+        # Each frame grouped on its own and numbered on from the last, so one
+        # object's frames never join into one feature and a feature_id names
+        # one object at one time point. t comes back beside roi, as in the
+        # outline table: (roi, t) is the key the measurements join on.
+        partition = "t"
       )
       feature_group$feature_type <- feat
       feature_group$series_id <- sid
-      # Beside roi, as in the outline table: (roi, t) is the key the
-      # measurements join on.
-      feature_group$t <- frame_t
-      feature_group <- dplyr::relocate(feature_group, "t", .after = "roi")
       per_feature[[feat]] <- feature_group
       
       n_valid <- length(unique(feature_group$feature_id[grepl(paste0("^", feat, "_"), feature_group$feature_id)]))
@@ -367,6 +354,8 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       message("    ", feat,
               if (feat != roi_prefix) paste0(" (from ", roi_prefix, ")") else "",
               ": ", nrow(feature_group), " ROIs -> ", n_valid, " feature(s)",
+              if (length(unique(feature_group$t)) > 1)
+                paste0(" over ", length(unique(feature_group$t)), " frames") else "",
               "  [max_z_dist=", eff_z_dist, " min_z_span=", eff_z_span,
               " min_intersect_ratio=", eff_ratio,
               if (!is.null(eff_roi_area))  paste0(" roi_area=", rng(eff_roi_area)) else "",
@@ -426,7 +415,12 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     saveRDS(series_sf, rds_path)
     message("    -> ", basename(rds_path))
     
-    if (argv$qc_plot) {
+    # One picture of one image: a time course's frames would be drawn on top of
+    # each other, and the same nucleus at 96 time points reads as one blot.
+    n_frames <- length(unique(series_sf$t))
+    if (argv$qc_plot && n_frames > 1) {
+      message("    QC plot: not drawn for ", n_frames, " frames (one image per plot)")
+    } else if (argv$qc_plot) {
       png_path <- file.path(outdir, paste0(sid, "_features_qc.png"))
       .qc_plot(series_sf, sid, png_path)
       message("    -> ", basename(png_path))
