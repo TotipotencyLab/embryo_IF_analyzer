@@ -13,11 +13,11 @@ sq <- function(x0, y0, s = 10){
                             c(y0, y0, y0 + s, y0 + s, y0))))
 }
 
-feat <- function(feature_id, feature_type, zs, geom_fn, sample = "S1"){
+feat <- function(feature_id, feature_type, zs, geom_fn, series_id = "S1"){
   sf::st_sf(feature_id   = feature_id,
             feature_type = feature_type,
             z            = zs,
-            sample       = sample,
+            series_id    = series_id,
             geometry     = sf::st_sfc(lapply(zs, geom_fn)))
 }
 
@@ -244,15 +244,15 @@ test_that("invalid_ and failed_ groups are not parents", {
   expect_true(is.na(parent_of(rel, "nucleolus_1")))
 })
 
-test_that("samples are kept apart", {
+test_that("series are kept apart", {
   skip_if_no_sf()
   source_r_scripts("relate_features.r")
 
   # Same coordinates in two images. A nucleolus must not adopt a nucleus from a
   # different image just because the pixels line up.
   x <- stack_of(
-    feat("nucleus_1",   "nucleus",   5:6, function(z) sq(0, 0, 100),  sample = "A"),
-    feat("nucleolus_1", "nucleolus", 5:6, function(z) sq(40, 40, 10), sample = "B")
+    feat("nucleus_1",   "nucleus",   5:6, function(z) sq(0, 0, 100),  series_id = "A"),
+    feat("nucleolus_1", "nucleolus", 5:6, function(z) sq(40, 40, 10), series_id = "B")
   )
   rel <- suppressWarnings(assign_feature_parent(x, within = c(nucleolus = "nucleus")))
   d <- sf::st_drop_geometry(rel)

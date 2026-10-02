@@ -1,8 +1,8 @@
 # count_features_cli.r and montage_qc_cli.r.
 #
 # The counting test asserts that invalid groups are REPORTED rather than
-# dropped: a sample whose nuclei mostly failed the z-span filter must not look
-# like a sample that genuinely has few nuclei.
+# dropped: a series whose nuclei mostly failed the z-span filter must not look
+# like a series that genuinely has few nuclei.
 
 source_cli("cli_helpers.r")
 
@@ -89,6 +89,28 @@ test_that("count_features_cli rejects a file it did not write", {
     "missing column")
 })
 
+test_that("an annotate output from before v0.7.0 is refused, naming the version", {
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2"))
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  feat <- annotated_fixture()
+  # Turn a real output into an old one: the only difference is the column name.
+  rds <- file.path(feat, "GRV_Position010_features.rds")
+  x <- readRDS(rds)
+  expect_true("series_id" %in% colnames(x))
+  names(x)[names(x) == "series_id"] <- "sample"
+  saveRDS(x, rds)
+
+  source_cli("count_features_cli.r")
+  expect_error(suppressMessages(count_features_cli(c(
+    "--input", feat, "--outdir", withr::local_tempdir()))),
+    "written before v0.7.0")
+  source_cli("feature_stat_cli.r")
+  expect_error(suppressMessages(feature_stat_cli(c(
+    "--input", feat, "--outdir", withr::local_tempdir(), "--no_plot"))),
+    "written before v0.7.0")
+})
+
 # --- montage ------------------------------------------------------------------
 
 test_that("montage_qc_cli composes one panel per input plus the R panel", {
@@ -120,8 +142,8 @@ test_that("montage_qc_cli composes one panel per input plus the R panel", {
   expect_gt(info$width, 400L)             # three panels side by side
 })
 
-test_that("the montage is titled with the sample, and --no_title restores the old shape", {
-  # A QC montage on its own does not say WHICH sample it is: the captions name
+test_that("the montage is titled with the series id, and --no_title restores the old shape", {
+  # A QC montage on its own does not say WHICH series it is: the captions name
   # the panels and the filename is only visible from outside the picture.
   skip_if_no_sf()
   skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
@@ -457,7 +479,7 @@ test_that("the default other is dark enough to separate from the ROI outlines", 
 # panel refused to draw in exactly the case it is most wanted, since a field
 # with no oocyte looks identical to one where detection silently failed.
 
-test_that("a sample with no VALID feature still draws, showing what was rejected", {
+test_that("a series with no VALID feature still draws, showing what was rejected", {
   skip_if_no_sf()
   skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
   skip_if_no_fixture(fixture_file("nucleus", "outline"))

@@ -75,8 +75,11 @@ writes a skeleton for you.
 series index, zero-padded to four digits — and the invariant everything rests
 on is:
 
-> **the `series_id` column == the output filename prefix == the `name` column
+> **the `series_id` column == the output filename stem == the `name` column
 > of the outline table.**
+
+Since v0.7.0 nothing is put in front of it (`output_prefix` is retired), so
+that holds for an interactive run as well as a batch — §2.
 
 **You may edit it**, for readability; it must stay unique. Results already
 written carry the old id, so edit before a run, or re-run after.
@@ -117,7 +120,7 @@ deciding a file is unchanged.
 `annotate_features_cli.r` binds the sheet's metadata onto every feature row, so
 a column such as `genotype` is already in the `_features.rds` by the time
 `feature_stat_cli.r` sees it. That step therefore **reconciles rather than
-re-joins**: a shared column whose values agree per sample is skipped (a
+re-joins**: a shared column whose values agree per series is skipped (a
 `left_join` would produce `genotype.x`/`genotype.y`, after which `--group_by
 genotype` resolves to neither), and one whose values *disagree* is a hard error
 — the features were annotated from a different sheet, and silently preferring
@@ -142,7 +145,7 @@ which were dropped. A CLI copied out of the repo finds no schema, keeps
 everything, and still runs.
 
 ⚠️ A metadata column may not be named after one the CLIs write themselves —
-`roi`, `z`, `area`, `is_bridge`, `geometry`, `sample`, `run_id`, `feature_id`,
+`roi`, `z`, `area`, `is_bridge`, `geometry`, `series_id`, `run_id`, `feature_id`,
 `feature_type`, `parent_*`, `feature_class`, `n_detected`, `n_invalid`,
 `n_failed`, `n_roi`. The sheet is rejected with the offending name rather than
 the column being silently renamed to `area...7`. (The `--id_column` itself is
@@ -179,7 +182,7 @@ dropping it.
 ### Behaviour when a sheet is given to the R CLIs
 
 - rows naming a `series_id` with no matching file → **warning**, listed
-- files whose sample is not in the sheet → dropped, reported as a message
+- files whose series id is not in the sheet → dropped, reported as a message
 - no overlap at all → **error** (a silent empty run is the failure mode this
   repo is built to avoid)
 
@@ -369,28 +372,37 @@ conversion would mean holding two copies of the acquisition.
 
 ## 2. Fiji output — `scripts/groovy/` writes this
 
-Per feature, per image. `<prefix>` is the operator's `--output_prefix`,
-`<image id>` is resolved from the image title (see `RoiExport.resolveImageId`).
+Per feature, per image. Every file is named after the image's **series id** —
+the batch takes it from the series table, an interactive run from its `Series
+id` field or, left blank, from the image title (see below).
 
 ```
-<prefix><image id>_<feature>_outline.txt        polygon vertices
-<prefix><image id>_<feature>_outline_ROIs.zip   ImageJ ROIs
-<prefix><image id>_<feature>_res.txt            measurements
-<prefix><image id>_config.txt                   every parameter used
-<prefix><image id>_overview_ch<c>.png           quick-look projection      (optional)
-<prefix><image id>_overview_ch<c>_overlay.png   the same, outlines drawn   (optional)
+<series_id>_<feature>_outline.txt        polygon vertices
+<series_id>_<feature>_outline_ROIs.zip   ImageJ ROIs
+<series_id>_<feature>_res.txt            measurements
+<series_id>_config.txt                   every parameter used
+<series_id>_overview_ch<c>.png           quick-look projection      (optional)
+<series_id>_overview_ch<c>_overlay.png   the same, outlines drawn   (optional)
 ```
+
+⚠️ **The file stem and the outline tables' `name` column are the same string,
+and the R side depends on it**: it reads the series id out of `name`, then
+finds `<series_id>_config.txt` and `<series_id>_<feature>_res.txt` by that
+name. Until v0.7.0 an interactive run put `output_prefix` in front of both;
+that parameter is retired rather than moved out of `name` alone, because a
+prefix in the file names but not in `name` would hide both files from R — no
+`volume`, no signal columns, a warning and not an error.
 
 `<feature>` is `nucleus` or `nucleolus` today.
 
-### Where the R side gets the sample and the feature
+### Where the R side gets the series id and the feature
 
 **From the file's content, not its name.** Both identities are already in the
 table:
 
 | Identity | Comes from | Example |
 |---|---|---|
-| sample | the `name` column | `GRV_Position010` |
+| series id | the `name` column | `GRV_Position010` |
 | feature | the `roi` column's prefix | `nucleus_0001-0001-0433` → `nucleus` |
 
 The filename only has to get the right files onto the list; `--input`'s glob and
@@ -401,41 +413,42 @@ file cannot silently change what the R side thinks is in it.
 ⚠️ The ROI id's tail is fixed-shape and anchored (`_SSSS-NNNN-YYYY`), which is
 why a greedy prefix is correct when reading the feature *out of an ROI id* and
 was wrong when reading it out of a *filename* — a filename has no such anchor,
-so `S1_growing_oocyte_outline.txt` parsed as sample `S1_growing`, feature
+so `S1_growing_oocyte_outline.txt` parsed as series `S1_growing`, feature
 `oocyte`. Fixed, and pinned in `test-feature_identity.R`.
 
 Two rules that are errors, not warnings, because a silent pick would file half a
 table under the wrong name:
 
 - one file may hold **exactly one** feature type
-- one file may hold **exactly one** sample name
+- one file may hold **exactly one** series id
 
 `.cli_parse_contract()` remains as a fallback for tables written without a
 `name` column, and a run says how many files it had to fall back for.
 
-### `<image id>` — how it is resolved
+### The series id of an interactive run
 
-`RoiExport.resolveImageId(imp, positionPattern)`, and it **never contains
-whitespace**: `sanitize()` collapses runs of whitespace to `_`, because the id
-is written into the `name` column of the tab-separated outline table as well as
-into filenames.
+`Run_NucleusSelector.groovy` and `Run_Overview.groovy` have one field for it,
+`Series id`, **blank by default and never remembered**: it names one image, so
+inheriting it would put the next image's output under this one's name.
 
-ImageJ prefixes a hyperstack slice label with the plane's coordinates, and
-**those slashes are not path separators**:
+| `Series id` | the id used |
+|---|---|
+| blank | the image title, less the `<file>.lif - ` part Bio-Formats puts before a series name, through `RoiExport.sanitize()` — `260909_IHC.lif - Image005 Denoised` gives `Image005_Denoised`. Logged with the raw title |
+| typed | exactly what was typed — **refused, not rewritten**, if `sanitize()` would change it (whitespace, `/ \ : * ? " < > \|`, a trailing image extension), with the accepted form in the message |
 
-```
-"c:1/3 - Image002"
-"c:1/4 z:1/50 - Lightning 001/Mark_and_Find 001/Position010"
-"c:1/3 z:12/56 - Series001"
-```
+The batch checks a hand-edited sheet id the same way, failing that row only.
+It **never contains whitespace**: the id is written into the `name` column of
+the tab-separated outline table as well as into filenames.
 
-So the coordinate prefix is stripped first, then the `/`-segment containing
-`positionPattern` is found, then everything before the pattern is dropped —
-`56 - Series001` becomes `Series001`. If the pattern matches nothing in the
-label, the title is tried the same way; Bio-Formats titles a series
-`<file>.lif - <series name>`, and the file part is removed. The raw title and
-slice label are logged on every run, so a wrong id can be diagnosed from the
-log alone.
+⚠️ **Retired in v0.7.0: `output_prefix` and `position_pattern`.** The first
+became the typed id (or another output directory, to keep runs apart); the
+second searched the slice label for a token such as `Position`, a guess at
+where one acquisition software put the name. A `_config.txt` carrying either
+still reads — the key is skipped and the batch logs that it was
+(`RunConfig.RETIRED_KEYS`); an unknown key is still an error. A run of the
+fixture image without a typed id now gets the TIFF's title,
+`20241216_dkD_DAPI_EGFP_Klf5_Nr5a2_forrep3.lif-Position010`; its tracked output
+is reproduced byte for byte by typing `GRV_Position010`.
 
 ### Overview PNGs — quick-look only, never an input to a measurement
 
@@ -444,7 +457,7 @@ Written by `Run_NucleusSelector.groovy` (when "Save overview PNG" is on) and by
 `Overview.overviewPath(dir, basename, channel, suffix)`:
 
 ```
-<prefix><image id>_overview_ch<c><suffix>.png
+<series_id>_overview_ch<c><suffix>.png
 ```
 
 | Suffix | Contents |
@@ -500,7 +513,7 @@ degenerate and ImageJ falls back to the type's full range — pinned in
 
 | Column | Type | Notes |
 |---|---|---|
-| `name` | chr | the image id — **never contains whitespace**, see §2 |
+| `name` | chr | the series id, the same string as the file stem — **never contains whitespace**, see §2 |
 | `roi` | chr | ROI id, `SSSS-NNNN-YYYY` |
 | `z` | int | 1-based slice |
 | `x`, `y` | dbl | **calibrated units (µm), not pixels** |
@@ -562,9 +575,10 @@ Fields that other code depends on:
 |---|---|
 | `image_width`, `image_height` | **pixels.** `montage_qc_cli.r`, to draw its panel over the same frame as the Fiji PNG |
 | `pixel_width`, `pixel_height`, `pixel_unit` | the same, to convert that frame to µm |
-| `pixel_depth` | the z step, in `pixel_unit`. **Blank when the image is a single plane** — ImageJ defaults the calibration to 1.0 with no z axis and Bio-Formats reports no physical size, so a written 1.0 would be a plausible number for a distance that does not exist. Written since 0.2.0, and `feature_stat_cli.r` now **defaults `--z_step` to it**, per sample, from the config beside the inputs |
+| `pixel_depth` | the z step, in `pixel_unit`. **Blank when the image is a single plane** — ImageJ defaults the calibration to 1.0 with no z axis and Bio-Formats reports no physical size, so a written 1.0 would be a plausible number for a distance that does not exist. Written since 0.2.0, and `feature_stat_cli.r` now **defaults `--z_step` to it**, per series, from the config beside the inputs |
 | `script` | records the repo `VERSION` that produced the directory |
-| `source_file`, `series_index`, `series_name` | which series of which file produced this directory. Written by the batch, **blank in the interactive runner** where the image was already open and nothing told it. Identity comes from content, not from the filename, so the prefix should not have to be parsed apart to answer this |
+| `source_file`, `series_index`, `series_name` | which series of which file produced this directory. Written by the batch, **blank in the interactive runner** where the image was already open and nothing told it. Identity comes from content, not from the filename, so the series id should not have to be parsed apart to answer this |
+| `series_id` | the id this run's files are named after — the `name` column's value. **Provenance, not a parameter**: a config setting it would give every image of a batch one name. Replaced `output_basename` in v0.7.0, which an older config still carries and a reader ignores |
 | `open_method` | which reader opened the image: `importer` (Bio-Formats' own) or `reader` (one held open across the file). **Blank when the image was already open**, i.e. the interactive runner, where the operator opened it however they liked. The two are asserted to produce byte-identical output, but two runs that used different ones must not be indistinguishable afterwards |
 | `overview_channels`, `overview_overlay_suffix` | which overview PNGs exist, so a results folder can be read later without guessing. Blank when none were written |
 | `nucleus_threshold_used` | the pixel range the threshold **selected**, as `lo-hi`; `per-slice <lo>..<hi>` (note the `..`) when `nucleus_stack_histogram` is off, since there were as many thresholds as slices and none of them is the answer. Not the algorithm's bare number: for bright objects that number is the *bottom* of the range and the top is the type's maximum, so the pair is what can be copied into a manual threshold without working out which end it was. The literal **`none`** when the frame had nothing to separate (see below) — a word, not a range, so it cannot be pasted anywhere by mistake |
@@ -580,13 +594,9 @@ parameter the writer forgets silently becomes its *default* on the next run
 rather than an error. `Test_NucleusPipeline` asserts every `PARAM_TYPES` key is
 written, against a config that was actually produced.
 
-**`output_prefix` is the single deliberate exception.** It decides what the
-output is *called*, not what work happens — the same category as `outdir`, which
-is likewise not in the config — so writing it would make a re-run reproduce the
-previous run's filenames and overwrite it instead of landing beside it for
-comparison. What the names were is recorded anyway, as `output_basename`. It is
-also **interactive-only**: the batch passes the sheet's `series_id` as `basename`,
-which wins over `output_prefix` outright.
+There is **no exception** to that since v0.7.0. `output_prefix` was one — it
+named the output rather than deciding the analysis — and it is retired (§2).
+The series id is not a parameter at all and is written as provenance.
 
 **This file can be read back in as the parameters of another run.**
 `RunConfig.groovy` parses exactly the shape `RoiExport.saveRunConfig()` writes,
@@ -696,7 +706,7 @@ cells and a count taken from the picture has to be reconcilable with the table:
 | `row`, `col` | 1-based position in the grid, so a cell in the picture can be named |
 | `um_per_px` | micrometres per output pixel for that montage; blank under `--scale pixel` |
 | `cell_px_w`, `cell_px_h` | that cell's own slot, in output pixels — **per cell, not per montage**: the layout is a table, so column `j` is as wide as its widest cell and row `i` as tall as its tallest |
-| `width_um`, `height_um` | the sample's physical size, `size_x * pixel_width` |
+| `width_um`, `height_um` | the series' physical size, `size_x * pixel_width` |
 | `montage` | the file this row was drawn into |
 
 **It is designed to be read back in.** It carries `group`, `series_id` and
@@ -815,8 +825,8 @@ both runners give identical per-feature statistics and identical channel signals
 ### `annotate_features_cli.r`
 
 ```
-<outdir>/<sample>_features.rds        sf, one row per ROI      <- canonical
-<outdir>/<sample>_features_qc.png     only with --qc_plot
+<outdir>/<series_id>_features.rds     sf, one row per ROI      <- canonical
+<outdir>/<series_id>_features_qc.png  only with --qc_plot
 <outdir>/<output_prefix>features.tsv  the same, geometry dropped
 ```
 
@@ -831,7 +841,7 @@ cannot read R. Columns, in both:
 | `is_bridge` | lgl | `TRUE` if this ROI only forms graph edges, see §5 |
 | `feature_id` | chr | group this ROI belongs to, see §5 |
 | `feature_type` | chr | `nucleus`, `nucleolus`, … |
-| `sample` | chr | the `series_id` |
+| `series_id` | chr | from the outline table's `name` column. **`sample` before v0.7.0**: an older output is refused by every CLI that reads one, naming the version, rather than failing later or joining on nothing |
 | `run_id` | chr | 10 hex characters identifying the annotate run, see §5 |
 | `parent_feature_id` | chr | `NA` unless `--within` was given |
 | `parent_feature_type` | chr | |
@@ -846,12 +856,12 @@ cannot read R. Columns, in both:
 ### `count_features_cli.r`
 
 ```
-<outdir>/<output_prefix>feature_counts.tsv          one row per sample per feature type
+<outdir>/<output_prefix>feature_counts.tsv          one row per series per feature type
 <outdir>/<output_prefix>feature_counts_summary.tsv  only with --group_by
 <outdir>/<output_prefix>feature_counts.png          only with --plot
 ```
 
-`feature_counts.tsv`: `sample`, `feature_class`, the `--feature_class_by`
+`feature_counts.tsv`: `series_id`, `feature_class`, the `--feature_class_by`
 component columns (`feature_type` by default), `n_detected`, `n_invalid`,
 `n_failed`, `n_roi`, plus metadata columns.
 
@@ -888,12 +898,13 @@ they are legitimately absent from a per-feature table.
 ⚠️ The join is guarded by `run_id`; see §5. Joining a stats table from a
 different annotate run would otherwise match at ~100% and be wrong.
 
-`n_detected` is the count. The other three are why it is trustworthy: a sample
-whose objects mostly failed the z-span filter must not look like a sample that
+`n_detected` is the count. The other three are why it is trustworthy: a series
+whose objects mostly failed the z-span filter must not look like a series that
 genuinely has few objects.
 
 `feature_counts_summary.tsv`: the `--group_by` columns, `feature_type`,
-`n_sample`, `mean_detected`, `sd_detected`, `total_detected`.
+`n_series` (`n_sample` before v0.7.0), `mean_detected`, `sd_detected`,
+`total_detected`.
 
 ### `feature_stat_cli.r`
 
@@ -910,7 +921,7 @@ rejects table instead of being folded in.
 
 | Column | Notes |
 |---|---|
-| `sample`, `feature_type`, `feature_id` | the key |
+| `series_id`, `feature_type`, `feature_id` | the key |
 | `n_roi`, `n_z` | **seed** ROIs in the feature, and distinct slices — bridges excluded |
 | `z_min`, `z_max`, `z_span` | extent; `z_span` = max − min + 1 |
 | `z_gaps` | `z_span − n_z` — slices inside the object's range where it was not detected |
@@ -918,7 +929,7 @@ rejects table instead of being folded in.
 | `n_bridge`, `frac_bridge` | bridge ROIs in the feature, and their share of `n_roi_all`; `0` unless `--bridge_roi` was used |
 | `max_roi_per_z` | most **seed** ROIs the feature has on any one slice. **`> 1` means it spans objects sitting side by side**, not one object followed through z. Bridges are excluded: a bridge often lies *over* what it connects, so counting them would read `2` on a good rescue |
 | `area_med`, `area_mean`, `area_max`, `area_sum` | per-slice ROI area, µm². `area_sum` is the shape-free size measure — see below |
-| `volume` | `area_sum × z_step`, µm³. Present when a z step is **known**: `--z_step` if given, otherwise `pixel_depth` read from each sample's `_config.txt`. The run says which, and says so when there is none — an absent column is otherwise indistinguishable from a missing feature |
+| `volume` | `area_sum × z_step`, µm³. Present when a z step is **known**: `--z_step` if given, otherwise `pixel_depth` read from each series' `_config.txt`. The run says which, and says so when there is none — an absent column is otherwise indistinguishable from a missing feature |
 | `circ_med`, `circ_min` | only when the `_res.txt` was found |
 | `ch<N>_signal` | one column per channel measured; only when the `_res.txt` was found |
 | `class` | the `--class` a feature matched, or `unclassified`; only when `--class` was given |
@@ -940,8 +951,8 @@ cross-sectional area — is the shape-free alternative, and `--z_step` turns it
 into a real volume by the Cavalieri estimate (`area_sum × z_step`).
 
 `--z_step` no longer has to be supplied. Fiji's `_config.txt` has recorded
-`pixel_depth` since 0.2.0, and `feature_stat_cli.r` reads it **per sample**,
-from the config beside that sample's tables — not once for the run, because
+`pixel_depth` since 0.2.0, and `feature_stat_cli.r` reads it **per series**,
+from the config beside that series' tables — not once for the run, because
 pixel size varies within a single `.lif` here (0.4456 / 0.2227 / 0.1098 µm) and
 one z step for all of them would be wrong for most. An explicit `--z_step` wins
 everywhere. Two cases still yield no `volume`, and both are said aloud rather
@@ -955,7 +966,7 @@ interpolated, and `z_gaps` is the column that says how much is missing.
 weighted by ROI area. A plain mean lets a feature's small tapering end slices
 vote as loudly as its equator. See `note/if_quantification.md`.
 
-⚠️ The measurement tables are found as `<sample>_<roi prefix>_res.txt`, where
+⚠️ The measurement tables are found as `<series_id>_<roi prefix>_res.txt`, where
 the prefix comes from the **`roi` column**, not from `feature_type`. After a
 `--rename` those differ, and the file on disk carries the original. Not finding
 them is a **loud warning**, never a silent run without signal.
@@ -1025,7 +1036,7 @@ the **same pre-grouping filters**. `--min_circularity` and `--roi_area` truncate
 the statistics they act on, so a cut tuned against one is not the same cut
 against another. See §5.
 
-`feature_rejects.tsv`: `sample`, `feature_type`, `bucket`, `n_roi`, where
+`feature_rejects.tsv`: `series_id`, `feature_type`, `bucket`, `n_roi`, where
 `bucket` is `feature`, `invalid`, `failed` or `unassigned`. It exists so that a
 thin distribution can be read as either "few objects here" or "most of them
 failed a filter".
@@ -1096,7 +1107,7 @@ the units. A logged axis says `(log10)` in its label. A log axis that would
 drop a zero or negative value falls back to linear **with a warning** rather
 than silently losing the point.
 
-`--smooth` and `--corr` are off by default on purpose: per-sample n here is
+`--smooth` and `--corr` are off by default on purpose: per-series n here is
 single digits, where a fit is noise with a ribbon around it and a coefficient
 invites more confidence than the data supports.
 
@@ -1200,8 +1211,8 @@ with the older macros. `read_fiji_result()` finds the id by matching
 | `NA` | an ROI that reached no group at all |
 
 `N` is sequential within an image and carries **no meaning across images** —
-`nucleus_1` in two samples are unrelated objects. Always group by
-`sample` + `feature_id`.
+`nucleus_1` in two series are unrelated objects. Always group by
+`series_id` + `feature_id`.
 
 `<feature>` here is the **reporting** name, which `--rename 'nucleus=oocyte'`
 changes. The `roi` column keeps Fiji's original prefix either way, because that
@@ -1222,9 +1233,9 @@ and a fingerprint of the resolved input files (basename and size). Written by
 
 It exists because **`feature_id` is sequential within an image and means
 nothing across runs.** Two annotate runs over the same images produce the same
-sample names *and* the same `nucleus_1`, `nucleus_2`, … So joining one run's
+series ids *and* the same `nucleus_1`, `nucleus_2`, … So joining one run's
 per-feature table onto another run's annotation matches on
-`sample` + `feature_id` at essentially **100%** and attaches every value to the
+`series_id` + `feature_id` at essentially **100%** and attaches every value to the
 wrong object. The obvious guard — reporting the match rate — reads *perfect*
 in exactly the case that is broken.
 

@@ -95,9 +95,9 @@ check("records overview_channels",             src.contains("overview_channels")
 check("takes the suffix from the library",     src.contains("OV.OVERLAY_SUFFIX"), true)
 check("...and does not hardcode it",           src.contains('"_overlay"'), false)
 check("saves raw BEFORE adding outlines",
-      src.indexOf('overviewPath(outDirPath, basename, c, "")') < src.indexOf("addOutlines"), true)
+      src.indexOf('overviewPath(outDirPath, seriesId, c, "")') < src.indexOf("addOutlines"), true)
 check("saves the overlaid copy too",
-      src.contains("overviewPath(outDirPath, basename, c, OV.OVERLAY_SUFFIX)"), true)
+      src.contains("overviewPath(outDirPath, seriesId, c, OV.OVERLAY_SUFFIX)"), true)
 check("overviews cover the measured channels", src.contains("([dnaCh] + channels).unique()"), true)
 
 // The front end must stay a front end: if the detection calls creep back into
@@ -112,6 +112,18 @@ check("front end does not detect",             frontEnd.contains("buildMask"), f
 check("front end does not write outlines",     frontEnd.contains("saveOutlineCoords"), false)
 check("front end does not write the config",   frontEnd.contains("saveRunConfig"), false)
 check("front end still shows the image",       frontEnd.contains("imp.show()"), true)
+// The series id names ONE image. Remembered by the dialog, it would put the
+// next image's output under this one's name, so it must reset every run --
+// and the retired fields must not come back.
+["Run_NucleusSelector.groovy", "Run_Overview.groovy"].each { String f ->
+    def idLine = new File(LIBDIR, f).readLines().find { it ==~ /^#@\s+String\s*\(.*\)\s+seriesId\s*$/ }
+    check(f + ": seriesId is a field",          idLine != null, true)
+    check(f + ": ...that is never remembered",  idLine?.contains("persist=false"), true)
+    check(f + ": ...and starts blank",          idLine?.contains('value=""'), true)
+    def gone = new File(LIBDIR, f).readLines().findAll { it.startsWith("#@") &&
+                   (it.contains(") outPrefix") || it.contains(") positionPattern")) }
+    check(f + ": no output prefix or position token", gone, [])
+}
 check("logs the display range",                src.contains("view.lo") && src.contains("view.hi"), true)
 
 // Parse every runner with the SciJava `#@` lines stripped -- they are directives
@@ -223,6 +235,19 @@ check("provenance keys are dropped, not rejected",
 def unknownMsg = errOf { RC.params([nucleus_sigma: "8"], types) }
 check("a near-miss key is refused",            unknownMsg?.contains("nucleus_sigma"), true)
 check("...and the message lists what is valid", unknownMsg?.contains("nucleus_blur_sigma"), true)
+// Retired in v0.7.0. Every _config.txt written before then carries
+// position_pattern, so refusing it would strand every config anyone tuned.
+// Read, skipped, and named so the caller can say so.
+def oldRaw = [position_pattern: "Position", output_prefix: "GRV_", dna_channel: "2"]
+check("retired keys are skipped, not refused",
+      RC.params(oldRaw, types).keySet().toList(), ["dna_channel"])
+check("...and retiredIn() names them",          RC.retiredIn(oldRaw).sort(), ["output_prefix", "position_pattern"])
+check("...each with the release that retired it",
+      RC.RETIRED_KEYS.values().every { it.startsWith("v0.7.0") }, true)
+check("a retired key is no longer a parameter",
+      RC.RETIRED_KEYS.keySet().findAll { types.containsKey(it) }.toList(), [])
+check("an unknown key is still refused beside them",
+      errOf { RC.params(oldRaw + [nucleus_sigma: "8"], types) }?.contains("nucleus_sigma"), true)
 
 println ""
 println "=== RunConfig: coercion, especially booleans ==="
@@ -242,9 +267,9 @@ println ""
 println "=== NucleusPipeline: the parameter vocabulary ==="
 check("every type has a default",              (NP.PARAM_TYPES.keySet() - NP.DEFAULTS.keySet()).toList(), [])
 check("every default has a type",              (NP.DEFAULTS.keySet() - NP.PARAM_TYPES.keySet()).toList(), [])
-// basename must not be settable from a config: one name for every image in a
+// series_id must not be settable from a config: one name for every image in a
 // batch would have each overwrite the last.
-check("basename is NOT a config parameter",    NP.PARAM_TYPES.containsKey("basename"), false)
+check("series_id is NOT a config parameter",   NP.PARAM_TYPES.containsKey("series_id"), false)
 check("script_name is NOT a config parameter", NP.PARAM_TYPES.containsKey("script_name"), false)
 
 def defaultTypeErrors = NP.DEFAULTS.findAll { k, v ->
@@ -269,7 +294,7 @@ println "=== the GUI defaults and the class defaults agree ==="
 // DEFAULTS. If the two drift, the GUI and the batch do different things under
 // the same settings -- silently.
 def VAR_TO_PARAM = [
-    outPrefix: "output_prefix", positionPattern: "position_pattern", zSpec: "z_spec",
+    zSpec: "z_spec",
     dnaCh: "dna_channel", channelsCsv: "channels_measured",
     nucSigma: "nucleus_blur_sigma", nucMethod: "nucleus_threshold",
     nucRange: "nucleus_threshold_range", nucStackHist: "nucleus_stack_histogram",
@@ -319,6 +344,9 @@ if (fixtureCfg.isFile()) {
     check("its nucleus sigma survives",        fixParams.nucleus_blur_sigma, 8.0d)
     check("its threshold survives",            fixParams.nucleus_threshold, "Otsu")
     check("nucleus_count is NOT a parameter",  fixParams.containsKey("nucleus_count"), false)
+    // It is v0.2.0's, and carries position_pattern: retired, so skipped.
+    check("its position_pattern is skipped",   RC.retiredIn(RC.read(fixtureCfg)), ["position_pattern"])
+    check("...and is not a parameter",         fixParams.containsKey("position_pattern"), false)
     // It predates pixel_depth; an absent field must not break the read.
     check("an older config still reads",       fixParams.containsKey("pixel_depth"), false)
     def full = NP.fromConfig(fixParams)

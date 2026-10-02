@@ -34,11 +34,31 @@ class RunConfig {
         "image_title", "image_width", "image_height", "image_slices", "image_channels",
         "open_method", "source_file", "series_index", "series_name",
         "pixel_width", "pixel_height", "pixel_depth", "pixel_unit",
-        "output_basename", "z_slices_analysed", "measurements",
+        "series_id", "output_basename", "z_slices_analysed", "measurements",
         "overview_saved", "overview_channels", "overview_overlay_suffix",
         "nucleus_threshold_used", "nucleus_mask_pct", "nucleus_circ_rejected",
         "nucleus_count", "nucleolus_count",
     ]
+
+    /**
+     * Parameters that USED to exist, and why they went. A config naming one is
+     * read, the key skipped, rather than refused as unknown: every _config.txt
+     * written before v0.7.0 carries `position_pattern`, and refusing it would
+     * strand every config anyone tuned. Unknown keys stay an error -- a retired
+     * key is a known one. The caller reports what was skipped (retiredIn()),
+     * since this class does not log.
+     */
+    static final Map<String, String> RETIRED_KEYS = [
+        output_prefix   : "v0.7.0: output is named by the series id alone; " +
+                          "type a prefix into the id, or use another output directory",
+        position_pattern: "v0.7.0: an interactive run takes its series id from the " +
+                          "image title, or from what is typed into 'Series id'",
+    ]
+
+    /** The retired keys a raw config sets, so the caller can say they were skipped. */
+    static List<String> retiredIn(Map<String, String> raw) {
+        return raw.keySet().findAll { RETIRED_KEYS.containsKey(it) }.toList()
+    }
 
     /** The two-column text a config file holds. Kept beside parse() so the
      *  round trip is one file's business; RoiExport.saveRunConfig() writes the
@@ -98,11 +118,12 @@ class RunConfig {
      * @param raw    from parse()
      * @param types  parameter name -> "string" | "int" | "double" | "boolean"
      * @param whence for messages
-     * @return the parameters only; provenance keys are dropped
+     * @return the parameters only; provenance and retired keys are dropped
      */
     static Map<String, Object> params(Map<String, String> raw, Map<String, String> types,
                                       String whence = "config") {
-        def unknown = raw.keySet().findAll { !types.containsKey(it) && !PROVENANCE_KEYS.contains(it) }
+        def unknown = raw.keySet().findAll { !types.containsKey(it) && !PROVENANCE_KEYS.contains(it) &&
+                                             !RETIRED_KEYS.containsKey(it) }
         if (unknown) {
             throw new IllegalArgumentException(
                 whence + " has unknown parameter(s): " + unknown.sort().join(", ") + "\n" +
@@ -112,7 +133,7 @@ class RunConfig {
         }
         def out = new LinkedHashMap<String, Object>()
         raw.each { k, v ->
-            if (!types.containsKey(k)) return                  // provenance
+            if (!types.containsKey(k)) return                  // provenance, or retired
             out[k] = coerce(k, v, types[k], whence)
         }
         return out

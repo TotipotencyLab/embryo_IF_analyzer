@@ -155,21 +155,6 @@ class RoiExport {
         return "unknown"
     }
 
-    /** Identifier for output filenames: a token from the slice label, else the title. */
-    /**
-     * ImageJ prefixes a hyperstack slice label with the plane's coordinates:
-     *
-     *   "c:1/3 - Image002"
-     *   "c:1/4 z:1/50 - Lightning 001/Mark_and_Find 001/Position010"
-     *
-     * Those slashes are NOT path separators, and splitting the raw label on "/"
-     * therefore hands back fragments like "56 - Series001". Strip the prefix
-     * before doing anything else.
-     */
-    static String stripSliceCoords(String label) {
-        return (label ?: "").replaceFirst(/^(?:[a-zA-Z]:\d+\/\d+\s*)+-\s*/, "")
-    }
-
     /**
      * Bio-Formats titles a series "<file>.lif - <series name>". Keep the series
      * name. Anchored on a real image extension followed by " - ", so a title
@@ -180,44 +165,47 @@ class RoiExport {
     }
 
     /**
-     * Resolve the image id used for every output filename and for the `name`
-     * column of the outline table.
+     * The series id an interactive run uses when none was typed: the image's
+     * title, less the file part Bio-Formats puts in front of a series name.
      *
-     * The raw strings are logged before anything is extracted from them: when
-     * this picks the wrong thing, the label is the only way to see why.
+     * The title, not the slice label. A token search through the label (the
+     * `position_pattern` of v0.6.0 and before) is retired: it was a guess at
+     * where one acquisition software hid the name, and an id the operator
+     * cannot see being chosen is a poor thing to name every output file after.
+     * The raw title is logged, so a surprising id can be traced from the log.
      */
-    static String resolveImageId(ImagePlus imp, String pattern) {
-        String rawLabel = imp.getStack().getSliceLabel(imp.getCurrentSlice()) ?: ""
+    static String seriesIdFromTitle(ImagePlus imp) {
         String rawTitle = imp.getTitle() ?: ""
-        String label = stripSliceCoords(rawLabel)
-
-        String id = null
-        String from = null
-        if (pattern) {
-            // Search the slice label first, then the title: a single-plane
-            // series can carry the series name in the title only.
-            for (def cand : [[label, "slice label"], [stripFileTitle(rawTitle), "title"]]) {
-                if (!cand[0]) continue
-                def hit = cand[0].split("/").find { it.contains(pattern) }
-                if (hit) {
-                    // Keep from the pattern onwards, so "56 - Series001" gives
-                    // "Series001" while "Mark_and_Find 001" is kept whole.
-                    id = hit.substring(hit.indexOf(pattern))
-                    from = cand[1]
-                    break
-                }
-            }
+        String out = sanitize(stripFileTitle(rawTitle))
+        if (!out) {
+            throw new IllegalArgumentException(
+                "The image has no title to take a series id from. Type one into 'Series id'.")
         }
-        if (id == null) {
-            id = stripFileTitle(rawTitle)
-            from = pattern ? "title (pattern not found)" : "title"
-        }
-
-        String out = sanitize(id)
-        IJ.log("  image id: '" + out + "'  [from " + from + "]")
+        IJ.log("  series id: '" + out + "'  [from the title]")
         IJ.log("      title      >>>" + rawTitle + "<<<")
-        IJ.log("      sliceLabel >>>" + rawLabel + "<<<")
         return out
+    }
+
+    /**
+     * A series id that was GIVEN -- typed into the dialog, or read from the
+     * series table -- refused rather than altered when sanitize() would change
+     * it. It names files and is written into a tab-separated table, so a space
+     * or a slash cannot stand; but rewriting it quietly would produce output
+     * under a name nobody asked for, and the next step looking for the name
+     * that WAS asked for would find nothing.
+     */
+    static String checkSeriesId(String id) {
+        String clean = sanitize(id)
+        if (!clean) {
+            throw new IllegalArgumentException("The series id is blank.")
+        }
+        if (clean != id) {
+            throw new IllegalArgumentException(
+                "The series id '" + id + "' cannot name a file or sit in a tab-separated " +
+                "table as it is (spaces, slashes, : * ? \" < > | and a trailing image " +
+                "extension are not allowed). '" + clean + "' would be accepted.")
+        }
+        return id
     }
 
     static String sanitize(String s) {

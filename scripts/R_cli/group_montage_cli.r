@@ -2,7 +2,7 @@
 
 # group_montage_cli.r
 #
-# One montage per GROUP of samples: every image belonging to a group, tiled,
+# One montage per GROUP of series: every image belonging to a group, tiled,
 # titled and drawn to a common physical scale.
 #
 # The case it exists for is counting by eye. An ovary is cut into serial
@@ -86,7 +86,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   .warn_option <- options(warn = 1)
   on.exit(options(.warn_option), add = TRUE)
 
-  p <- arg_parser("Tile every image of a sample group into one montage", hide.opts = TRUE)
+  p <- arg_parser("Tile every image of a group of series into one montage", hide.opts = TRUE)
 
   p <- add_argument(p, "--series_sheet", short = "-s", type = "character",
                     help = "series.tsv; its series_id column names each image")
@@ -238,7 +238,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   present <- paths[!is.na(paths)]
   if (anyDuplicated(present)) {
     dup <- unique(present[duplicated(present)])
-    stop(length(dup), " image path(s) are claimed by more than one sample: ",
+    stop(length(dup), " image path(s) are claimed by more than one series: ",
          paste(utils::head(dup, 4), collapse = ", "), call. = FALSE)
   }
 
@@ -255,7 +255,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   sheet[[".found"]] <- found
   sizes <- table(sheet[[".group"]])
   message("Resolved ", sum(found), " of ", nrow(sheet), " image(s) in ",
-          length(sizes), " group(s); ", sum(sizes == 1L), " of them hold one sample")
+          length(sizes), " group(s); ", sum(sizes == 1L), " of them hold one series")
 
   # A group of one is fine and is drawn like any other -- a section that yielded
   # a single series still belongs beside its neighbours, and --ncol gives it the
@@ -266,9 +266,9 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   # easy mistake. A warning rather than a refusal: uniform output for a later
   # step is a legitimate reason to want it.
   if (length(sizes) > 1L && all(sizes == 1L)) {
-    warning("--group_by ", group_col, " puts every sample in its own group, so ",
+    warning("--group_by ", group_col, " puts every series in its own group, so ",
             "each montage is a single image. Nothing is being placed beside ",
-            "anything. Did you mean a column that repeats across samples?",
+            "anything. Did you mean a column that repeats across series?",
             call. = FALSE)
   }
 
@@ -298,7 +298,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     longest <- pmax(sheet[[".w_um"]], sheet[[".h_um"]])
     if (spec == "run") {
       # Every row, not only the ones whose image turned up. The sheet knows a
-      # sample's physical size whether or not its PNG exists, and a group whose
+      # series' physical size whether or not its PNG exists, and a group whose
       # images are ALL missing must still get a montage of placeholders rather
       # than an error -- the whole point is that a missing panel is visible.
       run_upp <- mg_um_per_px(longest, cell_px)
@@ -515,7 +515,7 @@ group_montage_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                   collapse = ", "),
             if (length(odd) > 3) ", ..." else "",
             ". Either the sheet is stale, --image_suffix picked a differently ",
-            "shaped file, or these images are not the samples the sheet names.",
+            "shaped file, or these images are not the series the sheet names.",
             call. = FALSE)
   }
 

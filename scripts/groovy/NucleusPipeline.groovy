@@ -49,23 +49,16 @@ class NucleusPipeline {
     // config file may use -- RunConfig.params() rejects anything else rather
     // than letting a typo fall through to a default.
     //
-    // `basename` is deliberately NOT here. It names one image's output, so a
+    // `series_id` is deliberately NOT here. It names one image's output, so a
     // config file setting it would give every image in a batch the same name
-    // and each would overwrite the last. It is passed per image, by the caller.
-    // `script_name` likewise identifies the caller, not the request.
+    // and each would overwrite the last. It is passed per image, by the caller:
+    // the batch from the series table, the interactive script from its dialog.
+    // `script_name` likewise identifies the caller, not the request. What the
+    // id was is recorded, as the `series_id` provenance field.
     //
-    // `output_prefix` IS here -- a config may set it -- but it is the one
-    // parameter saveRunConfig() deliberately does not write back. It decides
-    // what the output is CALLED, not what work happens, which puts it in the
-    // same category as `outdir`: an invocation, not an analysis. Writing it
-    // would make a re-run reproduce the previous run's filenames and overwrite
-    // it rather than land beside it for comparison. What the names actually
-    // were is already recorded, as the `output_basename` provenance field.
-    // Test_NucleusPipeline names it as the single exclusion, so its absence
-    // reads as a decision rather than as the oversight the save_* keys were.
+    // `output_prefix` and `position_pattern` were here until v0.7.0 and are
+    // RunConfig.RETIRED_KEYS now: a config written before then still reads.
     static final Map<String, String> PARAM_TYPES = [
-        output_prefix          : "string",
-        position_pattern       : "string",
         z_spec                 : "string",
         dna_channel            : "int",
         channels_measured      : "string",
@@ -101,8 +94,6 @@ class NucleusPipeline {
     // Test_RunConfig asserts exactly that, because SciJava requires the dialog
     // defaults to be literals and they cannot simply be read from here.
     static final Map<String, Object> DEFAULTS = [
-        output_prefix          : "",
-        position_pattern       : "Position",
         z_spec                 : "",
         dna_channel            : 1,
         channels_measured      : "1,2,3",
@@ -186,7 +177,7 @@ class NucleusPipeline {
      * @param imp    the open image
      * @param outdir where the results go
      * @param p      parameters, keyed as saveRunConfig() writes them
-     * @return a map of what was produced: basename, the ROIs and their names
+     * @return a map of what was produced: series_id, the ROIs and their names
      *         per feature, and the slice set analysed. The caller owns anything
      *         that needs a display -- the ROI Manager, imp.show() -- because
      *         those are not part of producing the files.
@@ -204,15 +195,22 @@ class NucleusPipeline {
         def slices     = RD.parseSlices(p.z_spec ?: "", imp.getNSlices())
         def outDirPath = outdir.getAbsolutePath() + File.separator
 
-        // An explicit basename wins over resolving one from the image. The batch
-        // runner passes the series table's `series_id`, which is authoritative --
-        // resolveImageId() digs the id out of the slice label or title, and a
-        // Leica default like "Series001" recurs in every file, so it cannot be
-        // unique across a batch. Absent one, behave exactly as before.
-        def basename = (p.basename) ? (p.basename as String)
-                                    : ((p.output_prefix ?: "") + RX.resolveImageId(imp, p.position_pattern))
+        // The series id names everything this run writes: every file, and the
+        // `name` column of every outline row -- one id for both, so the R side
+        // can find `<series_id>_config.txt` from the name it read out of a table.
+        // The batch passes the series table's, which is authoritative; the
+        // interactive script passes what was typed, or nothing, and then the
+        // image title is used. A given id is refused, not rewritten, if it
+        // cannot name a file.
+        String seriesId
+        if (p.series_id) {
+            seriesId = RX.checkSeriesId(p.series_id as String)
+            IJ.log("  series id: '" + seriesId + "'  [given]")
+        } else {
+            seriesId = RX.seriesIdFromTitle(imp)
+        }
 
-        IJ.log("=== " + basename + " ===")
+        IJ.log("=== " + seriesId + " ===")
         IJ.log("  analysing " + slices.size() + " of " + imp.getNSlices() + " slices")
 
         // Overview settings are checked HERE, not where they are used. The
@@ -236,8 +234,8 @@ class NucleusPipeline {
         def writeFeature = { String feature, List rois, List names, List sls ->
             IJ.log("  " + feature + ": " + rois.size() + " ROIs")
             if (rois.isEmpty()) return
-            def stem = outDirPath + basename + "_" + feature
-            if (p.save_outlines)     RX.saveOutlineCoords(imp, rois, names, sls, basename, stem + "_outline.txt")
+            def stem = outDirPath + seriesId + "_" + feature
+            if (p.save_outlines)     RX.saveOutlineCoords(imp, rois, names, sls, seriesId, stem + "_outline.txt")
             if (p.save_roi_zips)     RX.saveRoiZip(rois, names, stem + "_outline_ROIs.zip")
             if (p.save_measurements) RX.measureRois(imp, rois, sls, channels, stem + "_res.txt", true)
         }
@@ -348,13 +346,13 @@ class NucleusPipeline {
                                                 height   : p.overview_height,
                                                 contrast : p.overview_contrast,
                                                 saturated: p.overview_saturated])
-                def raw  = OV.savePng(view, OV.overviewPath(outDirPath, basename, c, ""))
+                def raw  = OV.savePng(view, OV.overviewPath(outDirPath, seriesId, c, ""))
                 // NB: "merged" unions the outlines in the PROJECTION, so touching
                 //     or z-overlapping objects share one outline. It is a
                 //     picture, not a count.
                 OV.addOutlines(view, nucRois,  [mode: "merged", color: "yellow",  lineWidth: 1])
                 OV.addOutlines(view, nuclRois, [mode: "merged", color: "magenta", lineWidth: 1])
-                def ovl  = OV.savePng(view, OV.overviewPath(outDirPath, basename, c, OV.OVERLAY_SUFFIX))
+                def ovl  = OV.savePng(view, OV.overviewPath(outDirPath, seriesId, c, OV.OVERLAY_SUFFIX))
                 // The display range, because "auto" contrast stretches whatever
                 // is there: a channel carrying only noise has that noise
                 // stretched to full range and saves a convincing picture of
@@ -384,8 +382,8 @@ class NucleusPipeline {
                 // Which series of which file this directory came from. Blank in
                 // the interactive runner, where the image was already open and
                 // nothing told us. Identity comes from content, not from the
-                // filename -- so the prefix should not have to be parsed apart
-                // to answer this.
+                // filename -- so the series id should not have to be parsed
+                // apart to answer this.
                 source_file            : (p.source_file ?: ""),
                 series_index           : (p.series_index == null ? "" : p.series_index),
                 series_name            : (p.series_name ?: ""),
@@ -412,8 +410,10 @@ class NucleusPipeline {
                 // and `area_sum x 1.0` is an area wearing a volume's name.
                 pixel_depth            : (imp.getNSlices() > 1 ? imp.getCalibration().pixelDepth : null),
                 pixel_unit             : imp.getCalibration().getUnit(),
-                output_basename        : basename,
-                position_pattern       : p.position_pattern,
+                // The id every file of this run is named after, and the value
+                // of the outline tables' `name` column. Provenance, not a
+                // parameter: see PARAM_TYPES.
+                series_id              : seriesId,
                 z_spec                 : (p.z_spec ?: "(all)"),
                 z_slices_analysed      : slices.size(),
                 dna_channel            : dnaCh,
@@ -482,11 +482,11 @@ class NucleusPipeline {
                 nucleolus_particle_size: p.nucleolus_particle_size,
                 nucleolus_circularity  : p.nucleolus_circularity,
                 nucleolus_count        : nuclRois.size()
-            ], outDirPath + basename + "_config.txt")
+            ], outDirPath + seriesId + "_config.txt")
         }
 
-        IJ.log("Done: " + basename)
-        return [basename  : basename,
+        IJ.log("Done: " + seriesId)
+        return [series_id : seriesId,
                 outDirPath: outDirPath,
                 slices    : slices,
                 // For batch_summary.tsv: per row, what the threshold chose. The

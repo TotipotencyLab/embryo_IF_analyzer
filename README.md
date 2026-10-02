@@ -56,13 +56,13 @@ R reads those, merges per-slice ROIs into 3D objects, and does the analysis.
    # per-feature statistics + distribution plots, for choosing thresholds
    scripts/R_cli/feature_stat_cli.r \
        --input results/ --outdir stats/ --res_dir raw_measurements/ \
-       --group_by sample
+       --group_by series_id
 
    # two statistics against each other, with a candidate cut-off drawn on
    scripts/R_cli/feature_scatter_cli.r \
        --input stats/feature_stats.tsv --outdir stats/ \
        --plot 'area_med:ch1_signal' 'circ_med:area_med' \
-       --threshold 'area_med=400' --color_by sample
+       --threshold 'area_med=400' --color_by series_id
 
    # eyeball it: raw projection | Fiji outline | R union
    scripts/R_cli/montage_qc_cli.r \
@@ -107,14 +107,21 @@ To run: open the image in Fiji, then `File › Open…` the script and press **R
 Parameters are `#@` script parameters, so they appear as a dialog — no file editing.
 Save the `Run_*` script inside `scripts/groovy/` so it can locate its libraries.
 
-Output per feature, written to the chosen directory:
+Output per feature, written to the chosen directory and named after the image's
+**series id** — typed into the `Series id` field, or, left blank, the image title
+(less the `<file>.lif - ` part Bio-Formats adds). The field is never remembered
+between runs: an id names one image. Since v0.7.0 there is no output prefix; to
+keep two runs apart, type the id you want or use another output directory.
 
 ```
-<prefix><image id>_<feature>_outline.txt        name, roi, z, x, y
-<prefix><image id>_<feature>_outline_ROIs.zip   ImageJ ROIs
-<prefix><image id>_<feature>_res.txt            measurements, one row per ROI per channel
-<prefix><image id>_config.txt                   every parameter used for this run
+<series_id>_<feature>_outline.txt        name, roi, z, x, y
+<series_id>_<feature>_outline_ROIs.zip   ImageJ ROIs
+<series_id>_<feature>_res.txt            measurements, one row per ROI per channel
+<series_id>_config.txt                   every parameter used for this run
 ```
+
+The `name` column holds the same id, and the R side relies on that to find the
+`_res.txt` and `_config.txt` beside an outline table.
 
 `Set Measurements` is forced by the script, so the output columns do not depend on
 the operator's Fiji preferences. The `_config.txt` records the full parameter set,
@@ -138,9 +145,9 @@ the outlines come from DNA and drawing them over the other channels is how you
 check a signal against the compartment it should be in. Both are wanted at once
 by `montage_qc_cli.r`, which is why they are separate files.
 
-The QC montage is **titled with the sample name** by default (`--title` to
+The QC montage is **titled with the series id** by default (`--title` to
 override, `--no_title` to omit) — three panels and their captions say what each
-panel is, but nothing in the picture says which sample it belongs to once it is
+panel is, but nothing in the picture says which series it belongs to once it is
 open in a viewer or pasted into a note.
 
 The **projection, output size and contrast** are settings: `max` and 500 px
@@ -290,7 +297,7 @@ A `--threshold` is keyed to a **column**, not to a plot: `--threshold
 when it is the x axis and horizontally when it is y. So a cut-off is stated once
 and cannot drift out of step between panels.
 
-`group_montage_cli.r` tiles every image of a **group** of samples into one
+`group_montage_cli.r` tiles every image of a **group** of series into one
 picture — the sections of one ovary, say, which are imaged as separate series
 and so sit scattered across the series table. It is for the case where a count
 has to be made or sanity-checked by eye.
@@ -320,7 +327,7 @@ montage:
 A group holding a **single** image is drawn like any other: a section that
 yielded one series still belongs beside its neighbours, and passing `--ncol`
 explicitly gives every montage the same width so they line up. But if *every*
-group holds one sample the run warns, because then each montage is one image
+group holds one series the run warns, because then each montage is one image
 under a new name and nothing is being placed beside anything — usually a column
 was named that is unique per row.
 
@@ -339,7 +346,7 @@ one scale across every montage. Paths are built exactly (`--image_dir` +
 from the sheet instead when the names do not follow a rule.
 
 **Which file holds what is read from the file itself**, not from its name: the
-`name` column gives the sample and the ROI id prefix gives the feature. So a
+`name` column gives the series id and the ROI id prefix gives the feature. So a
 feature name may contain an underscore (`growing_oocyte`), and `--input`'s glob
 only has to *select* the right files. `--rename 'nucleus=oocyte'` relabels a
 feature for reporting when the Fiji step wrote a name that does not suit the

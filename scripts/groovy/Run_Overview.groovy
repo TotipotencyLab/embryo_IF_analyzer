@@ -1,7 +1,6 @@
 #@ ImagePlus imp
 #@ File    (label="Output directory", style="directory") outdir
-#@ String  (label="Output prefix", value="") outPrefix
-#@ String  (label="Position token in slice label (blank = use title)", value="Position") positionPattern
+#@ String  (persist=false, label="Series id (blank = the image title)", description="Names the PNGs, exactly as Run_NucleusSelector names its own. Blank takes it from the image title. Never remembered: an id names one image.", value="") seriesId
 #@ String  (label="Z-slices to project (blank = all; e.g. 1-20,35-40)", value="") zSpec
 #@ String  (label="Channels (comma separated; blank = all)", value="") channelsCsv
 #@ String  (label="Projection", value="max", choices={"max","mean","median","sum","sd","min"}) method
@@ -28,7 +27,8 @@
 //                    for a whole folder later, without re-running detection.
 //   ROI Manager      whatever is currently loaded (interactive only).
 //
-// Output: <prefix><image id>_overview_ch<c><suffix>.png in the output directory.
+// Output: <series id>_overview_ch<c><suffix>.png in the output directory -- the
+// names Run_NucleusSelector gives its overviews, from the same series id rule.
 // The suffix defaults to "" for a bare projection and "_overlay" once outlines
 // are drawn, so regenerating one never overwrites the other.
 
@@ -62,7 +62,7 @@ def slices     = RD.parseSlices(zSpec, imp.getNSlices())
 def channels   = channelsCsv?.trim() ? channelsCsv.split(",").collect { it.trim() as Integer }
                                      : (1..imp.getNChannels()).toList()
 def outDirPath = outdir.getAbsolutePath()
-def basename   = outPrefix + RX.resolveImageId(imp, positionPattern)
+def seriesIdUsed = seriesId ? RX.checkSeriesId(seriesId) : RX.seriesIdFromTitle(imp)
 
 // --- outlines ---------------------------------------------------------------
 // Each layer is [rois, colour]; they are drawn in order, so later layers sit on
@@ -99,7 +99,7 @@ def willDraw = !layers.isEmpty() && roiMode != "none"
 def suffix = (outSuffix?.trim() ?: "(auto)") == "(auto)" ? (willDraw ? OV.OVERLAY_SUFFIX : "")
                                                          : outSuffix.trim()
 
-IJ.log("=== " + basename + " (overview) ===")
+IJ.log("=== " + seriesIdUsed + " (overview) ===")
 IJ.log("  projecting " + slices.size() + " of " + imp.getNSlices() + " slices, " + method)
 
 def proj = OV.project(imp, slices, method, channels)
@@ -110,7 +110,7 @@ channels.each { int c ->
     layers.each { rois, colour ->
         drawn += OV.addOutlines(view, rois, [mode: roiMode, color: colour, lineWidth: lineWidth])
     }
-    def file = OV.savePng(view, OV.overviewPath(outDirPath, basename, c, suffix))
+    def file = OV.savePng(view, OV.overviewPath(outDirPath, seriesIdUsed, c, suffix))
     // Display range included because "auto" stretches whatever is present: a
     // channel holding only noise saves a convincing picture of nothing, and a
     // narrow range is the only warning.
@@ -119,4 +119,4 @@ channels.each { int c ->
            ", " + drawn + " outline(s) -> " + file.getName())
 }
 
-IJ.log("Done: " + basename)
+IJ.log("Done: " + seriesIdUsed)

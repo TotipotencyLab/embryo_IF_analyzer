@@ -12,10 +12,10 @@
 # mistake: adjacent slices of one object are not replicates.
 #
 #   ./feature_stat_cli.r --input results/ --outdir stats/ \
-#       --res_dir segmentation/ --group_by sample --plot
+#       --res_dir segmentation/ --group_by series_id --plot
 #
 # Channel signal appears only when the Fiji measurement tables can be found.
-# They are looked up as <sample>_<roi prefix>_res.txt, where the roi prefix is
+# They are looked up as <series_id>_<roi prefix>_res.txt, where the roi prefix is
 # read from the `roi` column -- so this still works after --rename, when the
 # reporting name and the name on disk differ.
 #
@@ -95,7 +95,7 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   p <- add_argument(p, "--id_column", short = "-I", type = "character", default = "series_id",
                     help = "series table column holding the series_id -- the file prefix")
   p <- add_argument(p, "--group_by", short = "-g", type = "character", nargs = Inf, default = NULL,
-                    help = "column to group the plots by [default: sample]")
+                    help = "column to group the plots by [default: series_id]")
   p <- add_argument(p, "--feature", short = "-f", type = "character", nargs = Inf, default = NULL,
                     help = "restrict to these feature type(s)")
   p <- add_argument(p, "--stat", short = "-s", type = "character", nargs = Inf, default = NULL,
@@ -105,7 +105,7 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   p <- add_argument(p, "--z_step", short = "-z", type = "numeric", default = NA,
                     help = paste("distance between slices, in the outline unit (microns).",
                                  "Adds a 'volume' column = area_sum x z_step.",
-                                 "[default: pixel_depth from each sample's _config.txt,",
+                                 "[default: pixel_depth from each series' _config.txt,",
                                  "which Fiji has recorded since 0.2.0]"))
   p <- add_argument(p, "--class", short = "-k", type = "character", nargs = Inf, default = NULL,
                     help = paste("assign each feature to a class from its own statistics.",
@@ -166,7 +166,7 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   plot_types <- .cli_resolve_arg(argv$plot_type, "--plot_type")
   if (!length(plot_types)) plot_types <- c("box", "quasirandom")
   group_by <- .cli_resolve_arg(argv$group_by, "--group_by")
-  if (!length(group_by)) group_by <- "sample"
+  if (!length(group_by)) group_by <- "series_id"
   keep_features <- .cli_resolve_arg(argv$feature, "--feature")
   want_stats <- .cli_resolve_arg(argv$stat, "--stat")
   res_dirs <- .cli_resolve_arg(argv$res_dir, "--res_dir")
@@ -195,7 +195,7 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   n_with_signal <- 0L
   for (path in files) {
-    feats <- readRDS(path)
+    feats <- .cli_require_series_id(readRDS(path), path)
     if (!nrow(feats)) {
       warning("Empty feature table, skipping: ", basename(path), call. = FALSE)
       next
@@ -208,7 +208,7 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     res <- .read_res_for(feats, path, res_dirs)
     if (!is.null(res)) n_with_signal <- n_with_signal + 1L
 
-    # Everything that is not a known per-ROI column is treated as sample
+    # Everything that is not a known per-ROI column is treated as series
     # metadata and carried through. is_bridge belongs in this list: it is an
     # ROI-level fact that VARIES within a feature, so leaving it out made
     # summarise_feature_stats() warn about a metadata column varying and then
@@ -217,7 +217,7 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     # frac_bridge are the feature-level answer.
     meta_cols <- setdiff(colnames(sf::st_drop_geometry(feats)),
                          c("roi", "z", "area", "is_bridge",
-                           "feature_id", "feature_type", "sample",
+                           "feature_id", "feature_type", "series_id",
                            "parent_feature_id", "parent_feature_type",
                            "parent_containment", "parent_match"))
     # An explicit --z_step wins everywhere; otherwise each file answers for
@@ -238,7 +238,7 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   stats <- dplyr::bind_rows(per_file)
 
   message("  ", nrow(stats), " feature(s) across ",
-          dplyr::n_distinct(stats$sample), " sample(s)")
+          dplyr::n_distinct(stats$series_id), " series")
 
   # Where the volume column came from, or why there is not one. area_med only
   # stands in for size while the object is a sphere, so whether volume exists is
@@ -263,12 +263,12 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   }
   if (n_with_signal == 0L) {
     # Not fatal, but the single most likely reason the plots look thin.
-    warning("No measurement table was found for any sample, so there is NO ",
+    warning("No measurement table was found for any series, so there is NO ",
             "channel signal in this output. Pass --res_dir pointing at the ",
             "Fiji results.", call. = FALSE)
   } else if (n_with_signal < length(per_file)) {
     warning(length(per_file) - n_with_signal, " of ", length(per_file),
-            " sample(s) had no measurement table; their signal columns are NA",
+            " series had no measurement table; their signal columns are NA",
             call. = FALSE)
   }
 
@@ -368,8 +368,8 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 #' The z step for one features file, from the Fiji config that produced it
 #'
 #' `pixel_depth` is written per image, so this is asked per file -- and a
-#' features .rds is written per sample, so per file IS per sample in anything
-#' the pipeline produced. A hand-built file holding several samples that
+#' features .rds is written per series, so per file IS per series in anything
+#' the pipeline produced. A hand-built file holding several series that
 #' disagree gets no inference rather than an arbitrary one of them: pixel size
 #' varies 4x within a single .lif here, so "they are all about the same" is not
 #' a safe assumption to make quietly.
@@ -382,11 +382,11 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                    file.path(here, ".."),
                    file.path(here, "..", "segmentation")))
   vals <- c()
-  for (smp in unique(tab$sample)) {
-    cfg <- .cli_read_config(.cli_find_config(smp, dirs))
+  for (sid in unique(tab$series_id)) {
+    cfg <- .cli_read_config(.cli_find_config(sid, dirs))
     v <- .cli_config_num(cfg, "pixel_depth")
     # Blank for a single plane, by design on the Fiji side: no z axis, no volume.
-    if (!is.na(v) && v > 0) vals[[smp]] <- v
+    if (!is.na(v) && v > 0) vals[[sid]] <- v
   }
   if (!length(vals)) return(NA_real_)
   if (length(unique(unlist(vals))) > 1L) {
@@ -405,12 +405,12 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                    file.path(here, ".."),
                    file.path(here, "..", "segmentation")))
   out <- list()
-  for (smp in unique(tab$sample)) {
-    rows <- tab[tab$sample == smp, , drop = FALSE]
+  for (sid in unique(tab$series_id)) {
+    rows <- tab[tab$series_id == sid, , drop = FALSE]
     for (ft in unique(rows$feature_type)) {
       prefix <- feature_roi_prefix(rows$roi[rows$feature_type == ft])
       if (is.na(prefix)) next
-      cands <- file.path(dirs, paste0(smp, "_", prefix, "_res.txt"))
+      cands <- file.path(dirs, paste0(sid, "_", prefix, "_res.txt"))
       hit <- cands[file.exists(cands)]
       if (!length(hit)) next
       one <- tryCatch(read_fiji_result(hit[1]), error = function(e) {
@@ -418,14 +418,14 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                 call. = FALSE)
         NULL
       })
-      if (!is.null(one)) out[[paste(smp, ft)]] <- one
+      if (!is.null(one)) out[[paste(sid, ft)]] <- one
     }
   }
   if (!length(out)) return(NULL)
   return(out)
 }
 
-#' Join sample metadata onto the per-feature table
+#' Join series table metadata onto the per-feature table
 #'
 #' A column may already be here. The commonest reason is the benign one: the
 #' SAME sheet was passed to annotate_features_cli.r, which binds its metadata
@@ -438,7 +438,7 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 #' `genotype.x`/`genotype.y` and every later reference to `genotype` -- a
 #' --group_by, a --class rule, a plot facet -- would resolve to neither.
 #'
-#' So a shared column is reconciled instead. Equal per sample means it is the
+#' So a shared column is reconciled instead. Equal per series means it is the
 #' same metadata and the join simply skips it. Unequal means the features were
 #' annotated from a DIFFERENT sheet than the one being passed now, or a sheet
 #' column is named after a statistic this step computes. Either way, silently
@@ -446,15 +446,15 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 .cli_join_sheet <- function(stats, sheet, id_column) {
   .cli_check_reserved(sheet, id_column)
   meta <- sheet
-  names(meta)[names(meta) == id_column] <- "sample"
+  names(meta)[names(meta) == id_column] <- "series_id"
 
-  shared <- setdiff(base::intersect(colnames(meta), colnames(stats)), "sample")
+  shared <- setdiff(base::intersect(colnames(meta), colnames(stats)), "series_id")
   if (length(shared)) {
-    # Metadata is constant within a sample, so one row per sample is the whole
+    # Metadata is constant within a series, so one row per series is the whole
     # comparison.
-    have <- stats[!duplicated(stats$sample), c("sample", shared), drop = FALSE]
-    cmp <- merge(have, meta[, c("sample", shared), drop = FALSE],
-                 by = "sample", suffixes = c(".have", ".sheet"))
+    have <- stats[!duplicated(stats$series_id), c("series_id", shared), drop = FALSE]
+    cmp <- merge(have, meta[, c("series_id", shared), drop = FALSE],
+                 by = "series_id", suffixes = c(".have", ".sheet"))
     disagree <- character(0)
     for (col in shared) {
       a <- as.character(cmp[[paste0(col, ".have")]])
@@ -467,7 +467,7 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
            "\n  The features were annotated from a different series table, or a ",
            "sheet column is named after a statistic this step computes.",
            "\n  Re-run annotate_features_cli.r with this sheet, or rename the ",
-           "column (e.g. ", disagree[1], " -> sample_", disagree[1], ").",
+           "column (e.g. ", disagree[1], " -> sheet_", disagree[1], ").",
            call. = FALSE)
     }
     message("  series table: ", length(shared),
@@ -477,15 +477,15 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     meta <- meta[, setdiff(colnames(meta), shared), drop = FALSE]
   }
 
-  unmatched <- setdiff(stats$sample, meta$sample)
+  unmatched <- setdiff(stats$series_id, meta$series_id)
   if (length(unmatched)) {
-    warning(length(unmatched), " sample(s) are not in the series table: ",
+    warning(length(unmatched), " series are not in the series table: ",
             paste(utils::head(unmatched, 5), collapse = ", "), call. = FALSE)
   }
   if (ncol(meta) <= 1L) {
     return(stats)
   }
-  return(dplyr::left_join(stats, meta, by = "sample"))
+  return(dplyr::left_join(stats, meta, by = "series_id"))
 }
 
 #' Say what did not become a feature, so a thin plot can be read correctly

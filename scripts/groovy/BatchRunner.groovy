@@ -33,7 +33,7 @@ import loci.plugins.util.ImageProcessorReader
 class BatchRunner {
 
     String libDir
-    Class TSV, NP, RC, RD, SCHEMA
+    Class TSV, NP, RC, RD, RX, SCHEMA
     Object pipeline
 
     static BatchRunner load(String libDir) {
@@ -48,6 +48,7 @@ class BatchRunner {
         // through NucleusPipeline, which parses its own copy.
         b.RD = gcl.parseClass(new File(dir, "RoiDetect.groovy"))
         b.SCHEMA = gcl.parseClass(new File(dir, "SheetSchema.groovy"))
+        b.RX = gcl.parseClass(new File(dir, "RoiExport.groovy"))
         b.pipeline = b.NP.load(b.libDir)
         return b
     }
@@ -411,13 +412,13 @@ class BatchRunner {
                           params + [pixel_size_note: PIXEL_SIZE_NOTE_NUCLEUS],
                           outdir, cols, log) {
                       imp, seriesId, si, method, row ->
-            // The sheet's series_id is authoritative: resolveImageId() would dig
-            // "Series001" out of the slice label, which recurs in every file.
+            // The sheet's series_id is authoritative: an id taken from the image
+            // title would be "Series001", which recurs in every file.
             // Where this image came from, recorded in its own _config.txt: a
             // results folder should say which series of which file produced it
             // without anyone having to parse the id back apart.
             def r = pipeline.run(imp, outdir,
-                                 params + [basename    : seriesId,
+                                 params + [series_id   : seriesId,
                                            open_method : method,
                                            source_file : row.path,
                                            series_index: si,
@@ -532,6 +533,10 @@ class BatchRunner {
                 if (!seriesId) {
                     throw new IllegalArgumentException("row has no series_id; nothing to name its output")
                 }
+                // A hand-edited id names files too. Refused per row, before the
+                // image opens, rather than rewritten into a name the sheet does
+                // not hold -- see RoiExport.checkSeriesId.
+                RX.checkSeriesId(seriesId)
                 def image = resolve(row.path.toString(), imageRoot)
                 if (!image.isFile()) {
                     throw new IllegalArgumentException("no such image file: " + image.getAbsolutePath())

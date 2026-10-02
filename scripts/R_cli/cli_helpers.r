@@ -312,18 +312,18 @@
   return(out)
 }
 
-#' Split <prefix><image id>_<feature>_outline.txt into sample and feature
+#' Split <series_id>_<feature>_outline.txt into series id and feature
 #'
 #' Drops nothing silently: files that do not name a requested feature are
 #' warned about, and none matching at all is an error.
 #'
 #' @param paths    resolved input paths
 #' @param features feature names to recognise
-#' @return data.frame(path, sample, feature)
+#' @return data.frame(path, series_id, feature)
 .cli_parse_contract <- function(paths, features) {
-  # NB: (.*?) and not (.*). A GREEDY prefix lets the longest possible sample
-  #     name win, so with features "oocyte" and "growing_oocyte" the file
-  #     S1_growing_oocyte_outline.txt parsed as sample "S1_growing", feature
+  # NB: (.*?) and not (.*). A GREEDY prefix lets the longest possible series
+  #     id win, so with features "oocyte" and "growing_oocyte" the file
+  #     S1_growing_oocyte_outline.txt parsed as series "S1_growing", feature
   #     "oocyte" -- silently, and reordering the alternation does not help
   #     because the quantifier drives the match, not the branch order. Lazy
   #     takes the shortest prefix that still lets the rest match, which is the
@@ -334,7 +334,7 @@
   ok <- grepl(rx, base)
   if (any(!ok)) {
     warning("Ignoring ", sum(!ok), " file(s) not matching ",
-            "<sample>_<feature>_outline.txt for feature(s) ",
+            "<series_id>_<feature>_outline.txt for feature(s) ",
             paste(features, collapse = "/"), ": ",
             paste(utils::head(base[!ok], 5), collapse = ", "),
             if (sum(!ok) > 5) ", ..." else "", call. = FALSE)
@@ -346,7 +346,7 @@
   return(
     data.frame(
       path    = paths[ok],
-      sample  = sub(rx, "\\1", base[ok]),
+      series_id = sub(rx, "\\1", base[ok]),
       feature = sub(rx, "\\2", base[ok]),
       stringsAsFactors = FALSE
     )
@@ -374,8 +374,8 @@
 
 #' Read a Fiji outline table's identity out of the table itself
 #'
-#' Both identities are already in the file: the `name` column holds the full
-#' sample id (the operator's --output_prefix plus the image id) and the `roi`
+#' Both identities are already in the file: the `name` column holds the
+#' series id -- the same string Fiji named the file after -- and the `roi`
 #' column's prefix holds the feature name. Reading them from the content rather
 #' than from the filename means a renamed or oddly-named file cannot corrupt
 #' them, and multi-word feature names need no special handling.
@@ -386,10 +386,10 @@
 #'
 #' @param path  outline table
 #' @param nrows rows to read for the probe
-#' @return list(sample, feature, ok, why); ok = FALSE when the content could not
+#' @return list(series_id, feature, ok, why); ok = FALSE when the content could not
 #'         be read, so the caller can fall back to the filename
 .cli_identify_outline <- function(path, nrows = 2000L) {
-  bad <- function(why) list(sample = NA_character_, feature = NA_character_,
+  bad <- function(why) list(series_id = NA_character_, feature = NA_character_,
                             ok = FALSE, why = why)
   df <- try(utils::read.table(path, header = TRUE, sep = "\t", nrows = nrows,
                               stringsAsFactors = FALSE), silent = TRUE)
@@ -406,20 +406,20 @@
          "\n  (one file is expected to hold exactly one feature)", call. = FALSE)
   }
 
-  smp <- NA_character_
+  sid <- NA_character_
   if ("name" %in% colnames(df)) {
     nm <- unique(trimws(as.character(df$name)))
     nm <- nm[!is.na(nm) & nzchar(nm)]
     if (length(nm) == 1L) {
-      smp <- nm
+      sid <- nm
     } else if (length(nm) > 1L) {
-      stop("Outline table ", basename(path), " mixes sample names: ",
+      stop("Outline table ", basename(path), " mixes series ids in its name column: ",
            paste(utils::head(nm, 4), collapse = ", "),
            call. = FALSE)
     }
   }
-  if (is.na(smp)) return(bad("no usable name column"))
-  return(list(sample = smp, feature = feats, ok = TRUE, why = NA_character_))
+  if (is.na(sid)) return(bad("no usable name column"))
+  return(list(series_id = sid, feature = feats, ok = TRUE, why = NA_character_))
 }
 
 #' Re-check a fully-read outline table against the identity the probe found
@@ -440,7 +440,7 @@
 #'
 #' Returns one row per usable file with:
 #'   path        the file
-#'   sample      from the `name` column, else the filename
+#'   series_id   from the `name` column, else the filename
 #'   roi_prefix  the feature name AS WRITTEN IN THE ROI IDS -- this is what the
 #'               grouping step matches on, and it does not change when the
 #'               feature is renamed for reporting
@@ -453,7 +453,7 @@
   rows <- lapply(paths, function(p) {
     id <- .cli_identify_outline(p)
     if (id$ok) {
-      return(data.frame(path = p, sample = id$sample, roi_prefix = id$feature,
+      return(data.frame(path = p, series_id = id$series_id, roi_prefix = id$feature,
                         from = "content", stringsAsFactors = FALSE))
     }
     # Fall back to the filename, but only when the caller named the features --
@@ -462,7 +462,7 @@
     one <- tryCatch(.cli_parse_contract(p, features), error = function(e) NULL,
                     warning = function(w) NULL)
     if (is.null(one) || !nrow(one)) return(NULL)
-    data.frame(path = p, sample = one$sample, roi_prefix = one$feature,
+    data.frame(path = p, series_id = one$series_id, roi_prefix = one$feature,
                from = "filename", stringsAsFactors = FALSE)
   })
   rows <- rows[!vapply(rows, is.null, logical(1))]
@@ -751,16 +751,40 @@
   return(sheet)
 }
 
+# --- an R output written before v0.7.0 ----------------------------------------
+
+#' Stop on a table this repo's R side wrote before v0.7.0
+#'
+#' v0.7.0 renamed the per-series id column of every R output from `sample` to
+#' `series_id`. An older `_features.rds` or `feature_stats.tsv` would otherwise
+#' fail later, somewhere far from the cause -- or, in a join, match nothing.
+#' Named as a version, for the same reason the series table's check is: "no
+#' series_id column" alone sends a person looking for a typo.
+#'
+#' @param df   the table just read
+#' @param path where it came from, for the message
+#' @return df, unchanged
+.cli_require_series_id <- function(df, path) {
+  cols <- colnames(df)
+  if (!"series_id" %in% cols && "sample" %in% cols) {
+    stop(basename(path), " has a 'sample' column and no 'series_id': it was written before ",
+         "v0.7.0, which renamed the column. Re-run the step that wrote it ",
+         "(annotate_features_cli.r, then feature_stat_cli.r), or rename the column. ",
+         "File: ", path, call. = FALSE)
+  }
+  return(df)
+}
+
 # --- the Fiji _config.txt beside a results folder -----------------------------
 
-#' Find `<sample>_config.txt`
+#' Find `<series_id>_config.txt`
 #'
 #' Fiji writes it beside the outline tables, which is not necessarily where the
 #' .rds ended up, so every plausible directory is tried.
 #'
 #' @return a path, or NA_character_
-.cli_find_config <- function(sample, dirs) {
-  cands <- file.path(dirs, paste0(sample, "_config.txt"))
+.cli_find_config <- function(series_id, dirs) {
+  cands <- file.path(dirs, paste0(series_id, "_config.txt"))
   hit <- cands[file.exists(cands)]
   if (!length(hit)) return(NA_character_)
   return(normalizePath(hit[1], mustWork = FALSE))
@@ -795,7 +819,7 @@
 # would be silently renamed by bind_cols() to `area...7`, producing a file that
 # violates the documented schema -- and the next stage then cannot find the
 # column it needs.
-.CLI_RESERVED_COLUMNS <- c("roi", "z", "area", "geometry", "sample",
+.CLI_RESERVED_COLUMNS <- c("roi", "z", "area", "geometry", "series_id",
                            "feature_id", "feature_type",
                            "parent_feature_id", "parent_feature_type",
                            "parent_containment", "parent_match",
@@ -816,7 +840,7 @@
   if (length(clash)) {
     stop("Series table column(s) collide with columns the output already uses: ",
          paste(clash, collapse = ", "),
-         "\n  rename them in the sheet (e.g. ", clash[1], " -> sample_", clash[1], ")",
+         "\n  rename them in the sheet (e.g. ", clash[1], " -> sheet_", clash[1], ")",
          call. = FALSE)
   }
   return(invisible(NULL))
@@ -826,24 +850,24 @@
   # The sheet filters the resolved files AND supplies metadata. It never
   # supplies paths -- that is --input's job.
   wanted <- sheet[[id_column]]
-  keep <- contract_df$sample %in% wanted
+  keep <- contract_df$series_id %in% wanted
   
-  # The "sample" column is hardcoded here as the contract_df is a pipeline-internal sheet.
-  unmatched_sheet <- setdiff(wanted, contract_df$sample)
+  # The "series_id" column is hardcoded here as the contract_df is a pipeline-internal sheet.
+  unmatched_sheet <- setdiff(wanted, contract_df$series_id)
   if (length(unmatched_sheet)) {
     warning(length(unmatched_sheet), " series table row(s) matched no input file: ",
             paste(utils::head(unmatched_sheet, 5), collapse = ", "),
             if (length(unmatched_sheet) > 5) {", ..."} else {""}, call. = FALSE)
   }
-  dropped <- unique(contract_df$sample[!keep])
+  dropped <- unique(contract_df$series_id[!keep])
   if (length(dropped)) {
-    message("  series table excluded ", length(dropped), " sample(s) found on disk: ",
+    message("  series table excluded ", length(dropped), " series found on disk: ",
             paste(utils::head(dropped, 5), collapse = ", "),
             if (length(dropped) > 5) {", ..."} else {""})
   }
   if (!any(keep)) {
-    stop("The series table and --input have no sample in common. ",
-         "On disk: ", paste(utils::head(unique(contract_df$sample), 3), collapse = ", "),
+    stop("The series table and --input have no series in common. ",
+         "On disk: ", paste(utils::head(unique(contract_df$series_id), 3), collapse = ", "),
          "; in sheet: ", paste(utils::head(wanted, 3), collapse = ", "), call. = FALSE)
   }
   return(contract_df[keep, , drop = FALSE])

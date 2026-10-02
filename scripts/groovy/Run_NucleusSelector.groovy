@@ -1,9 +1,8 @@
 #@ ImagePlus imp
 #@ String  (visibility=MESSAGE, value="Output specification", required=false) msg0
 #@ File    (label="Output directory", style="directory") outdir
-#@ String  (label="Output prefix", value="") outPrefix
+#@ String  (persist=false, label="Series id (blank = the image title)", description="Names every output file, and fills the name column of the outline tables. Blank takes it from the image title, without the file part Bio-Formats puts before a series name. Never remembered: an id names one image.", value="") seriesId
 #@ String  (visibility=MESSAGE, value="Image information", required=false) msg1
-#@ String  (label="Position token in slice label (blank = use title)", value="Position") positionPattern
 #@ String  (label="Z-slices to analyse (blank = all; e.g. 1-20,35-40)", value="") zSpec
 #@ Integer (label="DNA/DAPI channel", value=1) dnaCh
 #@ String  (label="Channels to measure (comma separated)", value="1,2,3") channelsCsv
@@ -42,12 +41,14 @@
 // Nucleus + nucleolus detection, export and measurement, for the ACTIVE image.
 //
 // This dialog REMEMBERS what you last set, deliberately -- it is the tuning
-// entry point and a human is looking at it. The three threshold fields are the
-// exception and reset every run. A manual threshold is a raw pixel value, which
-// is meaningless on a different bit depth or exposure, and a per-slice
-// histogram is the risky setting of the two; neither should be inherited by the
-// next image because it was tried once on this one. They are still written to
-// _config.txt, so tuning here and feeding that config to the batch is
+// entry point and a human is looking at it. The series id is the exception:
+// it names ONE image, so inheriting it would put the next image's results
+// under this one's name -- overwriting them, in the same output directory.
+// Two threshold fields reset every run as well. A manual threshold is a raw
+// pixel value, which is meaningless on a different bit depth or exposure, and a
+// per-slice histogram is the risky setting of the two; neither should be
+// inherited by the next image because it was tried once on this one. All three
+// are still written to _config.txt, so tuning here and feeding that config to the batch is
 // unaffected -- persist=false means "do not remember into the next DIALOG", not
 // "do not record".
 //
@@ -84,8 +85,7 @@ def NP = new GroovyClassLoader(this.class.classLoader)
 // config file produced by a run can be fed straight back in later.
 def res = NP.load(LIBDIR).run(imp, outdir, [
     script_name            : "Run_NucleusSelector.groovy",
-    output_prefix          : outPrefix,
-    position_pattern       : positionPattern,
+    series_id              : seriesId,
     z_spec                 : zSpec,
     dna_channel            : dnaCh,
     channels_measured      : channelsCsv,

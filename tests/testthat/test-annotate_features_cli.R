@@ -168,7 +168,7 @@ test_that("annotate_features_cli finds 6 nuclei and 7 nucleoli on the fixture", 
   expect_identical(nrow(res), 97L)
   expect_setequal(colnames(res),
                   c("roi", "z", "area", "is_bridge", "feature_id", "feature_type",
-                    "sample", "run_id"))
+                    "series_id", "run_id"))
 })
 
 test_that("annotate_features_cli writes a QC plot only when asked", {
@@ -234,5 +234,5 @@ test_that("annotate_features_cli stops when the sheet excludes everything", {
   expect_error(suppressWarnings(suppressMessages(annotate_features_cli(c(
     "--input", fixture_file("nucleus", "outline"),
     "--outdir", withr::local_tempdir(), "--series_sheet", sheet)))),
-    "no sample in common")
+    "no series in common")
 })

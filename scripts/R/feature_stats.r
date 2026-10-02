@@ -73,7 +73,7 @@ aggregate_roi_stat <- function(value, weight, stat = "wmean"){
 #'
 #' Only rows naming a real feature are summarised -- `invalid_*` and `failed_*`
 #' are counted separately and reported, never silently folded in, because a
-#' sample whose objects mostly failed a filter must not look like a sample that
+#' series whose objects mostly failed a filter must not look like a series that
 #' genuinely has few objects.
 #'
 #' @param st_df        per-ROI table from annotate_features_cli.r (sf or plain)
@@ -86,12 +86,12 @@ aggregate_roi_stat <- function(value, weight, stat = "wmean"){
 #'                     outlines (microns). When given, adds a `volume` column.
 #'                     This function is told the value; it does not go looking.
 #'                     `feature_stat_cli.r` is what reads `pixel_depth` out of
-#'                     each sample's `_config.txt` and passes it here, since
+#'                     each series' `_config.txt` and passes it here, since
 #'                     locating that file is a property of the run layout and
 #'                     not of the statistics. Results produced before 0.2.0 have
 #'                     no `pixel_depth` recorded, and single-plane images
 #'                     deliberately leave it blank.
-#' @return tibble, one row per sample + feature_id
+#' @return tibble, one row per series_id + feature_id
 summarise_feature_stats <- function(st_df, res = NULL, channel_stat = "wmean",
                                     meta_cols = character(0), z_step = NULL){
 
@@ -101,7 +101,7 @@ summarise_feature_stats <- function(st_df, res = NULL, channel_stat = "wmean",
   }
   tab <- tibble::as_tibble(tab)
 
-  needed <- c("roi", "z", "area", "feature_id", "feature_type", "sample")
+  needed <- c("roi", "z", "area", "feature_id", "feature_type", "series_id")
   absent <- setdiff(needed, colnames(tab))
   if(length(absent) > 0){
     stop("Feature table is missing column(s): ", paste(absent, collapse = ", "),
@@ -153,7 +153,7 @@ summarise_feature_stats <- function(st_df, res = NULL, channel_stat = "wmean",
   }
   valid$is_bridge <- !is.na(valid$is_bridge) & valid$is_bridge
 
-  geo_src <- unique(valid[, c("sample", "feature_type", "feature_id", "roi", "z", "area", "is_bridge")])
+  geo_src <- unique(valid[, c("series_id", "feature_type", "feature_id", "roi", "z", "area", "is_bridge")])
 
   # Bridge ROIs are counted, then set aside. Every statistic below describes the
   # ROIs that are evidence for the object, which is what define_feature_group()
@@ -161,7 +161,7 @@ summarise_feature_stats <- function(st_df, res = NULL, channel_stat = "wmean",
   # bridges, a threshold read off these plots would not mean the same thing as
   # the same number passed to the filter.
   bridge_n <- geo_src %>%
-    dplyr::group_by(sample, feature_type, feature_id) %>%
+    dplyr::group_by(series_id, feature_type, feature_id) %>%
     dplyr::summarise(n_bridge  = sum(is_bridge),
                      n_roi_all = dplyr::n(),
                      n_z_all   = dplyr::n_distinct(z),
@@ -181,7 +181,7 @@ summarise_feature_stats <- function(st_df, res = NULL, channel_stat = "wmean",
 
   geo_src <- geo_src[!geo_src$is_bridge, , drop = FALSE]
   geo <- geo_src %>%
-    dplyr::group_by(sample, feature_type, feature_id) %>%
+    dplyr::group_by(series_id, feature_type, feature_id) %>%
     dplyr::summarise(
       n_roi     = dplyr::n(),
       n_z       = dplyr::n_distinct(z),
@@ -203,7 +203,7 @@ summarise_feature_stats <- function(st_df, res = NULL, channel_stat = "wmean",
   # visible side by side rather than the reader having to infer one from the
   # other. A high fraction says the count is resting on ROIs a filter rejected
   # -- evidence about the filter, not a result to trust.
-  geo <- dplyr::left_join(geo, bridge_n, by = c("sample", "feature_type", "feature_id"))
+  geo <- dplyr::left_join(geo, bridge_n, by = c("series_id", "feature_type", "feature_id"))
   geo$n_bridge  <- ifelse(is.na(geo$n_bridge), 0L, as.integer(geo$n_bridge))
   geo$n_roi_all <- ifelse(is.na(geo$n_roi_all), geo$n_roi, as.integer(geo$n_roi_all))
   geo$n_z_all   <- ifelse(is.na(geo$n_z_all),   geo$n_z,   as.integer(geo$n_z_all))
@@ -234,38 +234,38 @@ summarise_feature_stats <- function(st_df, res = NULL, channel_stat = "wmean",
 
   # --- shape ----------------------------------------------------------------------
   if("circ" %in% colnames(valid)){
-    circ <- unique(valid[, c("sample", "feature_id", "roi", "area", "circ")]) %>%
-      dplyr::group_by(sample, feature_id) %>%
+    circ <- unique(valid[, c("series_id", "feature_id", "roi", "area", "circ")]) %>%
+      dplyr::group_by(series_id, feature_id) %>%
       dplyr::summarise(circ_med = stats::median(circ, na.rm = TRUE),
                        circ_min = suppressWarnings(min(circ, na.rm = TRUE)),
                        .groups = "drop")
     circ$circ_min[!is.finite(circ$circ_min)] <- NA_real_
-    geo <- dplyr::left_join(geo, circ, by = c("sample", "feature_id"))
+    geo <- dplyr::left_join(geo, circ, by = c("series_id", "feature_id"))
   }
 
   # --- per-channel signal ----------------------------------------------------------
   if("ch" %in% colnames(valid)){
     sig <- valid %>%
       dplyr::filter(!is.na(ch)) %>%
-      dplyr::group_by(sample, feature_id, ch) %>%
+      dplyr::group_by(series_id, feature_id, ch) %>%
       dplyr::summarise(
         signal = aggregate_roi_stat(mean, area, channel_stat),
         .groups = "drop") %>%
       dplyr::mutate(ch = paste0("ch", ch, "_signal")) %>%
       tidyr::pivot_wider(names_from = ch, values_from = signal)
-    geo <- dplyr::left_join(geo, sig, by = c("sample", "feature_id"))
+    geo <- dplyr::left_join(geo, sig, by = c("series_id", "feature_id"))
   }
 
   # --- metadata ---------------------------------------------------------------------
   meta_cols <- intersect(meta_cols, colnames(tab))
   if(length(meta_cols) > 0){
-    meta <- unique(valid[, c("sample", "feature_id", meta_cols), drop = FALSE])
+    meta <- unique(valid[, c("series_id", "feature_id", meta_cols), drop = FALSE])
     if(nrow(meta) > nrow(geo)){
       warning("Metadata column(s) vary within a feature; taking the first value",
               call. = FALSE)
-      meta <- meta[!duplicated(meta[, c("sample", "feature_id")]), , drop = FALSE]
+      meta <- meta[!duplicated(meta[, c("series_id", "feature_id")]), , drop = FALSE]
     }
-    geo <- dplyr::left_join(geo, meta, by = c("sample", "feature_id"))
+    geo <- dplyr::left_join(geo, meta, by = c("series_id", "feature_id"))
   }
 
   attr(geo, "channel_stat") <- channel_stat
@@ -273,7 +273,7 @@ summarise_feature_stats <- function(st_df, res = NULL, channel_stat = "wmean",
 }
 
 
-#' Counts of what did NOT become a feature, per sample
+#' Counts of what did NOT become a feature, per series
 #'
 #' Reported alongside the stats so that a thin distribution can be read as
 #' either "few objects here" or "most of them failed a filter".
@@ -291,7 +291,7 @@ feature_reject_counts <- function(st_df){
     startsWith(tab$feature_id, "failed_")                             ~ "failed",
     TRUE                                                              ~ "other")
   out <- tab %>%
-    dplyr::group_by(sample, feature_type, bucket) %>%
+    dplyr::group_by(series_id, feature_type, bucket) %>%
     dplyr::summarise(n_roi = dplyr::n(), .groups = "drop")
   return(out)
 }

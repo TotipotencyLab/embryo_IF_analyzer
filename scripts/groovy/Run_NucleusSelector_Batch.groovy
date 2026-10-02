@@ -24,10 +24,9 @@
 //     "sheetFile='/p/series.tsv',outdir='/p/out',imageRoot='/p/raw',configFile='/p/nucleus_config.txt'"
 //
 // There is no output-prefix parameter. The series table's `series_id` column
-// names every series' output and is authoritative -- BatchRunner passes it as
-// `basename`, which wins over `output_prefix` outright. A dialog field for it
-// existed and could never take effect; it was removed rather than left to look
-// as though it did.
+// names every series' output, and nothing is put in front of it: the file names
+// and the `name` column inside the outline tables are the same string, which
+// is how the R side finds a `_config.txt` from a name it read out of a table.
 
 import ij.IJ
 
@@ -79,6 +78,9 @@ params.open_mode = openMode
 
 if (configFile != null && configFile.isFile()) {
     IJ.log("config: " + configFile.getName() + " set " + fromFile.size() + " parameter(s)")
+    RC.retiredIn(RC.read(configFile)).each { k ->
+        IJ.log("config: " + k + " skipped, retired in " + RC.RETIRED_KEYS[k])
+    }
 } else {
     IJ.log("config: none given, using defaults")
 }

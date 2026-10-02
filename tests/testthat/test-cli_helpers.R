@@ -144,12 +144,12 @@ test_that(".cli_resolve_input_path explains a comma-split path", {
 
 # --- .cli_parse_contract ------------------------------------------------------
 
-test_that(".cli_parse_contract splits sample and feature", {
+test_that(".cli_parse_contract splits series id and feature", {
   got <- .cli_parse_contract(
     c("/x/GRV_Position010_nucleus_outline.txt",
       "/x/GRV_Position010_nucleolus_outline.txt"),
     c("nucleus", "nucleolus"))
-  expect_identical(got$sample, rep("GRV_Position010", 2))
+  expect_identical(got$series_id, rep("GRV_Position010", 2))
   expect_identical(sort(got$feature), c("nucleolus", "nucleus"))
 })
 
@@ -166,11 +166,11 @@ test_that(".cli_parse_contract errors when nothing names a requested feature", {
     "name a requested feature")
 })
 
-test_that(".cli_parse_contract keeps a sample name containing the feature word", {
-  # "nucleus_test" as a sample prefix must not confuse the split; the regex is
+test_that(".cli_parse_contract keeps a series id containing the feature word", {
+  # "nucleus_test" as a series id must not confuse the split; the regex is
   # anchored on the LAST _<feature>_outline.txt.
   got <- .cli_parse_contract("/x/nucleus_test_nucleus_outline.txt", "nucleus")
-  expect_identical(got$sample, "nucleus_test")
+  expect_identical(got$series_id, "nucleus_test")
   expect_identical(got$feature, "nucleus")
 })
 
@@ -206,8 +206,22 @@ test_that("a sheet from before v0.7.0 is named as one, not as a missing column",
   expect_identical(nrow(.cli_read_series_sheet(old, id_column = "prefix")), 2L)
 })
 
+test_that("an R output from before v0.7.0 is named as one", {
+  # `sample` became `series_id` in every R output. Read unguarded, an old
+  # _features.rds fails far from the cause, or joins on nothing.
+  old <- data.frame(sample = "S1", feature_id = "nucleus_1")
+  expect_error(.cli_require_series_id(old, "/x/S1_features.rds"), "written before v0.7.0")
+  expect_error(.cli_require_series_id(old, "/x/S1_features.rds"), "S1_features.rds")
+  new <- data.frame(series_id = "S1", feature_id = "nucleus_1")
+  expect_identical(.cli_require_series_id(new, "p"), new)
+  # Neither column: not this check's business -- the caller's own column check
+  # names what is missing.
+  other <- data.frame(a = 1)
+  expect_identical(.cli_require_series_id(other, "p"), other)
+})
+
 test_that(".cli_apply_series_sheet filters inputs and reports both mismatches", {
-  contract <- data.frame(path = c("a", "b"), sample = c("S1", "S2"),
+  contract <- data.frame(path = c("a", "b"), series_id = c("S1", "S2"),
                          feature = "nucleus", stringsAsFactors = FALSE)
   sheet <- data.frame(series_id = c("S1", "S3"), stringsAsFactors = FALSE)
 
@@ -216,15 +230,15 @@ test_that(".cli_apply_series_sheet filters inputs and reports both mismatches", 
   expect_warning(suppressMessages(.cli_apply_series_sheet(contract, sheet)), "S3")
 
   got <- suppressWarnings(suppressMessages(.cli_apply_series_sheet(contract, sheet)))
-  expect_identical(got$sample, "S1")   # S2 dropped: not in the sheet
+  expect_identical(got$series_id, "S1")   # S2 dropped: not in the sheet
 })
 
 test_that(".cli_apply_series_sheet errors when nothing overlaps", {
-  contract <- data.frame(path = "a", sample = "S1", feature = "nucleus",
+  contract <- data.frame(path = "a", series_id = "S1", feature = "nucleus",
                          stringsAsFactors = FALSE)
   sheet <- data.frame(series_id = "OTHER", stringsAsFactors = FALSE)
   expect_error(suppressWarnings(suppressMessages(
-    .cli_apply_series_sheet(contract, sheet))), "no sample in common")
+    .cli_apply_series_sheet(contract, sheet))), "no series in common")
 })
 
 # --- include ------------------------------------------------------------------

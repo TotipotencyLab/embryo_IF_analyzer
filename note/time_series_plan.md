@@ -1,7 +1,7 @@
 # Implementation plan: time-series support
 
-**Status: `luxendo` done (v0.6.0, amended after it — §4); `vocab` next; nothing
-after it implemented.** The design was revised on 2026-10-02 (**a series is a
+**Status: `luxendo` done (v0.6.0, amended after it — §4); `vocab` built (both
+PRs, §4), released as v0.7.0 next; nothing after it implemented.** The design was revised on 2026-10-02 (**a series is a
 whole position, time included**; §3.1, §6.17) and the sections below say so
 where it changed.
 Delete this file when all milestones land — but migrate the surviving decisions
@@ -659,34 +659,63 @@ only, outputs in scratch:
   `Make_LuxendoTiff frames=0` found its sources, wrote and verified
   `my_embryo_A_t0000.tif`, skipped the 13 excluded series.
 
-#### PR 2 — `vocab-output_identity`: what the analysis writes
+#### PR 2 — `vocab-output_identity`: what the analysis writes  ✅ done
 
-- [ ] 🔒 **`Run_NucleusSelector` gains a `series_id` source control**, because
-      the interactive path has no series table to read an id from. One `String`
-      field whose meaning depends on the mode:
+- [x] 🔒 **One `Series id` field** in `Run_NucleusSelector` (and `Run_Overview`,
+      so its PNG names keep matching), `persist=false`, blank by default. Blank
+      takes the id from the image title (`RoiExport.seriesIdFromTitle`); typed,
+      it is used as given — **refused, not rewritten**, if `sanitize()` would
+      change it (`checkSeriesId`), which the batch now also applies to a
+      hand-edited sheet id, failing that row only. Not a `PARAM_TYPES` key — a
+      config setting it would name every image of a batch alike — and written
+      as the `series_id` provenance field, replacing `output_basename`.
+      **Revised at implementation** from the derive/explicit mode planned here:
+      with one field holding either a pattern or an id, persistence has no safe
+      setting (remembered, an explicit id mislabels the next image; reset, so
+      does the pattern), and a mode `choices` list is not validated headless.
+      A pre-filled default as Fiji's Duplicate dialog has is not possible in a
+      `#@` script (no initializer for scripts in SciJava 2.99).
+- [x] **`output_prefix` retired, not just taken out of `name`**, and with it
+      `position_pattern`. Found at implementation: the R side finds
+      `<name>_config.txt` and `<name>_<roi>_res.txt` from the outline table's
+      `name`, so a prefix kept in the file names but not in `name` would hide
+      both — no `volume`, no signal, a warning only. The file stem and `name`
+      are now one string everywhere. Both keys are `RunConfig.RETIRED_KEYS`:
+      skipped with a log line rather than refused, because every pre-v0.7.0
+      `_config.txt` carries `position_pattern`.
+- [x] R outputs: `sample` → `series_id` in the features `.rds`/`.tsv`,
+      `feature_stats.tsv`, `feature_rejects.tsv`, `feature_counts.tsv`, and
+      `n_sample` → `n_series` in the counts summary; the `--group_by`,
+      `--color_by` and `--facet` defaults that named it; internal identifiers.
+      An R output written before v0.7.0 is refused, naming the version
+      (`.cli_require_series_id`), by every CLI that reads one.
+- [x] ~~Regenerate the fixture~~ — **kept**, deliberately. With the prefix
+      retired, `GRV_Position010` is simply a typed id, so nothing in it changes
+      meaning. Its v0.2.0 `_config.txt` carries `position_pattern`, which now
+      exercises the retired-key path. `note/data_formats.md` §2, §3, §5.
 
-      | mode | the String means | behaviour |
-      |---|---|---|
-      | `derive` | a pattern to find in the slice label or title | today's `resolveImageId()`, minus the `output_prefix` |
-      | `explicit` | the `series_id` itself | used verbatim |
-
-      ⚠️ **Validate the mode in code, not in the dialog.** A `#@ String` with
-      `choices={...}` is *not* validated on the command line — SciJava passes any
-      string straight through, as `BatchRunner.OPEN_MODES` already documents.
-      ⚠️ **`explicit` must not persist.** It names one image, so inheriting it
-      into the next run would silently mislabel that run's output — the same
-      category as `nucleus_threshold_range`, and the same treatment.
-- [ ] The interactive path stops writing `output_prefix` into `name`.
-- [ ] R outputs: the `sample` column → `series_id` in the feature tables,
-      counts, statistics and `montage_index.tsv`, with the CLI flags that name it.
-- [ ] Regenerate the fixture deliberately, and say so in the commit;
-      `note/data_formats.md` §2, §3 and §5.
-
-⚠️ **This changes an output file.**
-
-**Verification.** Re-run the reference and assert the old and new outputs are
-identical **after dropping `name`**, and that `name` differs only by the removed
-`output_prefix`. That fails if anything else moved.
+**Verification, as carried out.** R 4.6.1: 973 passed, 0 failed (main 964).
+Groovy: `Test_RoiExport` 33, `Test_RunConfig` 105, `Test_NucleusPipeline` 66,
+`Test_BatchRunner` 135, the rest unchanged — 0 failed. Real image, headless,
+outputs in scratch:
+- the fixture TIFF through `main` (`output_prefix=GRV_`, `position_pattern=Position`)
+  and this branch (`series_id=GRV_Position010`), the fixture's own config: all
+  13 files the same names; outlines, measurements and the six PNGs
+  byte-identical; ROI zips identical in entry names and bytes (only the zip
+  timestamps differ); `_config.txt` differs in `timestamp`, `script`, and
+  `output_basename`+`position_pattern` → `series_id`. Nothing else moved.
+- the same run with a blank id: named
+  `20241216_dkD_DAPI_EGFP_Klf5_Nr5a2_forrep3.lif-Position010`, and identical
+  to the above in every table apart from the id.
+- the tracked fixture, made interactively in v0.2.0, against today's headless
+  run: outlines byte-identical; `_res.txt` identical once the `-1` the
+  duplicated window added to the title in `Label` is removed.
+- the R CLIs (annotate → feature_stat → count with a sheet and `--group_by`) on
+  the fixture under `main` and this branch: every table identical in every row;
+  the headers differ by `sample` → `series_id` and `n_sample` → `n_series`
+  only; the `.rds` equal in data and geometry.
+- R on this branch's own Fiji output, both ids: `volume` present (found
+  `<series_id>_config.txt`) and `ch<N>_signal` present (found the `_res.txt`).
 
 **Then release v0.7.0**, with release notes saying old sheets stop loading and
 are regenerated with `Make_SeriesSheet` / `Make_LuxendoSheets`.
@@ -1259,8 +1288,8 @@ Note the underlying problem `vocab` fixes is not naming: **one column holds two
 compositions today.** Batch passes the sheet's `prefix` as `basename`, so `name`
 = the per-series id with no `output_prefix`; interactive falls back to
 `(output_prefix ?: "") + resolveImageId(...)`
-([NucleusPipeline.groovy:212](../scripts/groovy/NucleusPipeline.groovy)). The
-fixture is from the interactive path. The docs disagree too: `CLAUDE.md`'s
+(`NucleusPipeline.groovy`, before v0.7.0). The fixture is from the interactive
+path. Settled in `vocab` PR 2 by retiring `output_prefix`: one id, one stem. The docs disagree too: `CLAUDE.md`'s
 contract writes `<prefix><image id>_…` while `note/data_formats.md` says the
 `name` column *is* the image id.
 

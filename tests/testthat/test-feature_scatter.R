@@ -9,7 +9,7 @@ source_cli("cli_helpers.r")
 fake_stats <- function(n = 12) {
   set.seed(4)
   data.frame(
-    sample       = rep(c("A", "B"), length.out = n),
+    series_id       = rep(c("A", "B"), length.out = n),
     feature_type = "nucleus",
     feature_id   = paste0("nucleus_", seq_len(n)),
     area_med     = seq(100, 1200, length.out = n),
@@ -182,7 +182,7 @@ test_that("a non-numeric axis is refused and points at the right tool", {
   skip_if_no_pkg("ggplot2")
   source_r_scripts("plot_feature_scatter.r")
   suppressPackageStartupMessages(library(ggplot2))
-  expect_error(plot_feature_scatter(fake_stats(), "sample", "area_med"),
+  expect_error(plot_feature_scatter(fake_stats(), "series_id", "area_med"),
                "feature_stat_cli")
 })
 
@@ -226,8 +226,8 @@ test_that("the legend is dropped when it would be unreadable, and kept when not"
   suppressPackageStartupMessages(library(ggplot2))
   legend_of <- function(p) as.character(p$theme$legend.position)
 
-  few <- fake_stats(12)                       # 2 samples
-  many <- data.frame(sample = rep(sprintf("S%02d", 1:20), each = 2),
+  few <- fake_stats(12)                       # 2 series
+  many <- data.frame(series_id = rep(sprintf("S%02d", 1:20), each = 2),
                      area_med = seq(100, 900, length.out = 40),
                      ch1_signal = seq(1, 20, length.out = 40),
                      stringsAsFactors = FALSE)
@@ -235,17 +235,17 @@ test_that("the legend is dropped when it would be unreadable, and kept when not"
   # Kept: this is the half that makes the others meaningful. Without it,
   # "dropped" could pass because the legend was never there.
   expect_identical(legend_of(plot_feature_scatter(few, "area_med", "ch1_signal",
-                                                  color_by = "sample")), "right")
+                                                  color_by = "series_id")), "right")
   # Dropped: past legend_max the key is unreadable and squeezes the panel.
   expect_identical(legend_of(plot_feature_scatter(many, "area_med", "ch1_signal",
-                                                  color_by = "sample")), "none")
+                                                  color_by = "series_id")), "none")
   # Dropped: the facet strip already names it.
   expect_identical(legend_of(plot_feature_scatter(few, "area_med", "ch1_signal",
-                                                  color_by = "sample",
-                                                  facet_by = "sample")), "none")
+                                                  color_by = "series_id",
+                                                  facet_by = "series_id")), "none")
   # The threshold is a parameter, not a hardcoded 12.
   expect_identical(legend_of(plot_feature_scatter(few, "area_med", "ch1_signal",
-                                                  color_by = "sample",
+                                                  color_by = "series_id",
                                                   legend_max = 1)), "none")
 })
 
@@ -254,11 +254,11 @@ test_that("dropping the legend is announced on the plot, not silent", {
   source_r_scripts("plot_feature_scatter.r")
   suppressPackageStartupMessages(library(ggplot2))
   p <- plot_feature_scatter(fake_stats(12), "area_med", "ch1_signal",
-                            color_by = "sample", legend_max = 1)
+                            color_by = "series_id", legend_max = 1)
   expect_match(p$labels$subtitle, "legend omitted")
   # ...but not when the facet strip makes it merely redundant.
   q <- plot_feature_scatter(fake_stats(12), "area_med", "ch1_signal",
-                            color_by = "sample", facet_by = "sample")
+                            color_by = "series_id", facet_by = "series_id")
   expect_false(grepl("legend omitted", q$labels$subtitle))
 })
 
@@ -267,10 +267,10 @@ test_that("the colour mapping survives even when the key is dropped", {
   source_r_scripts("plot_feature_scatter.r")
   suppressPackageStartupMessages(library(ggplot2))
   p <- plot_feature_scatter(fake_stats(12), "area_med", "ch1_signal",
-                            color_by = "sample", legend_max = 1)
+                            color_by = "series_id", legend_max = 1)
   b <- ggplot2::ggplot_build(p)
   geoms <- vapply(p$layers, function(l) class(l$geom)[1], character(1))
-  # Two samples in fake_stats(), so two colours should still be in play.
+  # Two series in fake_stats(), so two colours should still be in play.
   expect_gt(length(unique(b$data[[which(geoms == "GeomPoint")]]$colour)), 1)
 })
 
@@ -280,7 +280,7 @@ test_that("facet_keep subsets the faceted page and leaves the pooled one whole",
   skip_if_no_pkg("ggplot2")
   source_r_scripts("plot_feature_scatter.r")
   suppressPackageStartupMessages(library(ggplot2))
-  st <- fake_stats(12)                        # samples A and B
+  st <- fake_stats(12)                        # series A and B
   specs <- .cli_parse_plot_specs("area_med:ch1_signal")
   pl <- plot_feature_scatter_list(st, specs, facet = "both", facet_keep = "A")
   expect_length(pl, 2)
@@ -290,9 +290,9 @@ test_that("facet_keep subsets the faceted page and leaves the pooled one whole",
     geoms <- vapply(p$layers, function(l) class(l$geom)[1], character(1))
     nrow(b$data[[which(geoms == "GeomPoint")]])
   }
-  # Pooled keeps every feature; faceted keeps only sample A's.
+  # Pooled keeps every feature; faceted keeps only series A's.
   expect_identical(n_points(pl[[1]]), nrow(st))
-  expect_identical(n_points(pl[[2]]), sum(st$sample == "A"))
+  expect_identical(n_points(pl[[2]]), sum(st$series_id == "A"))
 })
 
 test_that("facet_keep naming something absent warns", {
@@ -303,7 +303,7 @@ test_that("facet_keep naming something absent warns", {
   expect_warning(
     plot_feature_scatter_list(fake_stats(12), specs, facet = "both",
                               facet_keep = c("A", "ZZZ")),
-    "not in sample")
+    "not in series_id")
 })
 
 test_that("facet_keep matching nothing is an error, not an empty page", {
@@ -321,7 +321,7 @@ test_that("too many facets skips that page loudly and keeps the pooled one", {
   skip_if_no_pkg("ggplot2")
   source_r_scripts("plot_feature_scatter.r")
   suppressPackageStartupMessages(library(ggplot2))
-  many <- data.frame(sample = rep(sprintf("S%02d", 1:20), each = 2),
+  many <- data.frame(series_id = rep(sprintf("S%02d", 1:20), each = 2),
                      area_med = seq(100, 900, length.out = 40),
                      ch1_signal = seq(1, 20, length.out = 40),
                      stringsAsFactors = FALSE)
@@ -362,7 +362,7 @@ test_that("facet 'both' gives a pooled page and a faceted one per pair", {
   specs <- .cli_parse_plot_specs(c("area_med:ch1_signal", "circ_med:ch1_signal"))
   expect_length(plot_feature_scatter_list(fake_stats(), specs, facet = "both"), 4)
   expect_length(plot_feature_scatter_list(fake_stats(), specs, facet = "none"), 2)
-  expect_length(plot_feature_scatter_list(fake_stats(), specs, facet = "sample"), 2)
+  expect_length(plot_feature_scatter_list(fake_stats(), specs, facet = "series_id"), 2)
 })
 
 test_that("faceting on a column that is absent names it", {
@@ -384,7 +384,7 @@ test_that("the available-stats table reports emptiness, which is the useful part
   expect_true("ch9_signal" %in% d$column)
   expect_identical(d$non_na[d$column == "ch9_signal"], paste0("0/", nrow(st)))
   expect_identical(d$range[d$column == "ch9_signal"], "(all NA)")
-  expect_identical(d$type[d$column == "sample"], "chr")
+  expect_identical(d$type[d$column == "series_id"], "chr")
 })
 
 # --- the CLI --------------------------------------------------------------------------
@@ -507,7 +507,7 @@ test_that("one glob covers volume and area_sum, the same quantity in two units",
 
 test_that("a logged axis says so in its label", {
   skip_if_no_pkg("ggplot2")
-  d <- data.frame(sample = rep("S1", 6),
+  d <- data.frame(series_id = rep("S1", 6),
                   feature_type = "nucleus",
                   feature_id = paste0("nucleus_", 1:6),
                   area_sum = c(100, 300, 900, 2700, 8100, 24300),

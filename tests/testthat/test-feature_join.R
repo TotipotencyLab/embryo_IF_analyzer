@@ -1,7 +1,7 @@
 # run_id and the join it protects.
 #
 # The failure this exists to stop is a join that SUCCEEDS: feature_id is
-# sequential per image, so two annotate runs over the same images share sample
+# sequential per image, so two annotate runs over the same images share series_id
 # names and share nucleus_1, nucleus_2 ... Joining one run's per-feature table
 # onto the other matches at ~100% and attaches every value to the wrong object.
 # A match-rate check reads perfect in exactly that case, which is why the id
@@ -9,7 +9,7 @@
 
 .ann <- function(run_id = "aaaaaaaaaa", n = 3) {
   data.frame(
-    sample     = "S1",
+    series_id     = "S1",
     feature_id = rep(paste0("nucleus_", seq_len(n)), each = 2),
     roi        = paste0("nucleus_", sprintf("%04d", seq_len(2 * n))),
     z          = rep(1:2, n),
@@ -19,7 +19,7 @@
 
 .stats <- function(run_id = "aaaaaaaaaa", n = 3, class = "big") {
   data.frame(
-    sample     = "S1",
+    series_id     = "S1",
     feature_id = paste0("nucleus_", seq_len(n)),
     class      = class,
     area_med   = seq_len(n) * 100,

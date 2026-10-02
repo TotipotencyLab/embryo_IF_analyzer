@@ -150,7 +150,7 @@ plot_feature_scatter <- function(stats, x, y, id = NULL, color_by = NULL,
   p <- p + ggplot2::geom_point(size = 1.6, alpha = 0.85)
 
   if(smooth){
-    # lm, not loess: per-sample n here is single digits, and a loess through
+    # lm, not loess: per-series n here is single digits, and a loess through
     # three points is noise with a confidence ribbon drawn around it.
     p <- p + ggplot2::geom_smooth(method = "lm", formula = y ~ x, se = TRUE,
                                   colour = "steelblue", linewidth = 0.5,
@@ -183,7 +183,7 @@ plot_feature_scatter <- function(stats, x, y, id = NULL, color_by = NULL,
   #   - On a faceted panel coloured by the facet column, the strip above each
   #     panel already says the name; the legend just repeats it.
   #   - Past a dozen or so levels the key is unreadable AND it eats the figure:
-  #     ggplot shrinks the panel to fit the legend, so fifty samples leave a
+  #     ggplot shrinks the panel to fit the legend, so fifty series leave a
   #     sliver of actual chart. The colours still carry grouping structure, so
   #     the mapping stays and only the key goes.
   #
@@ -286,7 +286,7 @@ plot_feature_scatter <- function(stats, x, y, id = NULL, color_by = NULL,
 #' @return named list of ggplot
 plot_feature_scatter_list <- function(stats, specs, facet = "both",
                                       facet_keep = NULL, facet_max = 16, ...){
-  facet_col <- if(facet %in% c("none", "both")){ "sample" }else{ facet }
+  facet_col <- if(facet %in% c("none", "both")){ "series_id" }else{ facet }
   want_pooled <- facet %in% c("none", "both")
   want_facet  <- facet != "none"
 

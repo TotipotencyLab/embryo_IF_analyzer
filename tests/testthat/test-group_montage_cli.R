@@ -391,7 +391,7 @@ test_that("the cell is the bounding box of the group, not a square", {
 })
 
 test_that("a grouping column that separates nothing is warned about", {
-  # Every group holding one sample means each montage is a single image under a
+  # Every group holding one series means each montage is a single image under a
   # new name -- and the run otherwise looks exactly like a successful one.
   fx <- gm_fixture()
   expect_warning(
@@ -399,7 +399,7 @@ test_that("a grouping column that separates nothing is warned about", {
       "--series_sheet", fx$sheet, "--group_by", "series_index",
       "--image_dir", fx$img, "--image_suffix", "_overview_ch1.png",
       "--outdir", file.path(fx$dir, "degen"), "--cell_max_px", "150"))),
-    "every sample in its own group")
+    "every series in its own group")
 
   # ...and a MIXTURE is not warned about. This needs a fixture that ACTUALLY
   # holds a singleton beside a real group -- the everyday case, a section that
@@ -426,7 +426,7 @@ test_that("a grouping column that separates nothing is warned about", {
       seen <<- c(seen, conditionMessage(cond))
       invokeRestart("muffleWarning")
     })
-  expect_false(any(grepl("every sample in its own group", seen, fixed = TRUE)))
+  expect_false(any(grepl("every series in its own group", seen, fixed = TRUE)))
   # ...and the fixture did warn about something, so the check above is not
   # passing merely because warnings never arrive here.
   expect_true(any(grepl("not found", seen, fixed = TRUE)))
@@ -543,7 +543,7 @@ test_that("a blank grouping key is refused, not collected into a bucket", {
     "have no 'section_id'")
 })
 
-test_that("two samples resolving to one image is an error", {
+test_that("two series resolving to one image is an error", {
   # It would draw the same picture twice under two names, and a by-eye count
   # would double it.
   fx <- gm_fixture()
@@ -555,7 +555,7 @@ test_that("two samples resolving to one image is an error", {
       "--series_sheet", fx$sheet, "--group_by", "section_id",
       "--image_path_by", "img",
       "--outdir", file.path(fx$dir, "dup")))),
-    "claimed by more than one sample")
+    "claimed by more than one series")
 })
 
 test_that("--image_path_by takes paths from the sheet, and excludes the built form", {
