@@ -286,6 +286,51 @@ check("and these are its pixels",
 def rF = sheet.inspect(new File(outF, sF0.output_path))[0]
 check("one frame on disk", rF.size_t, 1)
 
+println "\n=== choosing time points: all of them in one file (oneFile) ==="
+// The name is the selection, runs compressed, and never the bare series id --
+// that is the blank-frames file, and skipExisting decides by name alone.
+check("a list",                TA.framesBase("S", [21, 2, 11]), "S_t0002_t0011_t0021")
+check("a range",               TA.framesBase("S", [1, 2, 3, 4]), "S_t0001-0004")
+check("runs and points",       TA.framesBase("S", [10, 1, 2, 3]), "S_t0001-0003_t0010")
+check("one frame is frameBase", TA.framesBase("S", [7]), TA.frameBase("S", 7))
+
+// Grouping, on rows alone: three frames, two chosen.
+def fake = []
+[1, 2, 3].each { t -> [1, 2].each { c -> fake << [series_id: "A", t: t, channel: c] } }
+fake << [series_id: "ONE", t: 1, channel: 1]
+def gSplit = TA.groupByOutput(fake, [1, 3], false)
+def gOne   = TA.groupByOutput(fake, [1, 3], true)
+check("split: one output per frame",  gSplit.keySet().toList(), ["A_t0001", "A_t0003", "ONE"])
+check("oneFile: one output, named after what is in it", gOne.keySet().toList(), ["A_t0001_t0003", "ONE"])
+check("...holding both frames, every channel", gOne["A_t0001_t0003"].collect { [it.t, it.channel] },
+      [[1, 1], [1, 2], [3, 1], [3, 2]])
+// Named after what the series HOLDS of the selection, not what was asked for.
+check("a chosen frame the series lacks is not in the name",
+      TA.groupByOutput(fake, [1, 3, 5], true).keySet().toList(), ["A_t0001_t0003", "ONE"])
+check("oneFile without frames changes nothing",
+      TA.groupByOutput(fake, null, true).keySet().toList(), TA.groupByOutput(fake, null, false).keySet().toList())
+
+// Real sources: both frames chosen into one file must be the blank-frames
+// file's pixels exactly -- same planes, same order -- under the selection's name.
+def outO = new File(tmp, "out_onefile")
+def sO = asm.assembleAll(gRows, root, outO, [verify: true, frames: "1-2", oneFile: true]) { }
+check("one output per position", sO.size(), 2)
+check("written and verified", sO.collect { [it.status, it.verified] }.unique(), [["written", "yes"]])
+check("named after the selection",
+      sO.collect { it.output_path }.sort(),
+      gRows.collect { it.series_id }.unique().sort().collect { it + "_t0001-0002.tif" })
+def sO0 = sO.find { it.series_id.contains("pos1") }
+check("two frames in it", sO0.frames, 2)
+check("the frames on disk", sheet.inspect(new File(outO, sO0.output_path))[0].size_t, 2)
+check("its pixels are the gathered pixels",
+      Long.toHexString(crcOf(new File(outO, sO0.output_path))), Long.toHexString(joined))
+def pO = [:]
+new File(outO, sO0.output_path.replace(".tif", "_gather.txt")).eachLine { l ->
+    def q = l.split("\t", 2); if (q.size() == 2) pO[q[0]] = q[1] }
+check("provenance: which time point each frame is", pO.time_points, "1 2")
+check("provenance: every source, keyed by time point",
+      [1, 2].every { t -> (1..2).every { c -> pO["t${t}_channel_${c}_source"]?.endsWith(".lux.h5") } }, true)
+
 // include is the SERIES', so it is looked up by series_id, not by output name.
 def pos2 = gRows.collect { it.series_id }.unique().find { it.contains("pos2") }
 def sInc = asm.assembleAll(gRows, root, new File(tmp, "out_finc"),
