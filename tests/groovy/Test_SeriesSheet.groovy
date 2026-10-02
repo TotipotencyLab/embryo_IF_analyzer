@@ -1,6 +1,6 @@
-// Test_SampleSheet.groovy
+// Test_SeriesSheet.groovy
 //
-// files.tsv -> samples.tsv, on images this test WRITES rather than ships.
+// files.tsv -> series.tsv, on images this test WRITES rather than ships.
 //
 // The fixture is generated, not tracked: a multi-series OME-TIFF is a binary
 // and the thing worth keeping under review is the code that makes it. It is
@@ -10,7 +10,7 @@
 //
 // Run headless from the repo root:
 //
-//   ImageJ-macosx --headless --console --run tests/groovy/Test_SampleSheet.groovy
+//   ImageJ-macosx --headless --console --run tests/groovy/Test_SeriesSheet.groovy
 
 import loci.formats.MetadataTools
 import loci.formats.out.OMETiffWriter
@@ -21,7 +21,7 @@ import ome.xml.model.enums.PixelType
 import ome.xml.model.primitives.PositiveInteger
 
 def LIBDIR = new File("scripts/groovy").getAbsolutePath()
-if (!new File(LIBDIR, "SampleSheet.groovy").exists()) {
+if (!new File(LIBDIR, "SeriesSheet.groovy").exists()) {
     throw new IllegalStateException("run from the repository root; no scripts/groovy at " + LIBDIR)
 }
 
@@ -76,7 +76,7 @@ def imgA = writeMultiSeries(new File(rawDir, "plateA.ome.tif"),
 // exists to solve, and the one a real batch of .lif files always has.
 // Two series under ONE name: a tile scan is many fields of one acquisition, and
 // this is the shape that could not produce a sheet at all before the index was
-// forced into the prefix.
+// forced into the series_id.
 def imgT = writeMultiSeries(new File(rawDir, "tiles.ome.tif"),
     [["O1_1 10x", 16, 16, 1], ["O1_1 10x", 16, 16, 1]], 0.5d, 1.0d)
 
@@ -86,16 +86,16 @@ def imgB = writeMultiSeries(new File(rawDir, "plateB.ome.tif"),
 check("fixture A written",                     imgA.isFile(), true)
 check("fixture B written",                     imgB.isFile(), true)
 
-def SS = new GroovyClassLoader().parseClass(new File(LIBDIR, "SampleSheet.groovy"))
+def SS = new GroovyClassLoader().parseClass(new File(LIBDIR, "SeriesSheet.groovy"))
 def TSV = new GroovyClassLoader().parseClass(new File(LIBDIR, "Tsv.groovy"))
 def sheet = SS.load(LIBDIR)
 
 println ""
 println "=== the schema loads and knows its owners ==="
-check("samples has a prefix column",           sheet.schema.columns("samples").contains("prefix"), true)
-check("prefix is seeded, not machine",         sheet.schema.owner("samples", "prefix"), "seeded")
-check("series_index is machine",               sheet.schema.owner("samples", "series_index"), "machine")
-check("include is seeded",                     sheet.schema.owner("samples", "include"), "seeded")
+check("series has a series_id column",         sheet.schema.columns("series").contains("series_id"), true)
+check("series_id is seeded, not machine",      sheet.schema.owner("series", "series_id"), "seeded")
+check("series_index is machine",               sheet.schema.owner("series", "series_index"), "machine")
+check("include is seeded",                     sheet.schema.owner("series", "include"), "seeded")
 check("path is a files column",                sheet.schema.columns("files").contains("path"), true)
 
 println ""
@@ -108,7 +108,7 @@ check("...and scan is sorted by name",         scanned.collect { it.path },
 check("include defaults on",                   scanned[0].include, "true")
 
 println ""
-println "=== build: one row per series, prefixes unique across files ==="
+println "=== build: one row per series, series_ids unique across files ==="
 def filesTsv = new File(tmp, "files.tsv")
 TSV.write([[path: "plateA.ome.tif", alias: "A", include: "true", condition: "wt"],
            [path: "plateB.ome.tif", alias: "B", include: "false", condition: "ko"]],
@@ -120,11 +120,11 @@ check("checkFiles is quiet on a clean table",  sheet.checkFiles(fileRows, rawDir
 
 def built = sheet.build(fileRows, rawDir, ["condition"])
 check("5 series across the two files",         built.size(), 5)
-check("prefix is alias + index + series",      built[0].prefix, "A_s0000_Series001")
+check("series_id is alias + index + series",   built[0].series_id, "A_s0000_Series001")
 // Same series name, different file -- unique only because of the alias.
-check("the other file's Series001 differs",    built.find { it.path == "plateB.ome.tif" && it.series_index == 0 }.prefix, "B_s0000_Series001")
-check("a space in the name is sanitised",      built[2].prefix, "A_s0002_Image005_Denoised")
-check("no prefix collision",                   errOf { sheet.checkPrefixes(built) }, null)
+check("the other file's Series001 differs",    built.find { it.path == "plateB.ome.tif" && it.series_index == 0 }.series_id, "B_s0000_Series001")
+check("a space in the name is sanitised",      built[2].series_id, "A_s0002_Image005_Denoised")
+check("no series_id collision",                errOf { sheet.checkIds(built) }, null)
 
 println ""
 println "=== the machine columns are the file's own facts ==="
@@ -159,38 +159,38 @@ check("a repeated alias is fatal",             errOf { sheet.checkFiles(dupAlias
 // the index sits between them, but still reachable with an alias that ends the
 // way an index begins -- which is why the check runs on the composed string and
 // not on the parts.
-def collide = [[prefix: sheet.composePrefix("A", 0, "s0000_B"), path: "p", series_index: 0, series_name: "s0000_B"],
-               [prefix: sheet.composePrefix("A_s0000", 0, "B"), path: "q", series_index: 0, series_name: "B"]]
-check("the two compose to the same prefix",    collide[0].prefix, collide[1].prefix)
-check("...and that is fatal",                  errOf { sheet.checkPrefixes(collide) }?.contains("not unique"), true)
-check("duplicatePrefixes names the offender",  sheet.duplicatePrefixes(collide).keySet().toList(), [collide[0].prefix])
-check("...and is quiet on a clean table",      sheet.duplicatePrefixes(built), [:])
+def collide = [[series_id: sheet.composeSeriesId("A", 0, "s0000_B"), path: "p", series_index: 0, series_name: "s0000_B"],
+               [series_id: sheet.composeSeriesId("A_s0000", 0, "B"), path: "q", series_index: 0, series_name: "B"]]
+check("the two compose to the same series_id", collide[0].series_id, collide[1].series_id)
+check("...and that is fatal",                  errOf { sheet.checkIds(collide) }?.contains("not unique"), true)
+check("duplicateIds names the offender",  sheet.duplicateIds(collide).keySet().toList(), [collide[0].series_id])
+check("...and is quiet on a clean table",      sheet.duplicateIds(built), [:])
 
 // sanitise() collapses whitespace, so "Image005 Denoised" and
 // "Image005_Denoised" become one filename. They are different SERIES of one
 // file, so the index now separates them -- this used to be fatal.
-def sanitiseClash = [[prefix: sheet.composePrefix("A", 0, "Image005 Denoised"), path: "p", series_index: 0, series_name: "Image005 Denoised"],
-                     [prefix: sheet.composePrefix("A", 1, "Image005_Denoised"), path: "p", series_index: 1, series_name: "Image005_Denoised"]]
+def sanitiseClash = [[series_id: sheet.composeSeriesId("A", 0, "Image005 Denoised"), path: "p", series_index: 0, series_name: "Image005 Denoised"],
+                     [series_id: sheet.composeSeriesId("A", 1, "Image005_Denoised"), path: "p", series_index: 1, series_name: "Image005_Denoised"]]
 check("the names still sanitise alike",
-      sanitiseClash[0].prefix.replace("s0000", ""), sanitiseClash[1].prefix.replace("s0001", ""))
-check("...but the index keeps them apart",     errOf { sheet.checkPrefixes(sanitiseClash) }, null)
+      sanitiseClash[0].series_id.replace("s0000", ""), sanitiseClash[1].series_id.replace("s0001", ""))
+check("...but the index keeps them apart",     errOf { sheet.checkIds(sanitiseClash) }, null)
 
 println ""
 println "=== the index is forced, so a repeated series name is not a collision ==="
-// Before this, a tile scan could not produce a sheet: checkPrefixes refused it,
+// Before this, a tile scan could not produce a sheet: checkIds refused it,
 // correctly, and the error message was the only artifact of the run.
 def tileRows = sheet.build([[path: "tiles.ome.tif", alias: "T", include: "true"]], rawDir, [])
 check("two series really do share one name",   tileRows.collect { it.series_name }.unique(), ["O1_1 10x"])
-check("...but not one prefix",                 tileRows.collect { it.prefix },
+check("...but not one series_id",              tileRows.collect { it.series_id },
       ["T_s0000_O1_1_10x", "T_s0001_O1_1_10x"])
-check("...so the sheet builds",                errOf { sheet.checkPrefixes(tileRows) }, null)
+check("...so the sheet builds",                errOf { sheet.checkIds(tileRows) }, null)
 
 // Fixed width, not derived from the series count: a file growing from 999 to
-// 1001 series must not re-pad every prefix it already had.
-check("index 0 pads to four digits",           sheet.composePrefix("A", 0, "x"), "A_s0000_x")
-check("index 331",                             sheet.composePrefix("A", 331, "x"), "A_s0331_x")
-check("past 9999 it widens, never wraps",      sheet.composePrefix("A", 12345, "x"), "A_s12345_x")
-check("a string index is accepted",            sheet.composePrefix("A", "7", "x"), "A_s0007_x")
+// 1001 series must not re-pad every series_id it already had.
+check("index 0 pads to four digits",           sheet.composeSeriesId("A", 0, "x"), "A_s0000_x")
+check("index 331",                             sheet.composeSeriesId("A", 331, "x"), "A_s0331_x")
+check("past 9999 it widens, never wraps",      sheet.composeSeriesId("A", 12345, "x"), "A_s12345_x")
+check("a string index is accepted",            sheet.composeSeriesId("A", "7", "x"), "A_s0007_x")
 
 println ""
 println "=== duplicate basenames warn rather than stop ==="
@@ -207,7 +207,7 @@ check("neither is fatal",                      warns.size() >= 2, true)
 
 println ""
 println "=== regeneration keeps what you typed ==="
-def outTsv = new File(tmp, "samples.tsv")
+def outTsv = new File(tmp, "series.tsv")
 TSV.write(built, outTsv, sheet.columnOrder(built))
 def firstPass = TSV.read(outTsv)
 check("written and read back",                 firstPass.size(), 5)
@@ -215,7 +215,7 @@ check("written and read back",                 firstPass.size(), 5)
 // Edit it the way a person would: turn one series off, add a column of your own.
 firstPass[0].include = "false"
 firstPass[0].cell_type = "oocyte"
-firstPass[0].prefix = "A_renamed_by_hand"
+firstPass[0].series_id = "A_renamed_by_hand"
 TSV.write(firstPass, outTsv, sheet.columnOrder(firstPass))
 
 def refreshed = sheet.build(fileRows, rawDir, ["condition"])
@@ -226,17 +226,48 @@ check("every row updated",                     merged.updated, 5)
 check("an edited include survives",            m0.include, "false")
 check("a column of your own survives",         m0.cell_type, "oocyte")
 // The merge key is path+series_index precisely so this can be edited.
-check("an edited prefix survives",             m0.prefix, "A_renamed_by_hand")
+check("an edited series_id survives",          m0.series_id, "A_renamed_by_hand")
 check("machine columns still refresh",         m0.size_x.toString(), "32")
 
 println ""
 println "=== reseed is opt-in, and says what it changed ==="
-def reseeded = sheet.merge(refreshed, TSV.read(outTsv), ["prefix", "include"], false)
+def reseeded = sheet.merge(refreshed, TSV.read(outTsv), ["series_id", "include"], false)
 def r0 = reseeded.rows.find { it.path == "plateA.ome.tif" && it.series_index.toString() == "0" }
-check("reseed restores the generated prefix",  r0.prefix, "A_s0000_Series001")
+check("reseed restores the generated id",      r0.series_id, "A_s0000_Series001")
 check("reseed restores the seeded include",    r0.include, "true")
-check("it reports which columns it touched",   reseeded.reseeded.keySet().sort(), ["include", "prefix"])
+check("it reports which columns it touched",   reseeded.reseeded.keySet().sort(), ["include", "series_id"])
 check("cell_type is yours and untouched",      r0.cell_type, "oocyte")
+
+println ""
+println "=== a renumbering is refused, not merged ==="
+// Same file, same index, DIFFERENT series: the file was re-exported in another
+// series order. Merging would carry cell_type=oocyte onto the wrong image.
+def renum = TSV.read(outTsv)
+def victim = renum.find { it.path == "plateA.ome.tif" && it.series_index.toString() == "0" }
+victim.series_name = "Series_that_used_to_be_here"
+def renumErr = errOf { sheet.merge(refreshed, renum, [], false) }
+check("the merge stops",                       renumErr?.contains("DIFFERENT series"), true)
+check("...naming the row and both names",
+      renumErr?.contains("plateA.ome.tif[0]") && renumErr?.contains("Series_that_used_to_be_here") &&
+      renumErr?.contains("Series001"), true)
+// And it is the NAME that decides: the unchanged sheet still merges, as above.
+check("an unchanged sheet still merges",       errOf { sheet.merge(refreshed, TSV.read(outTsv), [], false) }, null)
+
+println ""
+println "=== a sheet from before v0.7.0 is migrated, edits and all ==="
+def oldRows = TSV.read(outTsv).collect { r ->
+    def c = new LinkedHashMap(); r.each { k, v -> c[k == "series_id" ? "prefix" : k] = v }; c
+}
+check("the old sheet has no series_id",        oldRows[0].containsKey("series_id"), false)
+check("migrateOldId renames every row",        SS.migrateOldId(oldRows), oldRows.size())
+check("...keeping the hand-edited value",
+      oldRows.find { it.path == "plateA.ome.tif" && it.series_index.toString() == "0" }.series_id, "A_renamed_by_hand")
+check("...and leaving no prefix behind",       oldRows.any { it.containsKey("prefix") }, false)
+check("a current sheet is left alone",         SS.migrateOldId(TSV.read(outTsv)), 0)
+def migrated = sheet.merge(refreshed, oldRows, [], false)
+check("then it merges like any other",
+      migrated.rows.find { it.path == "plateA.ome.tif" && it.series_index.toString() == "0" }.series_id,
+      "A_renamed_by_hand")
 
 println ""
 println "=== a vanished file is reported, not silently dropped ==="
@@ -292,14 +323,14 @@ check("a newline in a cell is refused",        errOf { TSV.cell("a\nb") }?.conta
 check("null becomes blank",                    TSV.cell(null), "")
 
 println ""
-println "=== Make_SampleSheet writes the sheet, THEN refuses ==="
+println "=== Make_SeriesSheet writes the sheet, THEN refuses ==="
 // The ordering lives in the `#@` front end, so it is exercised the way the
 // fiji-headless-testing skill describes: strip the parameter lines and inject a
 // Binding. It is worth a test rather than a read-through, because the whole
 // point is WHICH HAPPENS FIRST -- a duplicate you cannot open the table to see
 // is a duplicate you cannot fix, and the error message would otherwise be the
 // only artifact of the run.
-def msFile = new File(LIBDIR, "Make_SampleSheet.groovy")
+def msFile = new File(LIBDIR, "Make_SeriesSheet.groovy")
 def msBody = msFile.getText("UTF-8").readLines().findAll { !it.trim().startsWith("#@") }.join("\n")
 def runMakeSheet = { File msFilesArg, File msOutArg, boolean msAllowArg ->
     def b = new Binding()
@@ -314,59 +345,59 @@ def runMakeSheet = { File msFilesArg, File msOutArg, boolean msAllowArg ->
     b.setVariable("reseed", "")
     b.setVariable("reseedAll", false)
     b.setVariable("prune", false)
-    b.setVariable("allowDuplicatePrefix", msAllowArg)
-    new GroovyShell(b).evaluate(msBody, "Make_SampleSheet_stripped.groovy")
+    b.setVariable("allowDuplicateId", msAllowArg)
+    new GroovyShell(b).evaluate(msBody, "Make_SeriesSheet_stripped.groovy")
 }
 
 def msFiles = new File(tmp, "ms_files.tsv")
-def msOut = new File(tmp, "ms_samples.tsv")
+def msOut = new File(tmp, "ms_series.tsv")
 TSV.write([[path: "tiles.ome.tif", alias: "T", include: "true"]], msFiles, ["path", "alias", "include"])
 
 check("a tile scan builds without complaint",  errOf { runMakeSheet(msFiles, msOut, false) }, null)
 def msRows = TSV.read(msOut)
-check("...into two distinct prefixes",         msRows.collect { it.prefix },
+check("...into two distinct series_ids",       msRows.collect { it.series_id },
       ["T_s0000_O1_1_10x", "T_s0001_O1_1_10x"])
 
 // Now break it the only way that is still possible: by hand.
-msRows[1].prefix = msRows[0].prefix
+msRows[1].series_id = msRows[0].series_id
 TSV.write(msRows, msOut, sheet.columnOrder(msRows))
 
 def msErr = errOf { runMakeSheet(msFiles, msOut, false) }
-check("an edited duplicate is refused",        msErr?.contains("duplicated prefix"), true)
+check("an edited duplicate is refused",        msErr?.contains("duplicated series_id"), true)
 check("...naming the sheet to go and fix",     msErr?.contains(msOut.getAbsolutePath()), true)
 // The point of the whole exercise: the file exists, holding the duplicate, so
 // it can be opened and corrected.
 check("...and the sheet was written anyway",   msOut.isFile(), true)
 check("...still holding both rows",            TSV.read(msOut).size(), 2)
 check("...and still duplicated, not silently repaired",
-      TSV.read(msOut).collect { it.prefix }.unique().size(), 1)
+      TSV.read(msOut).collect { it.series_id }.unique().size(), 1)
 
-check("allowDuplicatePrefix finishes quietly", errOf { runMakeSheet(msFiles, msOut, true) }, null)
+check("allowDuplicateId finishes quietly", errOf { runMakeSheet(msFiles, msOut, true) }, null)
 
 println ""
 println "=== the columns you edit sit on the left ==="
 // A sheet is read left to right by a person deciding what to run, and the
-// columns that decision turns on are prefix, include and whatever metadata they
+// columns that decision turns on are series_id, include and whatever metadata they
 // typed -- while size_x and pixel_type are reference material. Order is
 // presentation only: every reader here and in R works by column NAME, and the
 // merge matches on path + series_index, so this is free to arrange.
-def ordered = sheet.columnOrder([[prefix: "p", include: "true", condition: "wt",
+def ordered = sheet.columnOrder([[series_id: "p", include: "true", condition: "wt",
                                   operator: "cr", alias: "A", series_index: 0,
                                   series_name: "s", path: "x", size_x: 1]])
-check("prefix, then include",                  ordered.take(2), ["prefix", "include"])
+check("series_id, then include",               ordered.take(2), ["series_id", "include"])
 check("...then YOUR columns, in the order given", ordered[2..3], ["condition", "operator"])
 check("...then the file's own facts",          ordered[4..7],
       ["alias", "series_index", "series_name", "path"])
 check("...and the measurements last",          ordered[-1], "size_x")
 check("nothing was dropped or invented",       ordered.sort(false),
-      ["alias", "condition", "include", "operator", "path", "prefix",
+      ["alias", "condition", "include", "operator", "path", "series_id",
        "series_index", "series_name", "size_x"])
 // A sheet with no metadata of its own must not grow a hole where they would go.
-def bare = sheet.columnOrder([[prefix: "p", include: "true", path: "x"]])
-check("no extras, no gap",                     bare, ["prefix", "include", "path"])
+def bare = sheet.columnOrder([[series_id: "p", include: "true", path: "x"]])
+check("no extras, no gap",                     bare, ["series_id", "include", "path"])
 
 
 tmp.deleteDir()
 println ""
 println "passed: ${passed}   FAILED: ${failed}"
-if (failed > 0) throw new AssertionError("${failed} sample-sheet check(s) failed")
+if (failed > 0) throw new AssertionError("${failed} series-table check(s) failed")

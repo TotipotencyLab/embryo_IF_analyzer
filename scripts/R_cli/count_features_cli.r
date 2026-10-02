@@ -8,7 +8,7 @@
 # features per sample per feature type, joins sample metadata, and writes a tidy
 # table. This is the oocyte-counting deliverable.
 #
-#   ./count_features_cli.r --input out/ --sample_sheet samples.tsv \
+#   ./count_features_cli.r --input out/ --series_sheet series.tsv \
 #       --group_by genotype timepoint --outdir out --plot
 #
 # A count is the number of distinct feature_id values that carry a real feature
@@ -101,10 +101,10 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = "*_features.rds files, globs, or directories to scan")
   p <- add_argument(p, "--outdir", short = "-o", type = "character",
                     help = "directory to write results into")
-  p <- add_argument(p, "--sample_sheet", short = "-S", type = "character",
-                    help = "optional table with a 'prefix' column; filters inputs and joins metadata")
-  p <- add_argument(p, "--id_column", short = "-I", type = "character", default = "prefix",
-                    help = "sample sheet column holding the file prefix")
+  p <- add_argument(p, "--series_sheet", short = "-S", type = "character",
+                    help = "optional series table (series.tsv), keyed by its 'series_id' column; filters inputs and joins metadata")
+  p <- add_argument(p, "--id_column", short = "-I", type = "character", default = "series_id",
+                    help = "series table column holding the series_id -- the file prefix")
   p <- add_argument(p, "--group_by", short = "-g", type = "character", nargs = Inf, default = NULL,
                     help = "metadata column(s) to summarise over, e.g. genotype timepoint")
   p <- add_argument(p, "--feature_table", short = "-T", type = "character",
@@ -143,9 +143,9 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   samples_on_disk <- sub("_features\\.rds$", "", basename(files))
 
   sheet <- NULL
-  if (!is.na(argv$sample_sheet)) {
-    sheet <- .cli_read_sample_sheet(argv$sample_sheet, argv$id_column)
-    jobs <- .cli_apply_sample_sheet(
+  if (!is.na(argv$series_sheet)) {
+    sheet <- .cli_read_series_sheet(argv$series_sheet, argv$id_column)
+    jobs <- .cli_apply_series_sheet(
       data.frame(path = files, sample = samples_on_disk, feature = NA_character_,
                  stringsAsFactors = FALSE),
       sheet, argv$id_column)
@@ -261,7 +261,7 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   if (length(missing_group)) {
     stop("--group_by column(s) not found: ", paste(missing_group, collapse = ", "),
          "\n  available: ", paste(colnames(tidy), collapse = ", "),
-         if (is.null(sheet)) "\n  (did you mean to pass --sample_sheet?)" else "",
+         if (is.null(sheet)) "\n  (did you mean to pass --series_sheet?)" else "",
          call. = FALSE)
   }
 

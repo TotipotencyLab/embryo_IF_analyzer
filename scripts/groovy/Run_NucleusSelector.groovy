@@ -53,7 +53,7 @@
 //
 // This is the interactive entry point: a `#@` block, and one call. The work
 // itself lives in NucleusPipeline.groovy so that the batch runner -- which
-// opens its own images from a sample sheet rather than taking the active one --
+// opens its own images from a series table rather than taking the active one --
 // runs exactly the same code rather than a copy of it.
 
 import ij.*

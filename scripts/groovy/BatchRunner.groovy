@@ -1,6 +1,6 @@
 // BatchRunner.groovy
 //
-// Run the nucleus pipeline over every included row of a sample sheet.
+// Run the nucleus pipeline over every included row of a series table.
 //
 // The loop itself is the interesting part, not the analysis: the analysis is
 // NucleusPipeline, unchanged and shared with the interactive runner. What this
@@ -33,7 +33,7 @@ import loci.plugins.util.ImageProcessorReader
 class BatchRunner {
 
     String libDir
-    Class TSV, NP, RC, RD
+    Class TSV, NP, RC, RD, SCHEMA
     Object pipeline
 
     static BatchRunner load(String libDir) {
@@ -47,6 +47,7 @@ class BatchRunner {
         // For the up-front threshold check only; the per-image work goes
         // through NucleusPipeline, which parses its own copy.
         b.RD = gcl.parseClass(new File(dir, "RoiDetect.groovy"))
+        b.SCHEMA = gcl.parseClass(new File(dir, "SheetSchema.groovy"))
         b.pipeline = b.NP.load(b.libDir)
         return b
     }
@@ -383,18 +384,18 @@ class BatchRunner {
     /**
      * The pixel sizes present among the rows about to run.
      *
-     * @return map of pixel_width -> list of prefixes
+     * @return map of pixel_width -> list of series_ids
      */
     static Map pixelSizes(List<Map> rows) {
         return rows.findAll { (it.pixel_width ?: "").toString() }
                    .groupBy { it.pixel_width.toString() }
-                   .collectEntries { k, v -> [(k): v.collect { it.prefix }] }
+                   .collectEntries { k, v -> [(k): v.collect { it.series_id }] }
     }
 
     /**
      * Run the batch.
      *
-     * @param rows      sample sheet rows (all of them; include is applied here)
+     * @param rows      series table rows (all of them; include is applied here)
      * @param imageRoot base for relative paths, or null
      * @param params    NucleusPipeline parameters, already merged over defaults
      * @param outdir    where results and batch_summary.tsv go
@@ -409,14 +410,14 @@ class BatchRunner {
         def res = runEach(rows, imageRoot,
                           params + [pixel_size_note: PIXEL_SIZE_NOTE_NUCLEUS],
                           outdir, cols, log) {
-                      imp, prefix, si, method, row ->
-            // The sheet's prefix is authoritative: resolveImageId() would dig
+                      imp, seriesId, si, method, row ->
+            // The sheet's series_id is authoritative: resolveImageId() would dig
             // "Series001" out of the slice label, which recurs in every file.
             // Where this image came from, recorded in its own _config.txt: a
             // results folder should say which series of which file produced it
-            // without anyone having to parse the prefix back apart.
+            // without anyone having to parse the id back apart.
             def r = pipeline.run(imp, outdir,
-                                 params + [basename    : prefix,
+                                 params + [basename    : seriesId,
                                            open_method : method,
                                            source_file : row.path,
                                            series_index: si,
@@ -440,7 +441,7 @@ class BatchRunner {
      * Run a closure over every included row, and write the summary.
      *
      * Everything that is the same for any batch lives here: include, the
-     * duplicate-prefix refusal, resolving and opening the image, the pixel-size
+     * duplicate-series_id refusal, resolving and opening the image, the pixel-size
      * warning, closing the stack on both paths, one row's failure not costing
      * the other hundred and ninety-nine, and batch_summary.tsv.
      *
@@ -448,7 +449,7 @@ class BatchRunner {
      *                  between open_method and seconds, and are written blank
      *                  for excluded and failed rows -- so every row has every
      *                  column and the table is rectangular whatever happened.
-     * @param work      called as (imp, prefix, seriesIndex, openMethod, row);
+     * @param work      called as (imp, seriesId, seriesIndex, openMethod, row);
      *                  returns a Map of extraCols -> value.
      */
     Map runEach(List<Map> rows, File imageRoot, Map params, File outdir,
@@ -458,23 +459,28 @@ class BatchRunner {
         def say = { String m -> log?.call(m) }
         def warnings = []
 
+        // An old sheet is named as one, before anything else is read from it.
+        // Without this, every id reads blank and the duplicate check below
+        // reports that the rows "share" one -- loud, but about the wrong thing.
+        SCHEMA.requireId(rows, "The series table")
+
         def included = rows.findAll { isIncluded(it.include) }
         say("=== batch: " + included.size() + " of " + rows.size() + " row(s) included ===")
 
-        // Make_SampleSheet writes a sheet with duplicates on purpose, so they can
-        // be seen and fixed. Here they are fatal: the prefix names the output
+        // Make_SeriesSheet writes a sheet with duplicates on purpose, so they can
+        // be seen and fixed. Here they are fatal: the series_id names the output
         // files, so two rows sharing one would overwrite each other and the R
-        // side would merge them into a single sample. Only INCLUDED rows matter
+        // side would merge them into a single series. Only INCLUDED rows matter
         // -- an excluded duplicate writes nothing.
-        def dupPrefix = included.groupBy { (it.prefix ?: "").toString() }
-                                .findAll { k, v -> v.size() > 1 }
-        if (dupPrefix) {
+        def dupId = included.groupBy { (it.series_id ?: "").toString() }
+                            .findAll { k, v -> v.size() > 1 }
+        if (dupId) {
             throw new IllegalArgumentException(
-                "These included rows share a prefix, and would overwrite each other:\n    " +
-                dupPrefix.collect { k, v ->
+                "These included rows share a series_id, and would overwrite each other:\n    " +
+                dupId.collect { k, v ->
                     k + " <- " + v.collect { it.path + "[" + it.series_index + "]" }.join(" AND ")
                 }.join("\n    ") +
-                "\n  Fix the prefix column, or set include=false on all but one.")
+                "\n  Fix the series_id column, or set include=false on all but one.")
         }
 
         // Check the threshold request ONCE, here, before a single image opens.
@@ -510,9 +516,9 @@ class BatchRunner {
         int ok = 0, failed = 0
         try {
         rows.each { row ->
-            def prefix = (row.prefix ?: "").toString()
+            def seriesId = (row.series_id ?: "").toString()
             if (!isIncluded(row.include)) {
-                summary << ([prefix: prefix, path: row.path, series_index: row.series_index,
+                summary << ([series_id: seriesId, path: row.path, series_index: row.series_index,
                              status: "excluded", open_method: ""] + blanks +
                             [seconds: "", message: ""])
                 return
@@ -523,8 +529,8 @@ class BatchRunner {
             // what was attempted.
             def method = ""
             try {
-                if (!prefix) {
-                    throw new IllegalArgumentException("row has no prefix; nothing to name its output")
+                if (!seriesId) {
+                    throw new IllegalArgumentException("row has no series_id; nothing to name its output")
                 }
                 def image = resolve(row.path.toString(), imageRoot)
                 if (!image.isFile()) {
@@ -532,37 +538,32 @@ class BatchRunner {
                 }
                 int si = (row.series_index ?: "0").toString() as Integer
                 method = resolveMethod(openMode, image)
-                say("--- " + prefix + "  (" + image.getName() + " series " + si +
+                say("--- " + seriesId + "  (" + image.getName() + " series " + si +
                     ", " + method + ")")
                 imp = openSeries(image, si, method)
 
                 def mism = checkDimensions(row, imp)
                 if (mism) {
-                    def w = prefix + ": the sheet does not match the image (" + mism.join("; ") +
+                    def w = seriesId + ": the sheet does not match the image (" + mism.join("; ") +
                             "). Regenerate the sheet -- it was made from a different version of this file."
                     warnings << w
                     say("WARNING: " + w)
                 }
 
-                // The sheet's prefix is authoritative: resolveImageId() would dig
-                // "Series001" out of the slice label, which recurs in every file.
-                // Where this image came from, recorded in its own _config.txt: a
-                // results folder should say which series of which file produced
-                // it without anyone having to parse the prefix back apart.
                 // What this row DOES is the caller's; everything around it --
-                // include, duplicate prefixes, opening, closing, the summary
+                // include, duplicate series_ids, opening, closing, the summary
                 // row, one row's failure not costing the rest -- is the same
                 // for any batch and is not worth a second copy.
-                def extra = work.call(imp, prefix, si, method, row) ?: [:]
-                summary << ([prefix: prefix, path: row.path, series_index: row.series_index,
+                def extra = work.call(imp, seriesId, si, method, row) ?: [:]
+                summary << ([series_id: seriesId, path: row.path, series_index: row.series_index,
                              status: "ok", open_method: method] + extra +
                             [seconds: fmtSeconds(System.currentTimeMillis() - t0), message: ""])
                 ok++
             } catch (Throwable t) {
                 // One bad image must not cost the other hundred and ninety-nine.
                 def msg = t.getClass().getSimpleName() + ": " + (t.getMessage() ?: "(no message)")
-                say("FAILED " + prefix + ": " + msg)
-                summary << ([prefix: prefix, path: row.path, series_index: row.series_index,
+                say("FAILED " + seriesId + ": " + msg)
+                summary << ([series_id: seriesId, path: row.path, series_index: row.series_index,
                              status: "failed", open_method: method] + blanks +
                             [seconds: fmtSeconds(System.currentTimeMillis() - t0),
                              message: oneLine(msg)])
@@ -579,7 +580,7 @@ class BatchRunner {
             closeReader()
         }
 
-        def cols = ["prefix", "path", "series_index", "status", "open_method"] +
+        def cols = ["series_id", "path", "series_index", "status", "open_method"] +
                    extraCols + ["seconds", "message"]
         TSV.write(summary, new File(outdir, "batch_summary.tsv"), cols)
 

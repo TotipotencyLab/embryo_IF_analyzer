@@ -205,7 +205,7 @@ class NucleusPipeline {
         def outDirPath = outdir.getAbsolutePath() + File.separator
 
         // An explicit basename wins over resolving one from the image. The batch
-        // runner passes the sample sheet's `prefix`, which is authoritative --
+        // runner passes the series table's `series_id`, which is authoritative --
         // resolveImageId() digs the id out of the slice label or title, and a
         // Leica default like "Series001" recurs in every file, so it cannot be
         // unique across a batch. Absent one, behave exactly as before.

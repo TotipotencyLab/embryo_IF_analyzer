@@ -1,15 +1,15 @@
-// SampleSheet.groovy
+// SeriesSheet.groovy
 //
-// files.tsv -> samples.tsv: one row per SERIES, from one row per FILE.
+// files.tsv -> series.tsv: one row per SERIES, from one row per FILE.
 //
 // The invariant the whole chain rests on:
 //
-//     the `prefix` column == the output filename prefix == the `name` column
-//     of the outline table
+//     the `series_id` column == the output filename prefix == the `name`
+//     column of the outline table
 //
-// which is why the prefix is SANITISED here, by the same RoiExport.sanitize()
+// which is why the series_id is SANITISED here, by the same RoiExport.sanitize()
 // the pipeline uses. A sheet saying "my run" while the disk says "my_run" would
-// fail the R side's sample-sheet join with nothing visibly wrong.
+// fail the R side's series-table join with nothing visibly wrong.
 //
 // Why a file table at all, rather than one sheet:
 //
@@ -17,25 +17,25 @@
 //     path can only describe one file.
 //   * Series names are unique WITHIN a file and not across files -- Series001 is
 //     a Leica default and recurs in every .lif. The alias is what makes the
-//     prefix unique, and the R side hard-errors on a duplicate prefix, so this
+//     series_id unique, and the R side hard-errors on a duplicate one, so this
 //     is not optional.
 //   * Per-file metadata (imaging date, operator, genotype-if-per-slide) is typed
 //     once and seeded onto every series of that file.
 //
 // Regeneration must not destroy hand-edits, so rows are matched on
-// path + series_index -- NOT on prefix, which you may edit, and not on alias,
-// which changes the prefix when you edit it.
+// path + series_index -- NOT on series_id, which you may edit, and not on
+// alias, which changes the series_id when you edit it.
 
-class SampleSheet {
+class SeriesSheet {
 
     String libDir
     Class TSV, RX, SCHEMA_CLS
     Object schema
 
-    static SampleSheet load(String libDir) {
+    static SeriesSheet load(String libDir) {
         def dir = new File(libDir)
-        def gcl = new GroovyClassLoader(SampleSheet.class.classLoader)
-        def s = new SampleSheet()
+        def gcl = new GroovyClassLoader(SeriesSheet.class.classLoader)
+        def s = new SeriesSheet()
         s.libDir = dir.getAbsolutePath()
         s.TSV = gcl.parseClass(new File(dir, "Tsv.groovy"))
         s.RX = gcl.parseClass(new File(dir, "RoiExport.groovy"))
@@ -125,7 +125,7 @@ class SampleSheet {
             throw new IllegalArgumentException(
                 "files.tsv uses the same alias for more than one file: " +
                 dupAlias.collect { k, v -> k + " (" + v.collect { it.path }.join(", ") + ")" }.join("; ") +
-                "\n  The alias is what makes every prefix unique across files; give them different names.")
+                "\n  The alias is what makes every series_id unique across files; give them different names.")
         }
         // Same name in two folders: legal, but worth saying out loud.
         rows.groupBy { new File(it.path).getName() }.each { name, group ->
@@ -158,7 +158,7 @@ class SampleSheet {
         return new File(imageRoot, path)
     }
 
-    // --- samples.tsv ---------------------------------------------------------
+    // --- series.tsv ----------------------------------------------------------
 
     /**
      * Read one file's series metadata. No pixels are touched -- 887 ms for an
@@ -210,7 +210,7 @@ class SampleSheet {
     /**
      * Zero-padded to a FIXED width, not to the file's series count.
      *
-     * Deriving the width from the count would re-pad every prefix in a file
+     * Deriving the width from the count would re-pad every series_id in a file
      * that grew from 999 series to 1001 -- the same instability as
      * disambiguating only what happens to collide today. Four digits, widening
      * on its own past 9999.
@@ -223,8 +223,8 @@ class SampleSheet {
      *
      * The index is ALWAYS present, not added only where names collide. Series
      * names repeat freely -- a tile scan is many series under one name, and
-     * `Series001` is a Leica default -- and a prefix that depends on which
-     * OTHER series happen to share its name is a prefix that changes when a
+     * `Series001` is a Leica default -- and an id that depends on which
+     * OTHER series happen to share its name is an id that changes when a
      * file is re-acquired. With alias unique across files (checkFiles enforces
      * it) and the index unique within one, the composite is unique by
      * construction rather than by checking.
@@ -232,13 +232,13 @@ class SampleSheet {
      * `s` rather than a bare number because `slide05_0331_O1_1_10x` gives a
      * human no way to tell the index from the name.
      */
-    String composePrefix(String alias, Object seriesIndex, String seriesName) {
+    String composeSeriesId(String alias, Object seriesIndex, String seriesName) {
         def idx = String.format(INDEX_FORMAT, (seriesIndex ?: 0) as Integer)
         return RX.sanitize(alias + "_" + idx + "_" + seriesName)
     }
 
     /**
-     * Build every sample row from the file table.
+     * Build every series row from the file table.
      *
      * @param fileRows   from readFiles()
      * @param imageRoot  base for relative paths, or null
@@ -261,11 +261,11 @@ class SampleSheet {
                       (System.currentTimeMillis() - t0) + " ms")
             series.each { sr ->
                 def row = new LinkedHashMap()
-                row.prefix = composePrefix(fr.alias, sr.series_index, sr.series_name)
+                row.series_id = composeSeriesId(fr.alias, sr.series_index, sr.series_name)
                 row.alias = fr.alias
                 row.path = fr.path
                 row.putAll(sr)
-                // Seeded from the file row; the sample row owns it afterwards.
+                // Seeded from the file row; the series row owns it afterwards.
                 row.include = fr.include
                 inherit.each { c ->
                     if (fr.containsKey(c)) row[c] = fr[c]
@@ -277,38 +277,56 @@ class SampleSheet {
     }
 
     /**
-     * The composed-prefix check, which is NOT implied by the alias check.
+     * The composed-series_id check, which is NOT implied by the alias check.
      *
      * Alias "A_Series" with series "001" collides with alias "A" and series
      * "Series001": unique parts, colliding composite. And it must run on the
      * SANITISED string, because two series names differing only in whitespace
      * or punctuation become one filename.
      */
-    static Map duplicatePrefixes(List<Map> rows) {
-        return rows.groupBy { it.prefix }.findAll { k, v -> v.size() > 1 }
+    static Map duplicateIds(List<Map> rows) {
+        return rows.groupBy { it.series_id }.findAll { k, v -> v.size() > 1 }
     }
 
-    void checkPrefixes(List<Map> rows) {
-        def dup = duplicatePrefixes(rows)
+    void checkIds(List<Map> rows) {
+        def dup = duplicateIds(rows)
         if (dup) {
             def detail = dup.collect { k, v ->
                 k + " <- " + v.collect { it.path + "[" + it.series_index + "] " + it.series_name }.join(" AND ")
             }.join("\n    ")
             throw new IllegalArgumentException(
-                "These sample prefixes are not unique:\n    " + detail +
-                "\n  The prefix becomes the output filename and the `name` column, so two series " +
-                "would overwrite each other and the R side would merge them into one sample." +
-                "\n  Change an alias in files.tsv, or edit the prefix column.")
+                "These series_ids are not unique:\n    " + detail +
+                "\n  The series_id becomes the output filename and the `name` column, so two series " +
+                "would overwrite each other and the R side would merge them into one." +
+                "\n  Change an alias in files.tsv, or edit the series_id column.")
         }
     }
 
     // --- merge ---------------------------------------------------------------
 
     /**
+     * A sheet written before v0.7.0 has `prefix` where `series_id` now is.
+     * Renamed in place, value and all, so a hand-edited id survives the
+     * migration exactly as it would survive any other regeneration.
+     *
+     * @return how many rows were renamed (0 when there was nothing to do)
+     */
+    static int migrateOldId(List<Map> rows) {
+        def oldCol = "prefix", newCol = "series_id"
+        if (!rows || rows[0].containsKey(newCol) || !rows[0].containsKey(oldCol)) return 0
+        rows.eachWithIndex { Map r, int i ->
+            def copy = new LinkedHashMap()
+            r.each { k, v -> copy[k == oldCol ? newCol : k] = v }
+            r.clear(); r.putAll(copy)
+        }
+        return rows.size()
+    }
+
+    /**
      * The identity of a row across regenerations.
      *
      * A List, so no separator has to be chosen and no path can be mistaken for
-     * two. NOT the prefix: you may edit that, and editing the alias rewrites it.
+     * two. NOT the series_id: you may edit that, and editing the alias rewrites it.
      */
     static List mergeKey(Map row) {
         // NOT `?:` -- in Groovy 0 is falsy, so `row.series_index ?: ""` turns
@@ -332,11 +350,12 @@ class SampleSheet {
      * @return [rows:, added:, updated:, missing:, reseeded:]
      */
     Map merge(List<Map> fresh, List<Map> existing, List<String> reseed, boolean prune) {
-        def machine = schema.columns("samples", SCHEMA_CLS.MACHINE)
+        def machine = schema.columns(SCHEMA_CLS.SERIES, SCHEMA_CLS.MACHINE)
         def byKey = [:]
         existing.each { byKey[mergeKey(it)] = it }
 
         def freshKeys = fresh.collect { mergeKey(it) } as Set
+        def renumbered = []
         def out = []
         int added = 0, updated = 0
         def reseeded = [:]
@@ -347,6 +366,16 @@ class SampleSheet {
                 out << f
                 added++
                 return
+            }
+            // A RENUMBERING, NOT AN UPDATE. The key matched, but the series it
+            // names is not the one this row was made from -- a file re-exported
+            // in a different series order. Carrying the row's hand-edited
+            // metadata onto it would attach it to the wrong image, silently.
+            def oldName = (old.series_name == null) ? "" : old.series_name.toString()
+            def newName = (f.series_name == null) ? "" : f.series_name.toString()
+            if (oldName && newName && oldName != newName) {
+                renumbered << [key: mergeKey(f), was: oldName, now: newName,
+                               series_id: (old.series_id ?: "")]
             }
             def row = new LinkedHashMap(old)
             machine.each { c -> if (f.containsKey(c)) row[c] = f[c] }
@@ -362,6 +391,17 @@ class SampleSheet {
             updated++
         }
 
+        if (renumbered) {
+            throw new IllegalStateException(
+                renumbered.size() + " row(s) of the existing sheet now name a DIFFERENT series " +
+                "at the same file and index:\n    " +
+                renumbered.take(10).collect { it.key[0] + "[" + it.key[1] + "]: was \"" + it.was +
+                                              "\", now \"" + it.now + "\" (" + it.series_id + ")" }.join("\n    ") +
+                "\n  The file was re-exported in a different series order, so the metadata on " +
+                "those rows would land on the wrong images. Nothing was written. Move the old " +
+                "sheet aside and build a fresh one, then carry your columns across by hand.")
+        }
+
         def missing = existing.findAll { !freshKeys.contains(mergeKey(it)) }
         if (!prune) {
             out.addAll(missing)
@@ -374,7 +414,7 @@ class SampleSheet {
      * Where your own columns are placed among the schema's.
      *
      * Not the end. A sheet is read left to right by a person deciding what to
-     * run, and the columns that decision turns on are `prefix`, `include` and
+     * run, and the columns that decision turns on are `series_id`, `include` and
      * whatever condition/genotype they typed -- while size_x and pixel_type are
      * reference material they scroll to. Putting the metadata immediately after
      * `include` keeps all three together at the left edge.
@@ -389,7 +429,7 @@ class SampleSheet {
      * is free to change, and reordering an existing sheet costs nothing.
      */
     List<String> columnOrder(List<Map> rows) {
-        def known = schema.columns("samples")
+        def known = schema.columns(SCHEMA_CLS.SERIES)
         def extra = []
         rows.each { r -> r.keySet().each { if (!known.contains(it) && !extra.contains(it)) extra << it } }
         def present = known.findAll { c -> rows.any { it.containsKey(c) } }

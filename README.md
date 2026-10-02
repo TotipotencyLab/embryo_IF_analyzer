@@ -15,18 +15,18 @@ R reads those, merges per-slice ROIs into 3D objects, and does the analysis.
 
 ## Setting up an analysis project
 
-1. **Make a sample sheet.** Copy
-   [`config/sample_sheet_template.tsv`](config/sample_sheet_template.tsv) and
-   edit it. Only `prefix` is required — the file stem Fiji wrote, everything
+1. **Make a series table.** Copy
+   [`config/series_template.tsv`](config/series_template.tsv) and
+   edit it. Only `series_id` is required — the file stem Fiji wrote, everything
    before `_<feature>_outline.txt`:
 
-   | prefix | genotype | timepoint |
+   | series_id | genotype | timepoint |
    |---|---|---|
    | `GRV_Position010` | wt | E3.5 |
 
    Every other column is your own metadata. It is carried onto the outputs and
    can be used to group the results. The sheet is optional: the CLIs also run
-   sample-unaware.
+   without one.
 
 2. **Run the Fiji side** to produce the outline and measurement tables
    (see below).
@@ -37,7 +37,7 @@ R reads those, merges per-slice ROIs into 3D objects, and does the analysis.
    # outlines -> features, with nucleoli placed inside their nuclei
    scripts/R_cli/annotate_features_cli.r \
        --input raw_measurements/ --feature nucleus nucleolus \
-       --outdir results/ --sample_sheet config/samples.tsv \
+       --outdir results/ --series_sheet config/series.tsv \
        --max_z_dist 'default=3' 'nucleolus=1' \
        --min_z_span 'default=5' 'nucleolus=2' \
        --within 'nucleolus=nucleus' --qc_plot
@@ -51,7 +51,7 @@ R reads those, merges per-slice ROIs into 3D objects, and does the analysis.
    # features -> counts, grouped by your metadata
    scripts/R_cli/count_features_cli.r \
        --input results/ --outdir results/ \
-       --sample_sheet config/samples.tsv --group_by genotype --plot
+       --series_sheet config/series.tsv --group_by genotype --plot
 
    # per-feature statistics + distribution plots, for choosing thresholds
    scripts/R_cli/feature_stat_cli.r \
@@ -98,7 +98,7 @@ reference and comparison but are no longer the primary path.
 | `RoiExport.groovy` | outline `.txt`, ROI `.zip`, measurement `.txt` |
 | `RoiDetect.groovy` | mask building (blur, threshold, fill holes, watershed) and particle detection |
 | `Run_Overview.groovy` | quick-look PNG: z-projection with detected outlines drawn on |
-| `Run_Overview_Batch.groovy` | overview PNGs for every included row of a sample sheet, and nothing else — see a dataset without segmenting it |
+| `Run_Overview_Batch.groovy` | overview PNGs for every included row of a series table, and nothing else — see a dataset without segmenting it |
 | `Overview.groovy` | projection, contrast, resize, outline drawing, PNG export |
 | `Inspect_ImageFile.groovy` | list the series in a file and their dimensions, without loading pixels |
 | `Inspect_Session.groovy` | report open images, the active image, ROI Manager and measurement settings |
@@ -160,18 +160,18 @@ genuinely different projections can come out looking identical.
 ROIs come from — and can take its outlines from saved `*_outline_ROIs.zip`
 files, so overviews can be regenerated later without re-running detection.
 
-`Run_Overview_Batch.groovy` does the same for a whole sample sheet, **without
+`Run_Overview_Batch.groovy` does the same for a whole series table, **without
 detecting anything** — projections only. It is the step before choosing
 detection settings: a tile-merged slide costs minutes per series to segment and
 needs a config you cannot write until you have seen the images. The PNGs carry
-the same `<prefix>_overview_ch<N>.png` names the nucleus path writes, and for
+the same `<series_id>_overview_ch<N>.png` names the nucleus path writes, and for
 the same settings are byte-identical to them, so nothing reading one has to
 know which runner produced it.
 
 ```bash
 ImageJ-macosx --headless --console \
   --run scripts/groovy/Run_Overview_Batch.groovy \
-  "sheetFile='sheets/samples.tsv',outdir='overviews',imageRoot='raw',outWidth=1000"
+  "sheetFile='sheets/series.tsv',outdir='overviews',imageRoot='raw',outWidth=1000"
 ```
 
 Its `batch_summary.tsv` records the **display range per channel**, which is the
@@ -292,13 +292,13 @@ and cannot drift out of step between panels.
 
 `group_montage_cli.r` tiles every image of a **group** of samples into one
 picture — the sections of one ovary, say, which are imaged as separate series
-and so sit scattered across the sample sheet. It is for the case where a count
+and so sit scattered across the series table. It is for the case where a count
 has to be made or sanity-checked by eye.
 
 ```bash
 scripts/R_cli/group_montage_cli.r \
   --image_dir overviews --image_suffix _overview_ch1.png \
-  --sample_sheet sheets/samples.tsv --group_by section_id --outdir montages
+  --series_sheet sheets/series.tsv --group_by section_id --outdir montages
 ```
 
 Two of its behaviours are deliberate and worth knowing before you read a
@@ -335,7 +335,7 @@ By default each group gets its own scale, so its largest section fills a cell �
 which means two montages are *not* comparable with each other. That is why the
 scale bar is drawn by default, and why `--um_per_px run` exists when you do want
 one scale across every montage. Paths are built exactly (`--image_dir` +
-prefix + `--image_suffix`), never globbed; `--image_path_by COLUMN` takes them
+`series_id` + `--image_suffix`), never globbed; `--image_path_by COLUMN` takes them
 from the sheet instead when the names do not follow a rule.
 
 **Which file holds what is read from the file itself**, not from its name: the

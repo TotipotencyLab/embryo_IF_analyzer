@@ -1,14 +1,14 @@
 // TiffAssembler.groovy
 //
 // Manifest rows -> one TIFF per output. The read side is LuxendoFile; this side
-// knows nothing about Luxendo beyond the manifest columns, so a second format
-// only has to produce a manifest.
+// knows nothing about Luxendo beyond the sources-table columns, so a second
+// format only has to produce a sources table.
 //
 // TWO WRITERS, AND THE DEFAULT IS THE ONE FIJI OPENS NATIVELY.
 //
 //   tiff     ij.io.FileSaver -- an ImageJ hyperstack TIFF. Measured: IJ.openImage
 //            gives back nC, nZ, pixel size AND z step exactly, and our own
-//            SampleSheet.inspect() reads the same. Capped at 4 GB.
+//            SeriesSheet.inspect() reads the same. Capped at 4 GB.
 //   bigtiff  OMETiffWriter with setBigTiff(true). No size cap, and Bio-Formats
 //            reads it with calibration intact -- but ImageJ's own opener does
 //            NOT handle it as cleanly (measured: an OME-TIFF came back as
@@ -61,7 +61,7 @@ class TiffAssembler {
     }
 
     /**
-     * Bytes of pixel payload one output will hold. Exact, from the manifest --
+     * Bytes of pixel payload one output will hold. Exact, from the sources table --
      * no trial write, so a whole run can be judged before anything is written.
      */
     static long predictBytes(List<Map> rows, int scalePercent = FULL) {
@@ -121,7 +121,7 @@ class TiffAssembler {
      * The share of the heap one output may hold. assembleOne builds the whole
      * stack before writing it, so the payload has to fit in memory as well as
      * in the format -- and a gathered 96-frame position is ~94 GB, which
-     * bigtiff would accept and the heap cannot. Checked from the manifest,
+     * bigtiff would accept and the heap cannot. Checked from the sources table,
      * before a byte is read, rather than discovered as an OutOfMemoryError
      * after reading eight of those gigabytes over the network.
      */
@@ -183,7 +183,7 @@ class TiffAssembler {
      * `_downscale<PC>pc` reads as what it is -- 50 percent of the original --
      * where a bare number could be read as either a percentage or a divisor.
      * A downscaled file must not be mistakable for a full-resolution one by
-     * anybody who meets it later without the manifest.
+     * anybody who meets it later without the sources table.
      */
     static String outputName(String base, int scalePercent, String format) {
         def stem = base.replaceAll(/(?i)\.(ome\.)?tiff?$/, "")
@@ -207,14 +207,13 @@ class TiffAssembler {
         def first     = rows[0]
         // DERIVED from series_id, not stored. target_output_path was only ever
         // series_id + ".tif", and a stored copy of a derived value is a second
-        // thing to keep in step. The scan already folded gatherFrames into
-        // series_id (gathered -> the position), so one rule covers both shapes.
-        // `base` is set only when one frame is taken out of a multi-frame
+        // thing to keep in step. The rows must carry series_id, which the
+        // sources table does not: the caller attaches it through
+        // LuxendoScan.withSeriesId(). `base` is set only when one frame is taken out of a multi-frame
         // series, and is then series_id + _t<TTTT> -- see groupByOutput.
         def name      = outputName((opts.base ?: first.series_id) as String, pct, format)
-        // One row per (channel, timepoint). When the manifest gathered a whole
-        // position into one output these are many timepoints; when it did not,
-        // `frames` is 1 and every loop below collapses to what it was.
+        // One row per (channel, time point). A whole series is many time
+        // points; one chosen frame is 1, and every loop below collapses.
         def frames    = rows.collect { it.t }.unique().sort()
         def chans     = rows.collect { it.channel as int }.unique().sort()
         def summary   = [output_path: name, series_id: first.series_id, t: first.t,
@@ -284,7 +283,7 @@ class TiffAssembler {
             return summary
         }
 
-        // Channels in manifest order, which is the source metadata's own channel
+        // Channels in sources-table order, which is the source metadata's own channel
         // index -- never directory order, which the .ims files show can differ.
         // Frames in time order, for the same reason.
         def ordered = []
@@ -343,7 +342,7 @@ class TiffAssembler {
     }
 
     /**
-     * Every output in the manifest, one row's failure never costing the rest.
+     * Every output in the sources table, one row's failure never costing the rest.
      *
      * The same contract as BatchRunner.runEach(): the summary is RECTANGULAR
      * whatever happened, so a skipped or failed output still has a row saying
@@ -421,7 +420,7 @@ class TiffAssembler {
     }
 
     /**
-     * Manifest rows grouped into outputs, in manifest order, keyed by output base.
+     * Sources rows grouped into outputs, in table order, keyed by output base.
      *
      * With no frame selection, one output per series -- every frame it holds.
      * With one, only the chosen time points, and each in its OWN file: a frame

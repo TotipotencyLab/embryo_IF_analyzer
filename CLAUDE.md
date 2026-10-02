@@ -36,7 +36,7 @@ sharing a common library, not one program.
 
    **a. Format documentation travels with the change — write it, do not
    propose it.** If the work altered any table this repo reads or writes — a
-   column, a filename pattern, a `_config.txt` field, a sample sheet rule, a
+   column, a filename pattern, a `_config.txt` field, a series table rule, a
    `feature_id` prefix — then `note/data_formats.md` is now wrong and must be
    corrected in the same commit, along with `README.md` and
    `config/*template*` where they are affected. `note/data_formats.md` is the
@@ -107,7 +107,7 @@ the one deliberate exclusion — it names the output rather than deciding the
 analysis, the same category as `outdir` — and the test names it, so its absence
 reads as a decision rather than as the next oversight.
 
-**The sample sheet does not need any of this, and the difference is the point.**
+**The series table does not need any of this, and the difference is the point.**
 `schema/sheet_columns.tsv` is read at *run time* by `SheetSchema.groovy` and by
 `cli_helpers.r`, so there is one source of truth and nothing to keep in sync.
 The run config has no equivalent: its schema is `PARAM_TYPES`, a Groovy map the
@@ -145,8 +145,8 @@ loop, including how to diff.
   injecting a `Binding`, so anything worth testing belongs in the class. A second
   caller — the batch runner — is the reason it was split out.
 - **`schema/` is internal, `config/` is yours.** `schema/sheet_columns.tsv` is
-  read at run time by both languages and says what the columns of `files.tsv`
-  and `samples.tsv` are and who owns each (`machine` overwritten on
+  read at run time by both languages and says what the columns of `files.tsv`,
+  `series.tsv` and `sources.tsv` are and who owns each (`machine` overwritten on
   regeneration, `seeded` written once then yours, `user` never touched). It is
   not in `config/` because that folder's contract is "copy one out and edit it;
   nothing here is read automatically".
@@ -155,7 +155,7 @@ loop, including how to diff.
   name nobody would choose.**
 
   - **`Make_*`** — *you can expect these files at the end.* The name says what
-    comes out. Usually the pipeline then consumes it (`Make_SampleSheet`), but
+    comes out. Usually the pipeline then consumes it (`Make_SeriesSheet`), but
     it does not have to: `Make_LuxendoTiff` makes TIFFs you may simply look at
     and be happy with. The promise is the artifact, not the consumer.
   - **`Run_*`** — *executes something.* The vaguest term here, and deliberately
@@ -186,8 +186,9 @@ loop, including how to diff.
   for everything else.
 
   **A series is the whole position — x, y, z, c and t.** That is Bio-Formats'
-  own meaning of "series", and how it presents `bdv.xml`; `gatherFrames` is on
-  by default. The consequence to know before touching the batch: a 96-frame
+  own meaning of "series", and how it presents `bdv.xml` — always, since v0.7.0
+  removed `gatherFrames`; a time point is taken out at use, as
+  `Make_LuxendoTiff`'s `frames`. The consequence to know before touching the batch: a 96-frame
   position is ~94 GB against a ~9 GB heap, so nothing may hold a Luxendo series
   whole — it has to be streamed frame by frame, which is the `time_axis` work.
 
@@ -196,12 +197,17 @@ loop, including how to diff.
   satisfies: one series spread **across** several files (one per channel, one
   per time point) rather than one or more series **inside** one file. A series
   row cannot hold more than one `path`, so the file facts go in the second
-  table. `series.tsv` is `samples`-shaped, so the batch runner and every R CLI
-  read it unchanged, and it is where `include` lives. ⚠️ Its `path` is the
-  **acquisition directory**, not a file — one of four required `samples` columns
-  deliberately reinterpreted rather than relaxed, because relaxing them would
-  weaken the sheet for every other format and renaming the sheet would break
-  `cli_helpers.r`.
+  table. `series.tsv` is the same series table every format writes, so every R
+  CLI reads it unchanged, and it is where `include` lives. ⚠️ Its `path` is the
+  **acquisition directory**, not a file: `path`, `series_index`, `series_name`
+  and `alias` are defined so they are true for every format — `series_index` is
+  "the index the container addresses a series by", the stack here.
+
+  ⚠️ **`sources.tsv` joins the series table on `(alias, series_index)`, never on
+  `series_id`.** `series_id` is yours to edit for readability; a join on it would
+  orphan every source row the moment you did. Both key columns are machine-owned,
+  and the alias half keeps two acquisitions in one table from colliding on a
+  stack number. There is one join, `LuxendoScan.withSeriesId()` — use it.
 
   **`Make_LuxendoTiff.groovy` is for tuning and drag-and-drop, not a required
   step.** The batch runner is meant to read the `.lux.h5` through the same two
@@ -214,7 +220,7 @@ loop, including how to diff.
   becomes its own `<series_id>_t<TTTT>` file.
 
   ⚠️ **The series id carries the alias**, built with the repo's own
-  `composePrefix()` rather than a second copy of the rule. `s<NNNN>_<stack
+  `composeSeriesId()` rather than a second copy of the rule. `s<NNNN>_<stack
   description>` repeats between acquisitions — two real ones shared all 14 stack
   identities — so without it two runs overwrite each other's results in a shared
   output directory. The alias is the operator's, defaulting to the folder name.
@@ -232,7 +238,8 @@ loop, including how to diff.
   **both** the `.lux.h5` and its `.json` — which is also the index-file test,
   since `main_raw.lux.h5` has no sidecar; on the index route with `quickScan`,
   only one sidecar per directory is read, so the others are not checked for.
-  The one narrow exception is `quickScan`, which takes the *time point* from the filename after confirming
+  The one narrow exception is `quickScan`, which takes the *time point* from
+  the filename after confirming
   the mapping against a real sidecar in the same directory, and falls back to
   reading every sidecar when they disagree. Whether a position's time points
   become one file or many is settled in the tables, at scan time, not by the
@@ -244,11 +251,11 @@ loop, including how to diff.
   for every included sheet row and nothing else. It exists because deciding what
   a slide contains should not cost a segmentation run — detection needs a tuned
   config you cannot write until you have seen the images. Its PNGs carry the
-  same `<prefix>_overview_ch<N>.png` names the nucleus path writes, and are
+  same `<series_id>_overview_ch<N>.png` names the nucleus path writes, and are
   byte-identical for the same settings, so nothing downstream needs to know
   which runner made one.
 - **`BatchRunner.runEach()` is the loop; `run()` is one caller of it.** Include,
-  the duplicate-prefix refusal, resolving and opening the image, the pixel-size
+  the duplicate-`series_id` refusal, resolving and opening the image, the pixel-size
   warning, closing the stack on both paths, one row's failure not costing the
   other hundred and ninety-nine, and `batch_summary.tsv` are the same for any
   batch and are not worth a second copy — which is what a forked runner would
@@ -322,11 +329,11 @@ loop, including how to diff.
   dimensions can be different physical sizes, so equal-pixel scaling draws one
   follicle at two sizes in one picture, which is exactly the misjudgement a
   by-eye count makes. That needs `size_x`/`pixel_width`, which are `machine`
-  columns `.cli_read_sample_sheet()` drops by default — hence its
+  columns `.cli_read_series_sheet()` drops by default — hence its
   `keep_machine=`, which names them one at a time so a caller carrying a machine
   column into its output has had to say which and why. `montage_index.tsv` is
   itself a valid input to the next run, which is the provenance answer instead
-  of writing resolved paths back into `samples.tsv`. Cells are laid out as a
+  of writing resolved paths back into `series.tsv`. Cells are laid out as a
   **table** — each column as wide as its widest cell, each row as tall as its
   tallest — because one cell size for a group spends the difference on blank
   space, and a column holding no cell at all is worth no width. So a montage is
@@ -340,10 +347,10 @@ loop, including how to diff.
   the background-measurement question is unsettled. `note/if_quantification.md`
   records what that decision will involve.
 
-  **The sample sheet is shared with the Fiji side, and is read the same way at
-  both ends.** `.cli_read_sample_sheet()` honours `include` with exactly the
+  **The series table is shared with the Fiji side, and is read the same way at
+  both ends.** `.cli_read_series_sheet()` honours `include` with exactly the
   vocabulary `BatchRunner.isIncluded()` accepts, and applies it *before* the
-  duplicate-prefix check so that setting `include=false` on all but one of a
+  duplicate-`series_id` check so that setting `include=false` on all but one of a
   colliding pair works — which is what the Groovy error tells you to do. It then
   drops `include` (a control column, never metadata) and the machine columns,
   which it reads from `schema/sheet_columns.tsv` rather than listing again: a
@@ -399,23 +406,28 @@ fourth fork.** A new assay should be a new configuration of the shared library.
 
 ## Standing decisions
 
-- **The sample prefix always carries the series index**, as
+- **The generated `series_id` always carries the series index**, as
   `sanitise(<alias>_s<NNNN>_<series_name>)`, never only where names happen to
   collide. Series names repeat freely — a tile scan is many series under one
   name, `Series001` is a Leica default — so with `alias` unique across files and
-  the index unique within one, the prefix is unique *by construction*. Padding is
+  the index unique within one, the id is unique *by construction*. Padding is
   a fixed four digits: deriving it from the file's series count would re-pad
-  every prefix in a file that grew from 999 to 1001, which is the same
-  instability as disambiguating only today's collisions.
-- **Duplicate prefixes are written by `Make_SampleSheet` and refused by the
+  every id in a file that grew from 999 to 1001, which is the same
+  instability as disambiguating only today's collisions. **It stays
+  hand-editable**, for readability — so nothing may *join* on it that the
+  operator cannot see change (hence the Luxendo sources key, above), and a
+  regeneration matches rows on `(path, series_index)`, refusing outright when
+  that key now names a different `series_name` (a file re-exported in another
+  series order) rather than carrying the row's metadata onto the wrong image.
+- **Duplicate `series_id`s are written by `Make_SeriesSheet` and refused by the
   batch.** The asymmetry is deliberate. The sheet is a draft for a person to
   read, and a duplicate you cannot open the table to see is one you cannot fix —
   the old behaviour threw before writing, so the error message was the only
   artifact of the run. It now writes the sheet and *then* fails (headless runs do
   not exit, so the log is the exit status: an exception and no `Done:` line).
-  `allowDuplicatePrefix` downgrades that. The batch refuses outright for included
-  rows, because there two rows sharing a prefix overwrite each other's output;
-  `.cli_read_sample_sheet()` refuses on the R side too.
+  `allowDuplicateId` downgrades that. The batch refuses outright for included
+  rows, because there two rows sharing an id overwrite each other's output;
+  `.cli_read_series_sheet()` refuses on the R side too.
 - **The batch opens an image one of two ways, and records which.**
   `BF.openImagePlus` — the importer, the code behind the series-chooser dialog —
   prepares a description of *every* series in the file before returning the one
@@ -443,7 +455,7 @@ fourth fork.** A new assay should be a new configuration of the shared library.
   batch given neither `outPrefix` nor `saveOverview` ran with `outPrefix=test_`
   and wrote overview PNGs, both left over from an interactive session. (The
   batch's `outPrefix` field has since been removed — it could never take effect,
-  because `BatchRunner` passes the sheet's `prefix` as `basename` and that wins
+  because `BatchRunner` passes the sheet's `series_id` as `basename` and that wins
   over `output_prefix` outright. The observation is kept: it is the evidence for
   the rule, not a description of today's dialog.) Same
   reasoning as forcing Set Measurements and `blackBackground` — a persistent
@@ -610,18 +622,17 @@ user — the point is that the number not be misleading, not that it be derivabl
 | **MAJOR** | a milestone for the repo as a whole — a complete end-to-end IF analysis pipeline would be one, and we are not there |
 
 **Below 1.0 a breaking schema change is a MINOR, not a major.** With one user,
-migrating a sheet is re-running `Make_SampleSheet`; spending the major on that
+migrating a sheet is re-running `Make_SeriesSheet`; spending the major on that
 would leave nothing to mark the milestone the row above reserves it for. What
 makes this tolerable is that a stale sheet *stops* rather than half-loading:
-`.cli_read_sample_sheet()` names the missing id column outright, and on the
-Groovy side the duplicate-prefix check fires before any image opens, because
-every row's id reads as blank and so they all collide. ⚠️ That second one is
-loud but **misleading** — it reports rows sharing a prefix rather than a sheet
-written by older code — and it only fires with two or more included rows; a
-one-row sheet gets as far as the per-row failure instead. A renaming migration
-should add the upfront column check that `Make_LuxendoTiff` already does, so the
-error names the real cause. Say so in the release notes, which is where someone
-looks when a sheet stops loading. The `vocab` milestone
+both sides name the cause before reading anything else from the sheet —
+`.cli_read_series_sheet()` in R, `SheetSchema.requireId()` in the batch and
+`Make_LuxendoTiff`. ⚠️ That up-front check is not optional for a renaming
+migration: without it the Groovy side reads every id as blank and its
+duplicate check reports rows "sharing" an id — loud but **misleading** — and a
+one-row sheet gets further still. A future rename adds its old name to the
+check. Say so in the release notes, which is where someone looks when a sheet
+stops loading. The `vocab` milestone
 (`prefix` → `series_id`, `samples.tsv` → `series.tsv`) is the worked example, as
 0.7.0. Revisit at 1.0, when there is an installed base for a major to protect.
 

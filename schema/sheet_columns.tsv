@@ -1,34 +1,35 @@
 sheet	column	owner	type	required	description
 files	path	user	string	yes	image file; absolute, or relative to the image root given at run time
-files	alias	seeded	string	no	short name for this file, used to build every prefix; defaults to the basename without its extension
+files	alias	seeded	string	no	short handle for the container the series index counts within -- here, this file; unique across files.tsv; builds every series_id; defaults to the basename without its extension
 files	include	user	boolean	no	seeds the include of every series read from this file; default true
-samples	prefix	seeded	string	yes	sanitised <alias>_s<NNNN>_<series_name>, the index zero-padded to four digits; IS the output filename prefix and the name column of the outline table
-samples	include	seeded	boolean	no	whether to analyse this series; seeded from the file row, then yours to edit
-samples	alias	machine	string	yes	the alias this prefix was built from
-samples	series_index	machine	integer	yes	0-based index Bio-Formats addresses the series by
-samples	series_name	machine	string	yes	the series name as the file records it, before sanitising
-samples	path	machine	string	yes	the file this series lives in, as written in files.tsv
-samples	size_x	machine	integer	yes	width in pixels
-samples	size_y	machine	integer	yes	height in pixels
-samples	size_z	machine	integer	yes	slices
-samples	size_c	machine	integer	yes	channels
-samples	size_t	machine	integer	yes	time points
-samples	pixel_type	machine	string	no	uint8, uint16, ...
-samples	pixel_width	machine	double	no	physical pixel size in x
-samples	pixel_height	machine	double	no	physical pixel size in y
-samples	pixel_depth	machine	double	no	z step; BLANK for a single plane, where there is no z axis to measure
-samples	pixel_unit	machine	string	no	unit of the three sizes above
-samples	file_size	machine	integer	yes	bytes; with the basename this is the fingerprint that spots a copied or replaced file
-manifest	source_path	machine	string	yes	the .lux.h5 supplying this channel at this time point, relative to the acquisition directory named by the series row's path
-manifest	series_id	machine	string	yes	the series this source feeds; joins to the series table's prefix. Rows sharing one value are one series -- its channels, and its time points when the scan gathered frames
-manifest	channel	machine	integer	yes	0-based channel index IN THE OUTPUT, taken from the source metadata rather than from directory order
-manifest	channel_name	machine	string	no	channel_description from the source; BLANK when the acquisition did not name it. It lives here and not on the series table because it is per channel
-manifest	t	machine	integer	yes	0-based time point within the position, from the source metadata. It stays on the row whether or not the series gathers several frames
-manifest	size_x	machine	integer	yes	width in pixels
-manifest	size_y	machine	integer	yes	height in pixels
-manifest	size_z	machine	integer	yes	slices
-manifest	pixel_width	machine	double	no	physical pixel size in x
-manifest	pixel_height	machine	double	no	physical pixel size in y
-manifest	pixel_depth	machine	double	no	z step; BLANK for a single plane, where there is no z axis to measure
-manifest	pixel_unit	machine	string	no	unit of the three sizes above
-manifest	source_bytes	machine	integer	yes	bytes; with the basename this is the fingerprint that spots a replaced source
+series	series_id	seeded	string	yes	the series' identity: generated as sanitised <alias>_s<NNNN>_<series_name>, the index zero-padded to four digits; yours to edit for readability, and must stay unique; IS the output filename prefix and the name column of the outline table
+series	include	seeded	boolean	no	whether to analyse this series; seeded from the file row, then yours to edit
+series	alias	machine	string	yes	short handle for the container series_index counts within -- a file for Bio-Formats, an acquisition directory for Luxendo; unique across a series table; what series_id was built from, and what a rescan reuses
+series	series_index	machine	integer	yes	the index the container's own reader addresses this series by: the 0-based Bio-Formats series for a file, the stack for a Luxendo acquisition; with path, the row's identity across regenerations
+series	series_name	machine	string	yes	the series name as the container records it (Luxendo: the stack description), before sanitising
+series	path	machine	string	yes	the container this series lives in: the image file as written in files.tsv, or a Luxendo acquisition directory, which sources.tsv's paths are relative to
+series	size_x	machine	integer	yes	width in pixels
+series	size_y	machine	integer	yes	height in pixels
+series	size_z	machine	integer	yes	slices
+series	size_c	machine	integer	yes	channels
+series	size_t	machine	integer	yes	time points; a Luxendo series holds every time point of its stack
+series	pixel_type	machine	string	no	uint8, uint16, ...
+series	pixel_width	machine	double	no	physical pixel size in x
+series	pixel_height	machine	double	no	physical pixel size in y
+series	pixel_depth	machine	double	no	z step; BLANK for a single plane, where there is no z axis to measure
+series	pixel_unit	machine	string	no	unit of the three sizes above
+series	file_size	machine	integer	yes	bytes; with the basename this is the fingerprint that spots a copied or replaced file
+sources	source_path	machine	string	yes	the .lux.h5 supplying this channel at this time point, relative to the acquisition directory named by the series row's path
+sources	alias	machine	string	yes	the acquisition this source belongs to; with series_index, the join to series.tsv
+sources	series_index	machine	integer	yes	the stack this source belongs to: joins series.tsv on (alias, series_index), never on series_id, which you may edit. Rows sharing it are one series -- its channels and its time points
+sources	channel	machine	integer	yes	0-based channel index IN THE OUTPUT, taken from the source metadata rather than from directory order
+sources	channel_name	machine	string	no	channel_description from the source; BLANK when the acquisition did not name it. It lives here and not on the series table because it is per channel
+sources	t	machine	integer	yes	0-based time point within the series, from the source metadata
+sources	size_x	machine	integer	yes	width in pixels
+sources	size_y	machine	integer	yes	height in pixels
+sources	size_z	machine	integer	yes	slices
+sources	pixel_width	machine	double	no	physical pixel size in x
+sources	pixel_height	machine	double	no	physical pixel size in y
+sources	pixel_depth	machine	double	no	z step; BLANK for a single plane, where there is no z axis to measure
+sources	pixel_unit	machine	string	no	unit of the three sizes above
+sources	source_bytes	machine	integer	yes	bytes; with the basename this is the fingerprint that spots a replaced source

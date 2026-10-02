@@ -1,4 +1,4 @@
-#@ File    (persist=false, label="Sample sheet (samples.tsv)", style="file") sheetFile
+#@ File    (persist=false, label="Series table (series.tsv)", style="file") sheetFile
 #@ File    (persist=false, label="Output directory", style="directory") outdir
 #@ String  (persist=false, label="Image root (blank = paths as given)", value="") imageRoot
 #@ String  (persist=false, label="Z-slices to project (blank = all; e.g. 1-20,35-40)", value="") zSpec
@@ -12,7 +12,7 @@
 
 // Run_Overview_Batch.groovy
 //
-// Overview PNGs for every included row of a sample sheet, and NOTHING else --
+// Overview PNGs for every included row of a series table, and NOTHING else --
 // no threshold, no particles, no measurement, no ROI files.
 //
 // WHY IT EXISTS
@@ -23,7 +23,7 @@
 //
 // OUTPUT NAMES ARE THE SAME AS THE NUCLEUS PATH'S, on purpose:
 //
-//   <prefix>_overview_ch<N>.png
+//   <series_id>_overview_ch<N>.png
 //
 // The nucleus pipeline writes exactly this for its raw overview (Overview
 // .overviewPath with no suffix), so a file from here and a file from there are
@@ -37,9 +37,9 @@
 //
 //   ImageJ-macosx --headless --console \
 //     --run scripts/groovy/Run_Overview_Batch.groovy \
-//     "sheetFile='/p/samples.tsv',outdir='/p/overviews',imageRoot='/p/raw',outWidth=1000"
+//     "sheetFile='/p/series.tsv',outdir='/p/overviews',imageRoot='/p/raw',outWidth=1000"
 //
-// Like the nucleus batch: the sheet's `prefix` names the output and `include`
+// Like the nucleus batch: the sheet's `series_id` names the output and `include`
 // decides what runs, one row's failure does not stop the others, and
 // batch_summary.tsv says what happened to every row including the excluded.
 
@@ -100,7 +100,7 @@ def cols = ["channels", "png_size", "display_range"]
 // parameter has a default, so two trailing closure blocks would leave which
 // one is which to arity resolution -- and getting that wrong silently swaps
 // the progress log for the work.
-def perRow = { imp, prefix, si, openMethod, row ->
+def perRow = { imp, seriesId, si, openMethod, row ->
     def slices = RD.parseSlices(zSpec ?: "", imp.getNSlices())
     def proj   = OV.project(imp, slices, method, wanted)
     try {
@@ -112,7 +112,7 @@ def perRow = { imp, prefix, si, openMethod, row ->
                                             height   : outHeight,
                                             contrast : contrast,
                                             saturated: saturated])
-            def f = OV.savePng(view, OV.overviewPath(outdir.getPath(), prefix, c))
+            def f = OV.savePng(view, OV.overviewPath(outdir.getPath(), seriesId, c))
             ranges << ("ch" + c + ":" + IJ.d2s(view.lo, 1) + "-" + IJ.d2s(view.hi, 1))
             size = view.image.getWidth() + "x" + view.image.getHeight()
             IJ.log("  overview ch" + c + " -> " + f.getName())
@@ -135,7 +135,7 @@ if (res.failed > 0) {
     IJ.log("")
     IJ.log(res.failed + " row(s) FAILED -- the rest completed. In batch_summary.tsv:")
     res.summary.findAll { it.status == "failed" }.take(10).each {
-        IJ.log("  " + it.prefix + "  " + it.message)
+        IJ.log("  " + it.series_id + "  " + it.message)
     }
 }
 IJ.log("Done: overview batch")

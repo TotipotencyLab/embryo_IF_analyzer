@@ -21,7 +21,7 @@
 //
 //   1. WHY DOES THE SAME NAME APPEAR MANY TIMES? A run of consecutive series
 //      sharing one name is a Leica tile scan or Mark-and-Find: one named
-//      acquisition, many fields. They are NOT copies, and a sample sheet needs
+//      acquisition, many fields. They are NOT copies, and a series table needs
 //      the series index in the prefix to tell them apart.
 //
 //   2. IS THERE ANYTHING IN IT? `checkPixels` reads planes and reports the
@@ -312,8 +312,8 @@ if (groupByName) {
         }
         println ""
         println "A run of CONSECUTIVE series under one name is a tile scan or Mark-and-Find:"
-        println "one acquisition, many fields. The name cannot tell them apart, so a sample"
-        println "sheet prefix has to carry the series index."
+        println "one acquisition, many fields. The name cannot tell them apart, so a"
+        println "series_id has to carry the series index."
     }
     println ""
 }

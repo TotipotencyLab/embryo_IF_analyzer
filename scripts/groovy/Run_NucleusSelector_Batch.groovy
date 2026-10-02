@@ -1,4 +1,4 @@
-#@ File    (persist=false, label="Sample sheet (samples.tsv)", style="file") sheetFile
+#@ File    (persist=false, label="Series table (series.tsv)", style="file") sheetFile
 #@ File    (persist=false, label="Output directory", style="directory") outdir
 #@ String  (persist=false, label="Image root (blank = paths as given)", value="") imageRoot
 #@ File    (persist=false, label="Run config (blank = defaults)", style="file", required=false) configFile
@@ -7,7 +7,7 @@
 
 // Run_NucleusSelector_Batch.groovy
 //
-// Run_NucleusSelector.groovy over a whole sample sheet instead of the active
+// Run_NucleusSelector.groovy over a whole series table instead of the active
 // image. Same name because it is the same analysis -- the difference is only how
 // the images arrive, and which of the two you want depends on whether you are
 // tuning or running.
@@ -21,10 +21,10 @@
 //
 //   ImageJ-macosx --headless --console --mem=6000m \
 //     --run scripts/groovy/Run_NucleusSelector_Batch.groovy \
-//     "sheetFile='/p/samples.tsv',outdir='/p/out',imageRoot='/p/raw',configFile='/p/nucleus_config.txt'"
+//     "sheetFile='/p/series.tsv',outdir='/p/out',imageRoot='/p/raw',configFile='/p/nucleus_config.txt'"
 //
-// There is no output-prefix parameter. The sample sheet's `prefix` column names
-// every sample's output and is authoritative -- BatchRunner passes it as
+// There is no output-prefix parameter. The series table's `series_id` column
+// names every series' output and is authoritative -- BatchRunner passes it as
 // `basename`, which wins over `output_prefix` outright. A dialog field for it
 // existed and could never take effect; it was removed rather than left to look
 // as though it did.
@@ -94,6 +94,6 @@ if (res.failed > 0) {
     IJ.log("")
     IJ.log(res.failed + " row(s) FAILED -- the rest completed. In batch_summary.tsv:")
     res.summary.findAll { it.status == "failed" }.take(10).each {
-        IJ.log("  " + it.prefix + "  " + it.message)
+        IJ.log("  " + it.series_id + "  " + it.message)
     }
 }

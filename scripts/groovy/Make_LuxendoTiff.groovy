@@ -30,16 +30,15 @@
 //                 acquisition directory that `source_path` is relative to
 //   sources.tsv   which files feed each series, and their shape
 //
-// The output NAME is derived from `series_id`, never stored: the scan already
-// folded `gatherFrames` into it, so a gathered series is named for its position
-// and a per-time-point one for its position and time point, with no second copy
-// of the name to keep in step.
+// The output NAME is derived from `series_id` -- as it stands in series.tsv,
+// so a hand-edited id names the file -- never stored, with no second copy of
+// the name to keep in step.
 //
-// TIME POINTS. A series is now a whole position -- 96 frames, ~94 GB, on the
-// real acquisition -- which neither classic TIFF nor the heap can hold. Choose
-// time points (`frames`) and each is written to its own file,
-// `<series_id>_t<TTTT>`. Blank keeps the old behaviour: every frame of a series
-// in one file. An output too big for the heap is a FAILED row naming `frames`,
+// TIME POINTS. A series is a whole stack -- 96 frames, ~94 GB, on the real
+// acquisition -- which neither classic TIFF nor the heap can hold. Choose time
+// points (`frames`) and each is written to its own file, `<series_id>_t<TTTT>`.
+// Blank writes every frame of a series into one file, which suits a short time
+// course. An output too big for the heap is a FAILED row naming `frames`,
 // decided from the tables before anything is read.
 //
 // FORMAT: `tiff` is an ImageJ hyperstack TIFF -- what Fiji opens natively, with
@@ -80,6 +79,7 @@ def LIBDIR = libDir.getAbsolutePath()
 
 def gcl    = new GroovyClassLoader()
 def TA     = gcl.parseClass(new File(LIBDIR, "TiffAssembler.groovy"))
+def LS     = gcl.parseClass(new File(LIBDIR, "LuxendoScan.groovy"))
 def TSV    = gcl.parseClass(new File(LIBDIR, "Tsv.groovy"))
 def SCHEMA = gcl.parseClass(new File(LIBDIR, "SheetSchema.groovy")).loadFromLibDir(LIBDIR)
 
@@ -95,17 +95,22 @@ def readSheet = { File f, String sheet ->
     if (f == null || !f.isFile()) throw new IllegalArgumentException("No such table: " + f)
     def rows = TSV.read(f)
     if (!rows) throw new IllegalArgumentException("Table has no rows: " + f)
+    // An old series table is named as one, not reported as a missing column.
+    if (sheet == SCHEMA.SERIES) SCHEMA.requireId(rows, f.getName())
     def absent = SCHEMA.required(sheet) - rows[0].keySet().toList()
     if (absent) {
+        def old = (sheet == "sources" && rows[0].containsKey("series_id"))
         throw new IllegalArgumentException(
             f.getName() + " is missing required " + sheet + " column(s): " + absent.join(", ") +
-            "\n  found: " + rows[0].keySet().join(", "))
+            "\n  found: " + rows[0].keySet().join(", ") +
+            (old ? "\n  It was written before v0.7.0, which keys sources on (alias, series_index). " +
+                   "Regenerate both tables with Make_LuxendoSheets." : ""))
     }
     return rows
 }
 
-def seriesRows  = readSheet(seriesFile,  "samples")
-def sourceRows  = readSheet(sourcesFile, "manifest")
+def seriesRows  = readSheet(seriesFile,  SCHEMA.SERIES)
+def sourceRows  = readSheet(sourcesFile, "sources")
 
 // Tsv reads everything as text; the assembler does arithmetic on these.
 def ints = ["t", "channel", "size_x", "size_y", "size_z", "source_bytes"]
@@ -117,19 +122,15 @@ sourceRows.each { r ->
     dbls.each { k -> r[k] = (r[k] != null && r[k].toString().trim()) ? (r[k].toString().trim() as Double) : null }
 }
 
-// THE JOIN, CHECKED. The two tables meet on series_id (the series table calls it
-// `prefix`), and a join that matches nothing is the failure this repo is built
-// around -- so it is asserted here rather than discovered as an empty run.
-def includeBySeries = seriesRows.collectEntries { [(it.prefix as String): it.include] }
+// THE JOIN, CHECKED. The two tables meet on (alias, series_index) -- never on
+// series_id, which you may edit -- through LuxendoScan.withSeriesId(), the one
+// implementation of that join. A source with no series row stops the run: a
+// join that matches nothing is the failure this repo is built around.
+def joined = LS.withSeriesId(sourceRows, seriesRows)
+sourceRows = joined.sources
+def includeBySeries = seriesRows.collectEntries { [(it.series_id as String): it.include] }
 def srcIds = sourceRows.collect { it.series_id as String }.toSet()
-def orphans = srcIds - includeBySeries.keySet()
-if (orphans) {
-    throw new IllegalArgumentException(
-        "These series appear in " + sourcesFile.getName() + " but not in " + seriesFile.getName() +
-        ":\n  " + orphans.sort().join("\n  ") +
-        "\n  The two tables must come from the same scan.")
-}
-def unsourced = includeBySeries.keySet() - srcIds
+def unsourced = joined.unsourced
 if (unsourced) {
     // Not fatal: a person may have trimmed the sources table on purpose. Loud,
     // because the alternative is quietly building fewer files than the series
@@ -141,7 +142,7 @@ if (unsourced) {
 
 // `path` on a Luxendo series row is the ACQUISITION DIRECTORY -- the root that
 // source_path is relative to. All included rows must agree on it.
-def roots = seriesRows.findAll { srcIds.contains(it.prefix as String) }
+def roots = seriesRows.findAll { srcIds.contains(it.series_id as String) }
                       .collect { (it.path ?: "").toString() }.unique()
 if (roots.size() != 1 || !roots[0]) {
     throw new IllegalArgumentException(

@@ -200,21 +200,21 @@ test_that("annotate_features_cli requires its required arguments", {
   expect_error(annotate_features_cli(c("--input", "x")), "--outdir")
 })
 
-test_that("annotate_features_cli honours a sample sheet without needing one", {
+test_that("annotate_features_cli honours a series table without needing one", {
   skip_if_no_sf()
   skip_if_no_pkg(c("argparser", "ggplot2"))
   source_cli("annotate_features_cli.r")
   skip_if_no_fixture(fixture_file("nucleus", "outline"))
 
   d <- withr::local_tempdir()
-  sheet <- file.path(d, "samples.tsv")
-  write.table(data.frame(prefix = "GRV_Position010", genotype = "wt"),
+  sheet <- file.path(d, "series.tsv")
+  write.table(data.frame(series_id = "GRV_Position010", genotype = "wt"),
               sheet, sep = "\t", quote = FALSE, row.names = FALSE)
 
   out <- withr::local_tempdir()
   res <- suppressMessages(annotate_features_cli(c(
     "--input", fixture_file("nucleus", "outline"),
-    "--outdir", out, "--sample_sheet", sheet)))
+    "--outdir", out, "--series_sheet", sheet)))
 
   expect_true("genotype" %in% colnames(res))
   expect_true(all(res$genotype == "wt"))
@@ -227,12 +227,12 @@ test_that("annotate_features_cli stops when the sheet excludes everything", {
   skip_if_no_fixture(fixture_file("nucleus", "outline"))
 
   d <- withr::local_tempdir()
-  sheet <- file.path(d, "samples.tsv")
-  write.table(data.frame(prefix = "SOME_OTHER_SAMPLE"), sheet,
+  sheet <- file.path(d, "series.tsv")
+  write.table(data.frame(series_id = "SOME_OTHER_SAMPLE"), sheet,
               sep = "\t", quote = FALSE, row.names = FALSE)
 
   expect_error(suppressWarnings(suppressMessages(annotate_features_cli(c(
     "--input", fixture_file("nucleus", "outline"),
-    "--outdir", withr::local_tempdir(), "--sample_sheet", sheet)))),
+    "--outdir", withr::local_tempdir(), "--series_sheet", sheet)))),
     "no sample in common")
 })

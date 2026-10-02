@@ -60,7 +60,7 @@ mg_um_per_px <- function(extents_um, cell_px) {
   ok <- extents_um[is.finite(extents_um)]
   if (!length(ok)) {
     stop("No panel has a usable physical size, so nothing can be scaled to it. ",
-         "Check pixel_width in the sample sheet, or pass --scale pixel.",
+         "Check pixel_width in the series table, or pass --scale pixel.",
          call. = FALSE)
   }
   return(max(ok) / cell_px)
@@ -79,7 +79,7 @@ MG_ASPECT_TOL <- 0.02
 #'
 #' ⚠️ Deliberately not magick's "WxH!", which forces the exact dimensions and
 #' therefore distorts anything not already that shape. The box here comes from
-#' the sample sheet, and an image whose aspect disagrees with the sheet used to
+#' the series table, and an image whose aspect disagrees with the sheet used to
 #' be silently stretched to match it -- a distorted follicle still looks like a
 #' follicle, so nothing downstream or upstream would have said so. Fitting
 #' letterboxes instead, and when the aspects DO agree the two are identical.
