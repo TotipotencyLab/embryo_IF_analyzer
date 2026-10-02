@@ -93,7 +93,7 @@ println "\n=== a real assembly round trip ==="
 def root = FIX.buildTree(new File(tmp, "acq"),
     [[stack: 0, desc: "pos1", nz: 3], [stack: 1, desc: "pos2", nz: 1]],
     [[index: 0, name: "BF"], [index: 1, name: "GFP"]], 2, 16, 12)
-def scanRes = scanner.scan(root) { }
+def scanRes = scanner.scan(root, [gatherFrames: false]) { }
 def rows = scanRes.sources
 def out  = new File(tmp, "out")
 def sums = asm.assembleAll(rows, root, out, [verify: true]) { }
@@ -246,6 +246,61 @@ ragged.findAll { it.series_id.contains("pos1") && it.t == 1 }.each { it.size_z =
 def raggedSeries = ragged.collect { it.series_id }.unique().collect { [prefix: it] }
 throwsWith("z changing between frames refuses", "disagree on dimensions",
            { scanner.validate(raggedSeries, ragged) { } })
+
+println "\n=== choosing time points: each one its own file ==="
+// A series is now a whole position, which for a long time course fits neither
+// classic TIFF nor the heap. Tuning needs one frame, so `frames` takes them out.
+check("one time point",          TA.parseFrames("0"), [0])
+check("a list and a range",      TA.parseFrames("3, 0-1"), [0, 1, 3])
+check("blank is every frame",    TA.parseFrames(""), null)
+check("'all' is every frame",    TA.parseFrames("all"), null)
+throwsWith("a word refuses",           "frames must be", { TA.parseFrames("first") })
+throwsWith("a backwards range refuses", "runs backwards", { TA.parseFrames("3-1") })
+
+def outF = new File(tmp, "out_frames")
+def sF = asm.assembleAll(gRows, root, outF, [verify: true, frames: "1"]) { }
+check("one output per position, for the chosen frame", sF.size(), 2)
+check("written and verified", sF.collect { [it.status, it.verified] }.unique(), [["written", "yes"]])
+check("named series_id + _t0001",
+      sF.collect { it.output_path }.sort(),
+      gRows.collect { it.series_id }.unique().sort().collect { it + "_t0001.tif" })
+def sF0 = sF.find { it.series_id.contains("pos1") }
+check("one frame in it", sF0.frames, 1)
+check("and it is t=1",   sF0.t, 1)
+// The same pixels, under the same name, as the per-time-point table gives.
+def perT1 = sums.find { it.series_id.contains("pos1") && it.t == 1 }
+check("the per-time-point file had that name too", sF0.output_path, perT1.output_path)
+check("and these are its pixels",
+      crcOf(new File(outF, sF0.output_path)), crcOf(new File(out, perT1.output_path)))
+def rF = sheet.inspect(new File(outF, sF0.output_path))[0]
+check("one frame on disk", rF.size_t, 1)
+
+// include is the SERIES', so it is looked up by series_id, not by output name.
+def pos2 = gRows.collect { it.series_id }.unique().find { it.contains("pos2") }
+def sInc = asm.assembleAll(gRows, root, new File(tmp, "out_finc"),
+                           [frames: "0", includeBySeries: [(pos2): "false"]]) { }
+check("include=false still skips a chosen frame",
+      sInc.collectEntries { [(it.series_id.contains("pos2") ? "pos2" : "pos1"): it.status] },
+      [pos1: "written", pos2: "skipped"])
+
+// A per-time-point table holds one frame per series, so choosing t=0 picks
+// those series and names them exactly as before -- no second _t.
+def sP = asm.assembleAll(rows, root, new File(tmp, "out_pt0"), [frames: "0"]) { }
+check("per-time-point table: only the t=0 series", sP.collect { it.t }.unique(), [0])
+check("named as before",
+      sP.collect { it.output_path }.sort(), sums.findAll { it.t == 0 }.collect { it.output_path }.sort())
+
+println "\n=== an output too big for the heap fails as a row, before reading ==="
+// bigtiff has no size cap, so without this a 96-frame position would read ~8 GB
+// over the network and then die of OutOfMemoryError.
+def tooBig = gRows.findAll { it.series_id.contains("pos1") }
+                .collect { new LinkedHashMap(it) + [size_x: 200000, size_y: 200000] }
+def hugeDir = new File(tmp, "out_huge")
+def hs = asm.assembleOne(tooBig, root, hugeDir, [format: "bigtiff"])
+check("failed, not thrown",            hs.status, "failed")
+check("says memory, and names frames=", hs.reason.contains("held in memory") && hs.reason.contains("frames="), true)
+check("nothing was written",           hugeDir.exists(), false)
+check("an ordinary output fits",       TA.fitsHeap(TA.predictBytes(gRows.findAll { it.series_id == sG0.series_id })), true)
 
 println "\n=== skipExisting resumes a run without redoing it ==="
 def skipDir = new File(tmp, "skip")

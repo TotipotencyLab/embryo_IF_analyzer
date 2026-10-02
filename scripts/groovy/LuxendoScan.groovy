@@ -37,6 +37,24 @@
 // confirmed against the sampled file's real `time_point`; a directory where the
 // name and the sidecar disagree is read in full. Turn `quickScan` off and no
 // path is consulted at all.
+//
+// WHERE THE FILE LIST COMES FROM -- `listing`, and the scan records which.
+//   index  `bdv.h5` + `bdv.xml`, which Luxendo writes beside raw/: the files
+//          the index links, each one stat-ed for its size and to prove it is
+//          there. No directory walk. LuxendoIndex has the measurements.
+//   walk   every directory under the acquisition, pairing `.lux.h5` with
+//          `.json` -- the v0.6.0 route, and the only one that can see a file
+//          the index does not list. With an index present it also compares
+//          the two and warns on any difference.
+//   auto   (default) the index when both files are there, else the walk.
+// Either way IDENTITY still comes from the sidecars, and on the index route
+// every placed file is checked against the index -- time point, channel,
+// stack, size, voxel size -- and a disagreement stops the scan.
+//
+// ONE SERIES PER POSITION BY DEFAULT (`gatherFrames`). A Luxendo stack is one
+// series in Bio-Formats' own sense -- x, y, z, c AND t -- which is how
+// Bio-Formats itself presents bdv.xml. The per-time-point split remains as an
+// option for tables made before the time axis existed.
 
 class LuxendoScan {
 
@@ -53,7 +71,26 @@ class LuxendoScan {
     static final String PIXEL_TYPE = "uint16"
     static final String PIXEL_UNIT = "micron"
 
+    static final String LISTING_AUTO  = "auto"
+    static final String LISTING_INDEX = "index"
+    static final String LISTING_WALK  = "walk"
+    static final List<String> LISTINGS = [LISTING_AUTO, LISTING_INDEX, LISTING_WALK]
+
+    /**
+     * Validated in code: a `#@ String` with choices={} is not validated on the
+     * command line, so a typo must not quietly mean "auto".
+     */
+    static String checkListing(Object v) {
+        def s = (v == null) ? "" : v.toString().trim().toLowerCase()
+        if (!s) return LISTING_AUTO
+        if (!LISTINGS.contains(s)) {
+            throw new IllegalArgumentException("listing must be one of " + LISTINGS + ", not '" + v + "'")
+        }
+        return s
+    }
+
     Object SC           // LuxendoSidecar class
+    Object IX           // LuxendoIndex class
     Object RX           // RoiExport class, for sanitize()
     Object SS           // SampleSheet instance, for composePrefix()
     String libDir
@@ -64,6 +101,7 @@ class LuxendoScan {
         def s = new LuxendoScan()
         s.libDir = libDir
         s.SC = gcl.parseClass(new File(dir, "LuxendoSidecar.groovy"))
+        s.IX = gcl.parseClass(new File(dir, "LuxendoIndex.groovy"))
         s.RX = gcl.parseClass(new File(dir, "RoiExport.groovy"))
         // THE PREFIX RULE LIVES IN ONE PLACE. composePrefix() is the repo's
         // own `sanitise(<alias>_s<NNNN>_<series_name>)`, and Luxendo follows it
@@ -150,24 +188,148 @@ class LuxendoScan {
     }
 
     /**
+     * The files the index links, in the order findPairs() would give them.
+     *
+     * Every one is stat-ed: that is what gives `source_bytes`, what proves the
+     * file is on disk, and what feeds quickScan's size check. It is also nearly
+     * all of what the index route costs -- 51-89 s of ~1 minute on the 4032-file
+     * acquisition over samba. Skipping it would make the scan seconds long and
+     * lose all three; that trade is recorded in the plan, not taken.
+     *
+     * `length()` first and `isFile()` only when it says 0, so a present file
+     * costs one round trip rather than two.
+     */
+    List<File> filesFromIndex(File dir, Object ix, Map<String, Long> sizes, Closure log) {
+        def files = [], missing = []
+        ix.entries.each { e ->
+            def f = new File(dir, e.source_path as String)
+            long len = f.length()
+            if (len == 0L && !f.isFile()) { missing << e.source_path; return }
+            sizes[f.getAbsolutePath()] = len
+            files << f
+        }
+        if (missing) {
+            throw new IllegalArgumentException(
+                IX.H5 + " lists " + missing.size() + " file(s) that are not on disk, e.g.\n  " +
+                missing.sort().take(5).join("\n  ") +
+                "\n  The index is stale or the data has moved. Scan with listing=walk to ignore it.")
+        }
+        log?.call("  " + files.size() + " file(s) listed by " + IX.H5 + ", none missing")
+        return files.unique().sort { it.getAbsolutePath() }
+    }
+
+    /**
+     * Every placed file against what the index says about it.
+     *
+     * On the index route the index chose the files, so if it disagrees with
+     * the sidecars about what one of them IS, one of the two is wrong and the
+     * tables would be built on whichever happened to be consulted. That stops
+     * the scan. The stack is compared through the setup NAME (`st:N`), never
+     * through `<tile>` -- see LuxendoIndex.
+     */
+    List<String> crossCheck(File dir, Object ix, Map info) {
+        def bySource = ix.entries.collectEntries { [(it.source_path): it] }
+        def bad = []
+        info.each { String path, sc ->
+            def rel = relative(dir, new File(path)).replace('\\', '/')
+            def e = bySource[rel]
+            if (e == null) return
+            def su = ix.setups[e.setup]
+            def diffs = []
+            if (e.t != sc.timePoint)                          diffs << ("t " + e.t + " vs " + sc.timePoint)
+            if (su.channel != null && su.channel != sc.channel) diffs << ("channel " + su.channel + " vs " + sc.channel)
+            if (su.stack != null && su.stack != sc.stack)       diffs << ("stack " + su.stack + " vs " + sc.stack)
+            if ([su.sizeX, su.sizeY, su.sizeZ] != [sc.sizeX, sc.sizeY, sc.sizeZ]) {
+                diffs << ("size " + [su.sizeX, su.sizeY, su.sizeZ].join("x") + " vs " +
+                          [sc.sizeX, sc.sizeY, sc.sizeZ].join("x"))
+            }
+            if (!near(su.pixelWidth, sc.pixelWidth) || !near(su.pixelHeight, sc.pixelHeight) ||
+                !near(su.pixelDepth, sc.pixelDepth)) {
+                diffs << ("voxel " + [su.pixelWidth, su.pixelHeight, su.pixelDepth] + " vs " +
+                          [sc.pixelWidth, sc.pixelHeight, sc.pixelDepth])
+            }
+            if (diffs) bad << (rel + " (setup " + e.setup + "): " + diffs.join(", ") + "  [index vs sidecar]")
+        }
+        return bad
+    }
+
+    private static boolean near(Double a, Double b) {
+        if (a == null || b == null) return a == b
+        return Math.abs(a - b) <= 1e-9 * Math.max(1d, Math.abs(a))
+    }
+
+    /** The walk and the index, compared as file sets. Paths only; warnings, not errors. */
+    List<String> compareWithIndex(File dir, List<File> walked, Object ix) {
+        def onDisk  = walked.collect { relative(dir, it).replace('\\', '/') }.toSet()
+        def indexed = ix.entries.collect { it.source_path as String }.toSet()
+        def out = []
+        def notIndexed = (onDisk - indexed).sort()
+        def notOnDisk  = (indexed - onDisk).sort()
+        if (notIndexed) {
+            out << (notIndexed.size() + " file(s) on disk that " + IX.H5 + " does not list, e.g. " +
+                    notIndexed.take(3).join(", ") +
+                    " -- listing=index would leave them out of the tables")
+        }
+        if (notOnDisk) {
+            out << (notOnDisk.size() + " file(s) listed by " + IX.H5 + " that the walk did not find " +
+                    "(missing, or no .json sidecar), e.g. " + notOnDisk.take(3).join(", "))
+        }
+        return out
+    }
+
+    /**
      * Scan an acquisition into the two tables.
      *
      * @param dir   the acquisition directory (the one holding raw/)
      * @param opts  alias        -- short handle for this acquisition; blank uses
      *                              the folder name
      *              gatherFrames -- every timepoint of a position in one series
+     *                              (default true)
      *              quickScan    -- one sidecar per DIRECTORY, not per file (default true)
+     *              listing      -- auto | index | walk (default auto); see the header
      * @param log   called with progress lines
-     * @return [series: List&lt;Map&gt;, sources: List&lt;Map&gt;, warnings: List&lt;String&gt;]
+     * @return [series: List&lt;Map&gt;, sources: List&lt;Map&gt;, warnings: List&lt;String&gt;,
+     *          listing: "index" | "walk" -- the route actually taken]
      */
     Map scan(File dir, Closure log = null) { return scan(dir, [:], log) }
 
     Map scan(File dir, Map opts, Closure log = null) {
-        boolean gatherFrames = (opts?.gatherFrames ?: false) as boolean
+        boolean gatherFrames = (opts != null && opts.containsKey("gatherFrames")) ? (opts.gatherFrames as boolean) : true
         boolean quick = (opts != null && opts.containsKey("quickScan")) ? (opts.quickScan as boolean) : true
+        String listing = checkListing(opts?.listing)
+        if (!dir.isDirectory()) {
+            throw new IllegalArgumentException("Not a directory: " + dir.getAbsolutePath())
+        }
 
         def sizes = new HashMap<String, Long>()
-        def files = findPairs(dir, log, sizes)
+        def listWarnings = []
+        boolean haveIndex = IX.present(dir)
+        def ix = null
+        String route
+        List<File> files
+        if (listing == LISTING_INDEX || (listing == LISTING_AUTO && haveIndex)) {
+            if (!haveIndex) {
+                throw new IllegalArgumentException(
+                    "listing=index, but there is no " + IX.H5 + " + " + IX.XML + " in " + dir.getAbsolutePath() +
+                    "\n  Luxendo writes them at the end of an acquisition. Use listing=walk.")
+            }
+            route = LISTING_INDEX
+            log?.call("  file list: " + IX.H5 + " + " + IX.XML + " (no directory walk)")
+            ix = IX.read(dir)
+            files = filesFromIndex(dir, ix, sizes, log)
+        } else {
+            route = LISTING_WALK
+            log?.call("  file list: walking the directory tree" +
+                      (haveIndex ? "" : " (no " + IX.H5 + " + " + IX.XML + " index here)"))
+            files = findPairs(dir, log, sizes)
+            if (haveIndex) {
+                // The walk is the only route that can see a file the index does
+                // not list, so with both available it says how they differ.
+                ix = IX.read(dir)
+                listWarnings.addAll(compareWithIndex(dir, files, ix))
+                if (!listWarnings) log?.call("  the walk and " + IX.H5 + " list the same files")
+            }
+        }
         // THE ALIAS IS THE OPERATOR'S, and the folder name is only its DEFAULT
         // -- exactly as `files.tsv`'s alias defaults to the basename. The whole
         // point of the column is to let a person name a run something other
@@ -179,6 +341,17 @@ class LuxendoScan {
         }
 
         def info = quick ? readSampled(dir, files, sizes, log) : readEvery(dir, files, log)
+
+        if (route == LISTING_INDEX) {
+            def bad = crossCheck(dir, ix, info)
+            if (bad) {
+                throw new IllegalArgumentException(
+                    IX.H5 + "/" + IX.XML + " and the sidecars disagree on " + bad.size() + " file(s), e.g.\n  " +
+                    bad.take(5).join("\n  ") +
+                    "\n  One of them is wrong. Scan with listing=walk to ignore the index.")
+            }
+            log?.call("  " + info.size() + " file(s) agree with the index on time point, channel, stack, size and voxel")
+        }
 
         def sources = []
         files.each { File f ->
@@ -221,9 +394,10 @@ class LuxendoScan {
         }
         sources = sortSources(sources)
         def series = buildSeries(sources, dir, alias)
-        def warnings = validate(series, sources, log)
+        listWarnings.each { log?.call("WARNING: " + it) }
+        def warnings = listWarnings + validate(series, sources, log)
         sources.each { r -> r.remove("_position_id"); r.remove("_stack"); r.remove("_stack_desc") }
-        return [series: series, sources: sources, warnings: warnings]
+        return [series: series, sources: sources, warnings: warnings, listing: route]
     }
 
     /**

@@ -44,7 +44,9 @@ def root = FIX.buildTree(new File(tmp, "acq"), positions, channels, 2)
 
 println "=== the tree scans into TWO tables ==="
 def logLines = []
-def res  = scanner.scan(root) { logLines << it }
+// The per-time-point layout and the WALK, explicitly: most of what follows
+// pins those, and both stopped being defaults (see the sections near the end).
+def res  = scanner.scan(root, [gatherFrames: false, listing: "walk"]) { logLines << it }
 def rows = res.sources
 def ser  = res.series
 check("sources = positions x channels x t", rows.size(), 2 * 3 * 2)
@@ -74,7 +76,7 @@ FIX.writeSidecar(new File(root, "raw/notes.json"),
                  [stack: "9", channel: "9", time_point: "9",
                   image_size_vx: [width: 1, height: 1, depth: 1]])
 def strayLog = []
-def strayRes = scanner.scan(root) { strayLog << it }
+def strayRes = scanner.scan(root, [gatherFrames: false, listing: "walk"]) { strayLog << it }
 check("no row for the stray json", strayRes.sources.size(), rows.size())
 check("and it is reported",        strayLog.any { it.contains("no .lux.h5 beside it") }, true)
 new File(root, "raw/notes.json").delete()
@@ -110,7 +112,7 @@ println "\n=== the alias is the OPERATOR'S, and it is part of the series id ==="
 // acquisition. Measured on two real acquisitions: all 14 stack identities were
 // identical, so both produced s0000_L26A_pos1_t0000 and, run separately into
 // one output directory, would overwrite each other's results.
-def named = scanner.scan(root, [alias: "fucci_rep2"]) { }
+def named = scanner.scan(root, [alias: "fucci_rep2", gatherFrames: false]) { }
 check("the given alias leads the series id",
       named.sources.every { it.series_id.startsWith("fucci_rep2_s") }, true)
 check("and is recorded on the series row", named.series[0].alias, "fucci_rep2")
@@ -165,7 +167,7 @@ check("first row is series 0, t 0, channel 0",
       rows[0].series_id + "/t" + rows[0].t + "/c" + rows[0].channel,
       "acq_s0000_L26A_pos1_t0000/t0/c0")
 // and it is reproducible run to run
-def rows2 = scanner.scan(root) { }.sources
+def rows2 = scanner.scan(root, [gatherFrames: false]) { }.sources
 check("second scan gives the same order",
       rows2.collect { it.source_path }, rows.collect { it.source_path })
 
@@ -231,10 +233,13 @@ FIX.writeLux(new File(ragged, "c1/Cam_long_00000.lux.h5"), 2, 6, 4, [stack: 0, c
 throwsWith("channels disagree on z", "disagree on dimensions",
            { scanner.scan(ragged) { } })
 
-println "\n=== gatherFrames regroups the tables, and nothing else ==="
+println "\n=== one series per position is the default; gatherFrames only regroups ==="
 // The gathering decision belongs to the SCAN, so the series table describes the
-// file it will produce. Same sources, same count, different grouping.
-def gRes  = scanner.scan(root, [gatherFrames: true]) { }
+// file it will produce. Same sources, same count, different grouping. Default
+// since a Luxendo stack is one series in Bio-Formats' own sense, t included.
+def gRes  = scanner.scan(root) { }
+check("the default IS gathered",
+      gRes.series, scanner.scan(root, [gatherFrames: true]) { }.series)
 check("same sources",            gRes.sources.size(), rows.size())
 check("one series per position", gRes.series.size(), 2)
 check("was one per timepoint",   ser.size(), 4)
@@ -250,7 +255,7 @@ check("gathering is not mistaken for a duplicate source",
       scanner.validate(gRes.series, gRes.sources) { }.findAll { it.contains("same series channel") }, [])
 
 println "\n=== quickScan reads one sidecar per directory, and agrees with the slow path ==="
-def slow = scanner.scan(root, [quickScan: false]) { }
+def slow = scanner.scan(root, [quickScan: false, gatherFrames: false]) { }
 check("same sources either way", slow.sources, rows)
 check("same series either way",  slow.series, ser)
 // A timepoint of a different depth must NOT be assumed away: its file size
@@ -260,13 +265,13 @@ def trunc = new File(tmp, "trunc"); trunc.mkdirs()
 FIX.writeLux(new File(trunc, "c0/Cam_long_00000.lux.h5"), 8, 16, 16, [stack: 0, channel: 0, tp: 0])
 FIX.writeLux(new File(trunc, "c0/Cam_long_00001.lux.h5"), 2, 16, 16, [stack: 0, channel: 0, tp: 1])
 def tLog = []
-def tRes = scanner.scan(trunc, [quickScan: true]) { tLog << it }
+def tRes = scanner.scan(trunc, [quickScan: true, gatherFrames: false]) { tLog << it }
 check("the odd frame is read in full, not assumed",
       tRes.sources.collect { it.size_z }.sort(), [2, 8])
 check("and the difference is logged",
       tLog.any { it.contains("size differs from its siblings") }, true)
 check("quickScan agrees with the slow path here too",
-      scanner.scan(trunc, [quickScan: false]) { }.sources, tRes.sources)
+      scanner.scan(trunc, [quickScan: false, gatherFrames: false]) { }.sources, tRes.sources)
 
 // The time point is the ONE fact the sampled sidecar cannot supply -- it is the
 // axis the directory runs along -- so quickScan takes it from the filename, and
@@ -278,12 +283,12 @@ def tpDir = new File(tmp, "tp"); tpDir.mkdirs()
     FIX.writeLux(new File(tpDir, "c0/Cam_long_" + String.format("%05d", t) + ".lux.h5"),
                  2, 6, 4, [stack: 0, channel: 0, tp: t])
 }
-def tpRes = scanner.scan(tpDir, [quickScan: true]) { }
+def tpRes = scanner.scan(tpDir, [quickScan: true, gatherFrames: false]) { }
 check("every time point survives quickScan",
       tpRes.sources.collect { it.t }.sort(), [0, 1, 2, 3])
 check("one series per time point", tpRes.series.size(), 4)
 check("and it matches the slow path",
-      scanner.scan(tpDir, [quickScan: false]) { }.sources, tpRes.sources)
+      scanner.scan(tpDir, [quickScan: false, gatherFrames: false]) { }.sources, tpRes.sources)
 
 // A directory whose filenames do NOT encode the time point falls back to
 // reading every sidecar, and says so -- rather than trusting the name.
@@ -303,9 +308,13 @@ def wobble = new File(tmp, "wobble"); wobble.mkdirs()
 FIX.writeLux(new File(wobble, "t0/Cam_long_00000.lux.h5"), 3, 6, 4, [stack: 0, channel: 0, tp: 0])
 FIX.writeLux(new File(wobble, "t1/Cam_long_00001.lux.h5"), 2, 6, 4, [stack: 0, channel: 0, tp: 1])
 def wLog = []
-def wRows = scanner.scan(wobble) { wLog << it }.sources
+def wRows = scanner.scan(wobble, [gatherFrames: false]) { wLog << it }.sources
 check("z wobble warns, does not throw", wRows.size(), 2)
 check("and says which position",        wLog.any { it.contains("changes z between time points") }, true)
+// Folded into one series -- the default -- there is no single volume shape
+// left to build, so the same tree stops the scan.
+throwsWith("but folded into one series it is fatal", "disagree on dimensions",
+           { scanner.scan(wobble) { } })
 
 // A gap in the time points means a file is missing.
 def gap = new File(tmp, "gap"); gap.mkdirs()
@@ -329,6 +338,90 @@ def badSeries = ser.collect { new LinkedHashMap(it) }
 badSeries[0].prefix = "renamed_by_hand"
 throwsWith("an orphaned source is fatal", "do not agree on series_id",
            { scanner.validate(badSeries, rows) { } })
+
+println "\n=== the file list comes from bdv.h5 when it is there ==="
+// Luxendo writes bdv.h5 + bdv.xml at the end of an acquisition; LuxFixture's
+// tree has them. Over samba the walk is minutes and the index ~1 s, so the
+// default takes the index -- and must then build EXACTLY the walk's tables.
+def autoRes = scanner.scan(root) { }
+check("auto took the index",           autoRes.listing, "index")
+check("walk says it walked",           res.listing, "walk")
+["gathered": true, "per time point": false].each { String what, boolean g ->
+    def viaIndex = scanner.scan(root, [gatherFrames: g, listing: "index"]) { }
+    def viaWalk  = scanner.scan(root, [gatherFrames: g, listing: "walk"]) { }
+    check("index == walk, sources (" + what + ")", viaIndex.sources, viaWalk.sources)
+    check("index == walk, series ("  + what + ")", viaIndex.series,  viaWalk.series)
+}
+check("and the index sees every file",  autoRes.sources.size(), rows.size())
+def bothLog = []
+scanner.scan(root, [listing: "walk"]) { bothLog << it }
+check("walking beside an index compares the two",
+      bothLog.any { it.contains("list the same files") }, true)
+throwsWith("a typo in listing refuses", "listing must be one of", { LS.checkListing("idx") })
+
+// No index: auto walks, and says why; index refuses rather than walking anyway.
+def plain = FIX.buildTree(new File(tmp, "plain"), positions, channels, 2, 6, 4, false)
+def plainLog = []
+check("no index -> auto walks", scanner.scan(plain) { plainLog << it }.listing, "walk")
+check("and says there was no index", plainLog.any { it.contains("no bdv.h5 + bdv.xml index here") }, true)
+throwsWith("listing=index with no index", "there is no bdv.h5", { scanner.scan(plain, [listing: "index"]) { } })
+
+println "\n=== <tile> is not the stack number, and nothing reads it ==="
+// Luxendo numbers setups in TEXT order of the stack, so with stacks 0, 2 and 10
+// the tiles are 0 (st:0), 1 (st:10), 2 (st:2). Shown on the fixture first, so
+// this cannot pass because the fixture never set the trap.
+def tilePos = [[stack: 0, desc: "a", nz: 2], [stack: 2, desc: "b", nz: 2], [stack: 10, desc: "c", nz: 2]]
+def tileChs = [[index: 0, name: "BF"]]
+def spec10  = FIX.bdvSpec(tilePos, tileChs, 1)
+check("fixture: st:10 sits at tile 1", spec10.setups.find { it.name.contains("_st:10_") }.tile, 1)
+check("fixture: st:2 sits at tile 2",  spec10.setups.find { it.name.contains("_st:2_") }.tile, 2)
+def tileRoot = FIX.buildTree(new File(tmp, "tile"), tilePos, tileChs, 1)
+def tileRes  = scanner.scan(tileRoot, [listing: "index"]) { }
+check("stack 10 keeps its own number",
+      tileRes.series.find { it.series_name == "c" }.series_index, 10)
+check("and stack 2 its own",
+      tileRes.series.find { it.series_name == "b" }.series_index, 2)
+
+println "\n=== the index decides the file list, so a stale one is caught ==="
+// "Same tables as the walk" could also mean "the index route never ran". These
+// prove it ran: the index alone decides which files are rows.
+def staleRoot = FIX.buildTree(new File(tmp, "stale"), positions, channels, 2)
+def full = FIX.bdvSpec(positions, channels, 2)
+def dropped = full.links[-1]
+FIX.writeBdv(staleRoot, full.setups, full.links.findAll { !it.is(dropped) })
+def stLog = []
+def stIdx = scanner.scan(staleRoot, [listing: "index", gatherFrames: false]) { stLog << it }
+check("a file the index omits is not a row",
+      stIdx.sources.size(), rows.size() - 1)
+check("namely that one", stIdx.sources.any { it.source_path == dropped.target }, false)
+def stWalkLog = []
+def stWalk = scanner.scan(staleRoot, [listing: "walk", gatherFrames: false]) { stWalkLog << it }
+check("the walk still finds it",           stWalk.sources.size(), rows.size())
+check("and warns that the index omits it", stWalk.warnings.any { it.contains("does not list") }, true)
+
+// The other way round: the index lists a file that is not on disk.
+FIX.writeBdv(staleRoot, full.setups, full.links)
+new File(staleRoot, dropped.target as String).delete()
+throwsWith("an indexed file that is gone stops the scan", "not on disk",
+           { scanner.scan(staleRoot, [listing: "index"]) { } })
+
+println "\n=== the index and the sidecars must agree on what each file is ==="
+def lieRoot = FIX.buildTree(new File(tmp, "lie"), positions, channels, 2)
+def lie = FIX.bdvSpec(positions, channels, 2)
+lie.setups[0].nz = 7
+FIX.writeBdv(lieRoot, lie.setups, lie.links)
+throwsWith("index says 7 slices, sidecar says 3", "disagree on",
+           { scanner.scan(lieRoot, [listing: "index"]) { } })
+// A link pointing at another time point's file: the sidecar says t=1, the
+// index says t=0.
+def swap = FIX.bdvSpec(positions, channels, 2)
+def l0 = swap.links.find { it.t == 0 }, l1 = swap.links.find { it.setup == l0.setup && it.t == 1 }
+def tgt = l0.target; l0.target = l1.target; l1.target = tgt
+FIX.writeBdv(lieRoot, swap.setups, swap.links)
+throwsWith("index and sidecar disagree on the time point", "disagree on",
+           { scanner.scan(lieRoot, [listing: "index", quickScan: false]) { } })
+check("the walk does not consult it for identity",
+      scanner.scan(lieRoot, [listing: "walk"]) { }.sources.size(), rows.size())
 
 tmp.deleteDir()
 println "\n=== ${passed} passed, ${failed} FAILED ==="

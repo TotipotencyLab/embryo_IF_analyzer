@@ -160,3 +160,72 @@ Probed in the same Fiji:
 Zarr and N5 are therefore write-only dead ends in this install. Classic TIFF
 caps at 4 GB; one position x 4 timepoints at full resolution is 3.93 GB, so the
 ceiling is real and close.
+
+## 7. `bdv.h5` + `bdv.xml` as a file list — readable, and not a source of identity
+
+Bio-Formats cannot read *pixels* through `bdv.xml` (§5), but the two files are
+still worth reading directly, as an **index**: `bdv.h5` holds one HDF5 external
+link per (time point, setup) at `/t<NNNNN>/s<NN>/0/cells`, pointing at the raw
+file, and `bdv.xml` holds each setup's size and voxel size. Read without
+dereferencing a link, that is the complete file list of the acquisition without
+listing `raw/`. `LuxendoIndex.groovy` reads it; `LuxendoScan` uses it by default
+(`listing=auto`).
+
+Measured on both acquisitions (33 GB and 800 GB, over samba, 2026-10-02):
+
+| | 168 files | 4032 files |
+|---|---|---|
+| links, every setup at every time point, none missing | 168 = 42 × 4 | 4032 = 42 × 96 |
+| sidecar `time_point` == the link's `t` | 42 / 42 dirs | 42 / 42 |
+| `bdv.xml` channel, size, voxel == sidecar | 42 / 42 | 42 / 42 |
+| stack in the setup **name** (`st:N`) == sidecar `stack` | 42 / 42 | 42 / 42 |
+| **`<tile>` == sidecar `stack`** | **6 / 42** | **6 / 42** |
+
+**What it holds:** which file is which (time point, setup), sizes, voxel sizes,
+channel index. **What it does not:** the position label (`L26A pos1`), the
+channel name, and the stack number anywhere but inside a setup *name*. So the
+index is a **file list and a cross-check**; identity still comes from one
+sidecar per directory.
+
+⚠️ **`<tile>` is not the stack.** Setups are numbered in *text* order of the
+stack — `st:0, st:1, st:10, st:11, st:12, st:13, st:2, …` — and `tile` is that
+ordinal, so it matches the stack only for stacks 0 and 1. Keying on it would
+give `fucci pos2` (stack 10) the identity of `L26A pos3` (stack 2), and nothing
+would look wrong.
+
+⚠️ **It is written at the end of the acquisition.** All three index files
+(`bdv.xml`, `bdv.h5`, `main_raw.lux.h5`) carry one timestamp, 83 s after the
+last raw file. A crashed or still-running acquisition may have no index or a
+stale one, and the index route cannot see a file it does not list — which is
+what `listing=walk` is for.
+
+⚠️ **The sidecar's planned count is not the actual one.** `metaData.triggers`
+records `repeats: 96` for the 33 GB acquisition, which holds 4 time points: it
+was stopped early. Do not use it as a completeness check. The same block holds
+`interval_s` (1800 here) — the frame interval, which the time-axis work will
+want as the time calibration.
+
+**Cost, one session, the 4032-file acquisition over samba:**
+
+| step | time |
+|---|---|
+| parse `bdv.h5` in place over samba | 5.7–6.2 s |
+| copy `bdv.h5` + `bdv.xml` locally, then parse | 0.7 s |
+| read one sidecar per directory (42) | 1.8–4.5 s |
+| `length()` of each of the 4032 files | **51–89 s** |
+| v0.6.0 directory walk, `quickScan` | 175–231 s |
+| `Make_LuxendoSheets`, index route, end to end | 77–79 s |
+
+The walk took 175–231 s here, not the ~480 s recorded in
+`note/time_series_plan.md` §5.6 — network conditions vary; treat both as a
+range. Which of the two routes ran first changed the other's time by a factor of
+up to ~1.7, so compare within a session only.
+
+**The per-file stat is nearly all of what the index route costs**, and it is
+kept on purpose (option A in the plan): it is what gives `source_bytes`, what
+proves each listed file is there, and what feeds `quickScan`'s
+size-differs-from-its-siblings check. Dropping it would make the scan ~3–6 s and
+move all three elsewhere — a missing file would surface when the batch opens it,
+`source_bytes` would become optional, and a time point of a different depth would
+rest on `bdv.xml`'s one size per setup. Recorded as option B in
+`note/time_series_plan.md`, not built.

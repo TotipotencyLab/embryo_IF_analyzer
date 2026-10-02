@@ -117,6 +117,48 @@ class TiffAssembler {
 
     static boolean fitsClassicTiff(long bytes) { return bytes < CLASSIC_TIFF_MAX }
 
+    /**
+     * The share of the heap one output may hold. assembleOne builds the whole
+     * stack before writing it, so the payload has to fit in memory as well as
+     * in the format -- and a gathered 96-frame position is ~94 GB, which
+     * bigtiff would accept and the heap cannot. Checked from the manifest,
+     * before a byte is read, rather than discovered as an OutOfMemoryError
+     * after reading eight of those gigabytes over the network.
+     */
+    static final double HEAP_SHARE = 0.75d
+
+    static boolean fitsHeap(long bytes) {
+        return bytes <= (long) (Runtime.getRuntime().maxMemory() * HEAP_SHARE)
+    }
+
+    /**
+     * A time-point selection: blank or "all" = every frame (null), otherwise
+     * a comma list of time points and ranges -- "0", "0,47,95", "0-3,10".
+     * Validated in code, like the format and scale.
+     */
+    static List<Integer> parseFrames(Object v) {
+        def s = (v == null) ? "" : v.toString().trim().toLowerCase()
+        if (!s || s == "all") return null
+        def out = new TreeSet<Integer>()
+        s.split(/\s*,\s*/).each { String part ->
+            def m = (part =~ /^(\d+)(?:\s*-\s*(\d+))?$/)
+            if (!m) {
+                throw new IllegalArgumentException(
+                    "frames must be blank, 'all', or time points like 0,47,95 or 0-3; got >>>" + v + "<<<")
+            }
+            int a = Integer.parseInt(m[0][1] as String)
+            int b = m[0][2] ? Integer.parseInt(m[0][2] as String) : a
+            if (b < a) throw new IllegalArgumentException("frames: range " + part + " runs backwards")
+            (a..b).each { out << it }
+        }
+        return out.toList()
+    }
+
+    /** The output base for one frame taken out of a multi-frame series. */
+    static String frameBase(String seriesId, Object t) {
+        return seriesId + "_" + String.format("t%04d", t as int)
+    }
+
     /** Validate a format name in code: a `#@ String` with choices is NOT validated. */
     static String checkFormat(String f) {
         def v = (f ?: TIFF).toString().trim().toLowerCase()
@@ -167,7 +209,9 @@ class TiffAssembler {
         // series_id + ".tif", and a stored copy of a derived value is a second
         // thing to keep in step. The scan already folded gatherFrames into
         // series_id (gathered -> the position), so one rule covers both shapes.
-        def name      = outputName(first.series_id as String, pct, format)
+        // `base` is set only when one frame is taken out of a multi-frame
+        // series, and is then series_id + _t<TTTT> -- see groupByOutput.
+        def name      = outputName((opts.base ?: first.series_id) as String, pct, format)
         // One row per (channel, timepoint). When the manifest gathered a whole
         // position into one output these are many timepoints; when it did not,
         // `frames` is 1 and every loop below collapses to what it was.
@@ -210,7 +254,16 @@ class TiffAssembler {
             // One row's failure must not cost the rest of the run.
             summary.status = "failed"
             summary.reason = "needs " + predicted + " bytes, over the classic TIFF limit of " +
-                             CLASSIC_TIFF_MAX + "; use format=bigtiff"
+                             CLASSIC_TIFF_MAX + "; use format=bigtiff" +
+                             (frames.size() > 1 ? ", or choose time points with frames=" : "")
+            return summary
+        }
+        if (!fitsHeap(predicted)) {
+            summary.status = "failed"
+            summary.reason = "needs " + predicted + " bytes held in memory, over " +
+                             (int) (HEAP_SHARE * 100) + "% of the " + Runtime.getRuntime().maxMemory() +
+                             "-byte heap" + (frames.size() > 1 ? "; choose time points with frames=" : "") +
+                             (pct == FULL ? ", or downscale" : "")
             return summary
         }
 
@@ -300,12 +353,20 @@ class TiffAssembler {
         String format = checkFormat(opts.format as String)
         int pct        = checkScalePercent(opts.scalePercent)
         boolean verify = (opts.verify ?: false) as boolean
+        def frameSel   = parseFrames(opts.frames)
 
-        def groups = groupByOutput(rows)
+        def groups = groupByOutput(rows, frameSel)
         log?.call("  " + groups.size() + " output(s), format=" + format +
+                  (frameSel != null ? (", time points " + frameSel + " each in its own file") : "") +
                   (pct < FULL ? (", downscaled to " + pct + "%") : "") +
                   (opts.skipExisting ? ", skipping ones already assembled" : "") +
                   (verify ? ", verifying" : ""))
+        if (frameSel != null) {
+            def absent = frameSel - rows.collect { it.t as int }.unique()
+            if (absent) {
+                log?.call("WARNING: no source has time point(s) " + absent + "; nothing is written for them")
+            }
+        }
 
         // Say what will not fit BEFORE writing anything, so a person can choose
         // the format rather than discover it after twenty minutes of writing.
@@ -315,7 +376,8 @@ class TiffAssembler {
             // noise is what stops warnings being read.
             def includeOf = (opts.includeBySeries ?: [:])
             def over = groups.findAll { k, v ->
-                isIncluded(includeOf.containsKey(k) ? includeOf[k] : "true") &&
+                def sid = v[0].series_id as String
+                isIncluded(includeOf.containsKey(sid) ? includeOf[sid] : "true") &&
                 !fitsClassicTiff(predictBytes(v, pct))
             }
             if (over) {
@@ -330,8 +392,12 @@ class TiffAssembler {
         def summaries = []
         def includeBy = (opts.includeBySeries ?: [:])
         groups.each { String out, List<Map> group ->
-            def inc = includeBy.containsKey(out) ? includeBy[out] : "true"
-            def s = assembleOne(group, srcRoot, outDir, opts + [include: inc])
+            // include belongs to the SERIES, so it is looked up by series_id --
+            // not by the output name, which differs once a frame is taken out.
+            def sid = group[0].series_id as String
+            def inc = includeBy.containsKey(sid) ? includeBy[sid] : "true"
+            def s = assembleOne(group, srcRoot, outDir,
+                                opts + [include: inc, base: (out == sid ? null : out)])
             if (s.status == "written") {
                 writeProvenance(outDir, s, group, srcRoot)
                 if (verify) {
@@ -354,14 +420,29 @@ class TiffAssembler {
         return summaries
     }
 
-    /** Manifest rows grouped into outputs, in manifest order. */
-    static Map<String, List<Map>> groupByOutput(List<Map> rows) {
+    /**
+     * Manifest rows grouped into outputs, in manifest order, keyed by output base.
+     *
+     * With no frame selection, one output per series -- every frame it holds.
+     * With one, only the chosen time points, and each in its OWN file: a frame
+     * taken out of a multi-frame series is named series_id + _t<TTTT>, so
+     * frame 0 and frame 47 of one position cannot overwrite each other. A
+     * series that holds a single frame keeps its own name either way.
+     */
+    static Map<String, List<Map>> groupByOutput(List<Map> rows, List<Integer> frames = null) {
+        def framesPerSeries = rows.groupBy { it.series_id }
+                                  .collectEntries { k, v -> [k, v.collect { it.t as int }.unique().size()] }
         def m = new LinkedHashMap()
         rows.sort(false) { a, b ->
             (a.series_id <=> b.series_id) ?:
             ((a.t as int) <=> (b.t as int)) ?:
             ((a.channel as int) <=> (b.channel as int))
-        }.each { r -> m.computeIfAbsent(r.series_id as String, { [] }) << r }
+        }.each { r ->
+            if (frames != null && !frames.contains(r.t as int)) return
+            def key = (frames != null && framesPerSeries[r.series_id] > 1)
+                      ? frameBase(r.series_id as String, r.t) : (r.series_id as String)
+            m.computeIfAbsent(key, { [] }) << r
+        }
         return m
     }
 

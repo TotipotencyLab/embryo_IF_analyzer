@@ -103,22 +103,26 @@ class LuxFixture {
         return f
     }
 
+    static String dirName(Map pos, Map ch) {
+        return "stack_${pos.stack}-${pos.desc}_channel_${ch.index}" + (ch.name ? "-${ch.name}" : "") + "_obj_bottom"
+    }
+
     /**
      * A miniature acquisition tree, laid out as Luxendo does it.
      *
      * @param positions list of [stack: n, desc: "...", nz: n] maps
      * @param channels  list of [index: n, name: "..."] maps (name null = unnamed)
      * @param nT        time points per position
+     * @param bdv       also write the bdv.h5 + bdv.xml index, as Luxendo does at
+     *                  the end of an acquisition (default true)
      */
     static File buildTree(File root, List positions, List channels, int nT,
-                          int ny = 6, int nx = 4) {
+                          int ny = 6, int nx = 4, boolean bdv = true) {
         def raw = new File(root, "raw")
         positions.each { pos ->
             channels.each { ch ->
-                def dirName = "stack_${pos.stack}-${pos.desc}_channel_${ch.index}" +
-                              (ch.name ? "-${ch.name}" : "") + "_obj_bottom"
                 (0..<nT).each { int t ->
-                    writeLux(new File(new File(raw, dirName), String.format("Cam_long_%05d.lux.h5", t)),
+                    writeLux(new File(new File(raw, dirName(pos, ch)), String.format("Cam_long_%05d.lux.h5", t)),
                              (pos.nz as int), ny, nx,
                              [stack: pos.stack, stackDesc: pos.desc,
                               channel: ch.index, chanDesc: ch.name,
@@ -127,6 +131,77 @@ class LuxFixture {
             }
         }
         writeIndex(new File(root, "main_raw.lux.h5"))
+        if (bdv) {
+            def spec = bdvSpec(positions, channels, nT, ny, nx)
+            writeBdv(root, spec.setups, spec.links)
+        }
         return root
+    }
+
+    /**
+     * What Luxendo's bdv.xml + bdv.h5 hold for a tree built by buildTree.
+     *
+     * ⚠️ SETUPS ARE NUMBERED IN TEXT ORDER OF THE STACK, as on the real
+     * acquisition -- st:0, st:1, st:10, st:11, ..., st:2 -- and `tile` is that
+     * ordinal. So with a stack of 10 or more, `tile` stops being the stack
+     * number, which is the hazard a test has to be able to show.
+     *
+     * Returned rather than written, so a test can damage it first.
+     */
+    static Map bdvSpec(List positions, List channels, int nT, int ny = 6, int nx = 4) {
+        def ordered = positions.sort(false) { a, b -> a.stack.toString() <=> b.stack.toString() }
+        def setups = [], links = []
+        ordered.eachWithIndex { pos, int tile ->
+            channels.each { ch ->
+                int id = setups.size()
+                setups << [id: id, name: "ch:${ch.index}_st:${pos.stack}_ang:h0-v90_obj:bottom_cam:long".toString(),
+                           channel: ch.index, tile: tile, nx: nx, ny: ny, nz: pos.nz,
+                           vox: [0.208, 0.208, 5.0]]
+                (0..<nT).each { int t ->
+                    links << [t: t, setup: id,
+                              target: "raw/" + dirName(pos, ch) + "/" + String.format("Cam_long_%05d.lux.h5", t)]
+                }
+            }
+        }
+        return [setups: setups, links: links]
+    }
+
+    /**
+     * bdv.h5 (one external link per (time point, setup) at /tNNNNN/sNN/0/cells,
+     * plus a non-link dataset per setup as the real one has) and bdv.xml.
+     */
+    static void writeBdv(File root, List<Map> setups, List<Map> links) {
+        def h5 = new File(root, "bdv.h5")
+        h5.delete()
+        def w = HDF5Factory.open(h5)
+        try {
+            setups.each { s ->
+                w.float64().writeMatrix(String.format("/s%02d/resolutions", s.id as int), [[1d, 1d, 1d]] as double[][])
+            }
+            links.each { l ->
+                def group = String.format("/t%05d/s%02d/0", l.t as int, l.setup as int)
+                if (!w.object().exists(group)) w.object().createGroup(group)
+                w.object().createExternalLink(l.target as String, "Data", group + "/cells")
+            }
+        } finally {
+            w.close()
+        }
+        def nT = links.collect { it.t as int }.max()
+        def sb = new StringBuilder()
+        sb << '<?xml version="1.0" encoding="UTF-8"?>\n<SpimData version="0.2">\n'
+        sb << '  <BasePath type="relative">.</BasePath>\n  <SequenceDescription>\n'
+        sb << '    <ImageLoader format="bdv.hdf5"><hdf5 type="relative">bdv.h5</hdf5></ImageLoader>\n'
+        sb << '    <ViewSetups>\n'
+        setups.each { s ->
+            sb << "      <ViewSetup>\n        <id>${s.id}</id>\n        <name>${s.name}</name>\n"
+            sb << "        <size>${s.nx} ${s.ny} ${s.nz}</size>\n"
+            sb << "        <voxelSize><unit>micrometer</unit><size>${s.vox.join(' ')}</size></voxelSize>\n"
+            sb << "        <attributes><channel>${s.channel}</channel><angle>0</angle><tile>${s.tile}</tile></attributes>\n"
+            sb << "      </ViewSetup>\n"
+        }
+        sb << '    </ViewSetups>\n'
+        sb << "    <Timepoints type=\"range\"><first>0</first><last>${nT}</last></Timepoints>\n"
+        sb << '  </SequenceDescription>\n</SpimData>\n'
+        new File(root, "bdv.xml").setText(sb.toString(), "UTF-8")
     }
 }
