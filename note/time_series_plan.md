@@ -861,6 +861,19 @@ Real data, read only:
 - the control, on the same table without the partition: 6 nuclei, each three
   frames deep — the plausible wrong answer the partition exists to prevent.
 
+#### Extra — `time_axis-one_file`  ✅ done
+
+Asked for 2026-10-03, for testing before PR 3: until the batch streams a
+Luxendo series, a time course reaches it only as a TIFF, and `frames` wrote one
+file per time point. `Make_LuxendoTiff`'s `oneFile` gathers the chosen time
+points into one file per series, named after the selection
+(`_t0002_t0011_t0021`). Verified on 2026-09-10_203030 position 1: time points
+2, 11, 21 in one file, each frame pixel-identical (CRC32) to the v0.7.0
+per-frame TIFFs `_t0001`, `_t0010`, `_t0020` — which also confirms those were
+named 0-based. ⚠️ The analysis counts frames inside that file, so its `t` is
+not the time point; `_gather.txt`'s `time_points` maps one to the other. PR 3's
+streaming carries the real `t` and makes this a convenience again.
+
 #### PR 3 — `time_axis-stream`
 
 - [ ] 🔒 **The one resolver** (§3.2b): membership in the sources table decides,
