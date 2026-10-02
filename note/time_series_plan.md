@@ -737,10 +737,8 @@ outputs in scratch:
 are regenerated with `Make_SeriesSheet` / `Make_LuxendoSheets`.
 
 **Moved to `time_axis`** (2026-10-02): `feature_id` as `<feature_type>_<NNNN>`,
-numbered globally within a series. Today it is `nucleus_1` — unpadded, per
-image — and the global numbering only means something once
-`define_feature_group()` gains its time partition, which is `time_axis` work;
-changing the id once rather than twice.
+numbered globally within a series — done in `time_axis` PR 2, together with
+the time partition the global numbering needed, so the id changed once.
 
 ### `time_axis` — time axis through the pipeline
 
@@ -830,15 +828,38 @@ Real data, read only:
   identical but `t` and `channel` each +1; `frames=1` writes the pixels
   `main`'s `frames=0` did (same checksum); an old table and `frames=0` refused.
 
-#### PR 2 — `time_axis-features`
+#### PR 2 — `time_axis-features`  ✅ done
 
-- [ ] ⚠️ `define_feature_group()` has **no partition argument today**
-      ([define_feature_group.r:72-83](../scripts/R/define_feature_group.r)).
-      Add one, **and make the numbering global within the series**, or every
-      timepoint emits `nucleus_1`. 🔒 And change the id format here, once:
-      `<feature_type>_<NNNN>`, four-digit padding (moved from `vocab`). The
-      fixture's R expectations, `note/data_formats.md` §5 and the R tests move
-      with it. Lifts PR 1's refusal of multi-frame tables.
+- [x] `define_feature_group(partition = "t")`: each frame grouped on its own,
+      in `t` order, **numbered on from the last frame** — frame 2 starts where
+      frame 1 ended, so a `feature_id` names one object at one time point and
+      is unique in the series. 🔒 `<feature_type>_<NNNN>`, four digits fixed
+      (`.feature_ids()`), and `invalid_<feature_type>_<NNNN>` likewise. A
+      warning from one frame names it (`t = 2: All ROIs were filtered out`);
+      a single frame reads as before. Lifts PR 1's refusal.
+- [x] **What lifting the refusal exposed**, each of which would otherwise have
+      summed or mixed frames silently:
+      - `--within` relates each `(series_id, t)` on its own — the same nucleus
+        one time point later sits in nearly the same place and would score;
+      - `feature_counts.tsv` gains `t` and counts per frame, the summary groups
+        by `t`, and the plot is drawn over `t` (a bar per series would stack
+        the frames into their sum);
+      - the annotate QC plot is not drawn for several frames (it says so), and
+        `montage_qc_cli.r` refuses them — both are pictures of one image;
+      - `t` joins the reserved series-table column names.
+
+**Verification, as carried out** (R 4.6.1, 1040 / 0):
+- the fixture, `time_axis` against this branch, annotate → feature_stat →
+  count with `--within`: every table identical once `nucleus_3` is read as
+  `nucleus_0003`; the `.rds` identical in data and geometry; the QC PNG
+  byte-identical; `run_id` unchanged; the counts gain `t = 1`;
+- a real 3-frame image through Fiji — the fixture, the fixture shifted by
+  (12, 8) px, the fixture again: 6 nuclei and 7 nucleoli per frame, numbered
+  `0001–0006`, `0007–0012`, `0013–0018`; frames 1 and 3 identical in every
+  statistic to the single-frame run, frame 2 within 2 × 10⁻⁴ (the outline
+  coordinates' rounding); no nucleolus placed in another frame's nucleus;
+- the control, on the same table without the partition: 6 nuclei, each three
+  frames deep — the plausible wrong answer the partition exists to prevent.
 
 #### PR 3 — `time_axis-stream`
 

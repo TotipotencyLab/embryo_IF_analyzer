@@ -241,22 +241,32 @@ test_that("annotate_features_cli stops when the sheet excludes everything", {
 
 # --- the time axis --------------------------------------------------------------
 
-test_that("an outline table holding several frames is refused, not grouped across time", {
+test_that("several frames are grouped one frame at a time, and numbered on", {
   skip_if_no_sf()
   skip_if_no_pkg("argparser")
   source_cli("annotate_features_cli.r")
-  # Grouping by z overlap alone would join one object's frames into a single
-  # feature and report a plausible count. Until grouping learns time, a table
-  # with more than one t stops -- naming the frames.
+  # The same square on slices 1-2 in both frames: grouped by z overlap alone it
+  # is ONE object, which is what grouping across time would report.
   d <- withr::local_tempdir()
   sq <- function(roi, t, z) data.frame(name = "tl", roi = roi, t = t, z = z,
                                        x = c(10, 20, 20, 10), y = c(10, 10, 20, 20))
   write.table(rbind(sq("nucleus_0001-0001-0001-0015", 1, 1),
-                    sq("nucleus_0002-0001-0001-0015", 2, 1)),
+                    sq("nucleus_0001-0002-0001-0015", 1, 2),
+                    sq("nucleus_0002-0001-0001-0015", 2, 1),
+                    sq("nucleus_0002-0002-0001-0015", 2, 2)),
               file.path(d, "tl_nucleus_outline.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
-  expect_error(suppressMessages(annotate_features_cli(c(
-    "--input", d, "--feature", "nucleus", "--outdir", withr::local_tempdir(),
-    "--min_z_span", "default=1"))), "holds 2 frames")
+  out <- withr::local_tempdir()
+  msgs <- testthat::capture_messages(res <- annotate_features_cli(c(
+    "--input", d, "--feature", "nucleus", "--outdir", out,
+    "--min_z_span", "default=2", "--qc_plot")))
+
+  expect_identical(unname(unique(res$feature_id[res$t == 1])), "nucleus_0001")
+  expect_identical(unname(unique(res$feature_id[res$t == 2])), "nucleus_0002")
+  expect_identical(colnames(res)[1:3], c("roi", "t", "z"))
+  expect_true(any(grepl("2 feature(s) over 2 frames", msgs, fixed = TRUE)))
+  # One picture of one image: not drawn, and said so.
+  expect_length(list.files(out, pattern = "_qc\\.png$"), 0)
+  expect_true(any(grepl("QC plot: not drawn for 2 frames", msgs, fixed = TRUE)))
 })
 
 test_that("a one-frame v0.8.0 outline keeps its t on every feature row", {

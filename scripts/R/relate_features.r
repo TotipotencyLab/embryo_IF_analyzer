@@ -234,14 +234,37 @@ assign_feature_parent <- function(st_df, within, min_containment = 0.5,
   }
 
   # Several series in one table would compare a nucleolus against a nucleus
-  # from a different image, which is meaningless. Handle them separately.
-  if("series_id" %in% colnames(st_df) && length(unique(st_df$series_id)) > 1){
-    parts <- lapply(unique(st_df$series_id), function(s){
-      .assign_parent_one_series(st_df[st_df$series_id == s, ], within = within,
-                                min_containment = min_containment,
-                                tie_margin = tie_margin, verbose = verbose)
+  # from a different image, which is meaningless; several frames of one series
+  # would compare it against the same nucleus at another time point -- which
+  # sits in nearly the same place, so it would score, and could win. Each
+  # (series, frame) is related on its own.
+  part_cols <- intersect(c("series_id", "t"), colnames(st_df))
+  part_key <- if(length(part_cols)){
+    do.call(paste, c(unname(as.list(sf::st_drop_geometry(st_df)[part_cols])), sep = "\r"))
+  }else{
+    rep("", n)
+  }
+  if(length(unique(part_key)) > 1){
+    several_t <- "t" %in% part_cols && length(unique(st_df$t)) > 1
+    rows <- lapply(unique(part_key), function(k) which(part_key == k))
+    parts <- lapply(rows, function(i){
+      sub <- st_df[i, ]
+      # A frame with no nucleolus is not news in a time course; the warning
+      # names the frame, so it can be told from a broken spec.
+      withCallingHandlers(
+        .assign_parent_one_series(sub, within = within,
+                                  min_containment = min_containment,
+                                  tie_margin = tie_margin, verbose = verbose),
+        warning = function(w){
+          if(!several_t){ return(invisible(NULL)) }
+          warning("t = ", sub$t[1], ": ", conditionMessage(w), call. = FALSE)
+          invokeRestart("muffleWarning")
+        })
     })
-    return(do.call(rbind, parts))
+    # Back in the order the rows came: the frames of one series arrive
+    # interleaved by feature type, and relating them must not reorder the table.
+    out <- do.call(rbind, parts)
+    return(out[order(unlist(rows)), ])
   }
 
   return(.assign_parent_one_series(st_df, within = within,
@@ -349,7 +372,7 @@ assign_feature_parent <- function(st_df, within, min_containment = 0.5,
 
 
 .valid_feature_rows <- function(st_df, feature_type){
-  # Valid features are named <type>_N. invalid_* and failed_* groups are not
+  # Valid features are named <type>_NNNN. invalid_* and failed_* groups are not
   # candidates in either direction -- an ROI that failed the z-span filter is
   # not a nucleus, and should not adopt a nucleolus.
   keep <- st_df$feature_type == feature_type &

@@ -204,6 +204,9 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     }
 
     tab$.status <- .feature_status(tab$feature_id)
+    # Counted per frame: a time course's nuclei added up over 96 frames is not
+    # a count of anything. An annotation from before v0.8.0 is one frame.
+    if (!"t" %in% colnames(tab)) tab$t <- 1
 
     if (!is.null(ftab)) {
       if (!"series_id" %in% colnames(tab)) tab$series_id <- sid
@@ -223,29 +226,37 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
     tab$.class <- compose_feature_class(tab, class_by, class_sep)
 
+    # NB: t is in the distinct() key, not only the count(). failed_<feature>_area
+    #     is one id for every frame's rejects, so distinct() without t would
+    #     credit it to whichever frame came first.
     counts <- tab |>
-      dplyr::distinct(dplyr::across(dplyr::all_of(c(class_by, ".class"))),
+      dplyr::distinct(t, dplyr::across(dplyr::all_of(c(class_by, ".class"))),
                       feature_id, .status) |>
-      dplyr::count(dplyr::across(dplyr::all_of(c(class_by, ".class"))), .status, name = "n") |>
+      dplyr::count(t, dplyr::across(dplyr::all_of(c(class_by, ".class"))), .status, name = "n") |>
       tidyr::pivot_wider(names_from = ".status", values_from = "n", values_fill = 0)
 
     for (col in c("detected", "invalid", "failed")) {
       if (!col %in% colnames(counts)) counts[[col]] <- 0L
     }
+    n_roi <- dplyr::count(tab, t, .class, name = "n_roi")
     counts <- counts |>
-      dplyr::mutate(series_id = sid,
-                    # unname(): vapply over a character vector names the result
-                    # after its input, which would leak into the written TSV.
-                    n_roi = unname(vapply(.class,
-                                          function(cl) sum(tab$.class == cl), integer(1)))) |>
-      dplyr::select(series_id, feature_class = ".class",
+      dplyr::left_join(n_roi, by = c("t", ".class")) |>
+      dplyr::mutate(series_id = sid) |>
+      dplyr::select(series_id, t, feature_class = ".class",
                     dplyr::all_of(class_by),
                     n_detected = detected, n_invalid = invalid,
                     n_failed = failed, n_roi)
 
     per_series[[sid]] <- counts
-    message("  ", sid, ": ",
-            paste(sprintf("%s=%d", counts$feature_class, counts$n_detected), collapse = ", "))
+    n_frames <- length(unique(counts$t))
+    if (n_frames > 1) {
+      tot <- tapply(counts$n_detected, counts$feature_class, sum)
+      message("  ", sid, ": ", n_frames, " frames; summed over them ",
+              paste(sprintf("%s=%d", names(tot), as.integer(tot)), collapse = ", "))
+    } else {
+      message("  ", sid, ": ",
+              paste(sprintf("%s=%d", counts$feature_class, counts$n_detected), collapse = ", "))
+    }
   }
 
   if (!length(per_series)) stop("Nothing was counted.", call. = FALSE)
@@ -272,7 +283,8 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   if (length(group_by_cols)) {
     summary_df <- tidy |>
-      dplyr::group_by(dplyr::across(dplyr::all_of(c(group_by_cols, "feature_type")))) |>
+      # Per frame as well: series are the replicates, frames are not.
+      dplyr::group_by(dplyr::across(dplyr::all_of(c(group_by_cols, "t", "feature_type")))) |>
       dplyr::summarise(n_series = dplyr::n(),
                        mean_detected = mean(n_detected),
                        sd_detected = stats::sd(n_detected),
@@ -297,7 +309,7 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 # --- private helpers ----------------------------------------------------------
 
 .feature_status <- function(feature_id) {
-  # annotate_features_cli names groups <feature>_N, invalid_<feature>_N and
+  # annotate_features_cli names groups <feature>_NNNN, invalid_<feature>_NNNN and
   # failed_<feature>_<reason>. NA means an ROI that reached no group at all.
   out <- rep("detected", length(feature_id))
   out[is.na(feature_id)] <- "failed"
@@ -311,6 +323,22 @@ count_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 #' Separate from saving it so a test can inspect the layers. Which layers are
 #' present is the behaviour that matters here, and it is invisible in a PNG.
 .count_plot_build <- function(tidy, group_by_cols) {
+  # A time course is drawn over t, one line per series. Its frames must not go
+  # into the bar below: geom_col stacks rows sharing an x, so one bar per series
+  # would silently show the sum over every frame.
+  if ("t" %in% colnames(tidy) && length(unique(tidy$t)) > 1) {
+    p <- ggplot2::ggplot(tidy, ggplot2::aes(x = t, y = n_detected, group = series_id))
+    if (length(group_by_cols)) {
+      p <- p + ggplot2::aes(colour = .data[[group_by_cols[1]]]) +
+        ggplot2::labs(colour = group_by_cols[1])
+    }
+    p <- p + ggplot2::geom_line(alpha = 0.7) + ggplot2::geom_point(size = 1) +
+      ggplot2::facet_wrap(~ feature_type, scales = "free_y") +
+      ggplot2::theme_minimal() +
+      ggplot2::labs(x = "frame (t)", y = "features detected")
+    return(p)
+  }
+
   x_col <- if (length(group_by_cols)) group_by_cols[1] else "series_id"
 
   p <- ggplot2::ggplot(tidy, ggplot2::aes(x = .data[[x_col]], y = n_detected))
