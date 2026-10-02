@@ -632,7 +632,7 @@ double the diff. The `sample` column of R's outputs is PR 2.
 
 **Verification, as carried out.** R 4.6.1: 964 passed, 0 failed (main: 955; the
 one warning is the same on main). Groovy, every file: `Test_SampleSheet` 106,
-`Test_BatchRunner` 131, `Test_LuxendoScan` 109, `Test_TiffAssembler` 117,
+`Test_BatchRunner` 131, `Test_LuxendoScan` 111, `Test_TiffAssembler` 117,
 `Test_LuxendoFile` 37, `Test_LuxendoSidecar` 49, `Test_RunConfig` 90,
 `Test_NucleusPipeline` 62, `Test_Overview` 126, `Test_RoiExport` 28,
 `Test_BuildMask` 108, `Test_NucleolusDetect` 26 — 0 failed. Real data, read

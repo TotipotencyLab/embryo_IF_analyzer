@@ -213,6 +213,15 @@ throwsWith("a source with no series row stops the join", "have no series row",
 // A series with no sources is returned for the caller to judge.
 check("a series with no sources is reported",
       LS.withSeriesId(rows.findAll { it.series_index != 1 }, ser).unsourced, ["acq_s0001_fucci_pos2"])
+// TWO ACQUISITIONS IN ONE TABLE: both have a stack 0. The alias half of the
+// key is what keeps them apart -- a join on series_index alone would hand
+// each acquisition's sources to whichever stack 0 came first.
+def other = scanner.scan(root, [alias: "rep2"]) { }
+def both  = LS.withSeriesId(rows + other.sources, ser + other.series)
+check("two acquisitions: every source joined", both.sources.size(), rows.size() + other.sources.size())
+check("stack 0 of each goes to its own series",
+      both.sources.findAll { it.series_index == 0 }.collect { it.alias + "->" + it.series_id }.unique().sort(),
+      ["acq->acq_s0000_L26A_pos1", "rep2->rep2_s0000_L26A_pos1"])
 // Two series rows on one key would make the join ambiguous.
 throwsWith("two series rows on one key refuse", "share alias",
            { LS.withSeriesId(rows, ser + [new LinkedHashMap(ser[0]) + [series_id: "dup"]]) })
