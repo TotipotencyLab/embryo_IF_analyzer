@@ -217,7 +217,7 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     # frac_bridge are the feature-level answer.
     meta_cols <- setdiff(colnames(sf::st_drop_geometry(feats)),
                          c("roi", "z", "area", "is_bridge",
-                           "feature_id", "feature_type", "series_id",
+                           "feature_id", "feature_type", "series_id", "t",
                            "parent_feature_id", "parent_feature_type",
                            "parent_containment", "parent_match"))
     # An explicit --z_step wins everywhere; otherwise each file answers for

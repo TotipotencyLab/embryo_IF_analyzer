@@ -5,7 +5,7 @@
 #@ String  (visibility=MESSAGE, value=" ", required=false) help_sep0
 #@ String  (visibility=MESSAGE, value="Behavior control:", required=false) help_msg2
 #@ String  (persist=false, label="Output format", description="TIFF can be reopened easily in ImageJ, but have size limit of ~4GB. BigTIFF can hold larger file, but may not be compatible with ImageJ", value="tiff", choices={"tiff","bigtiff"}) format
-#@ String  (persist=false, label="Time points (blank = all)", description="Which time points to write, each into its own file named <series_id>_t<TTTT>: 0, or 0,47,95, or 0-3. Blank writes every time point of a series into one file, which for a long time course is too big for TIFF or for memory -- for tuning, one time point is what you want.", value="") frames
+#@ String  (persist=false, label="Time points (blank = all)", description="Which time points to write, each into its own file named <series_id>_t<TTTT>: 1, or 1,48,96, or 1-4 -- counted from 1, as Fiji shows frames. Blank writes every time point of a series into one file, which for a long time course is too big for TIFF or for memory -- for tuning, one time point is what you want.", value="") frames
 #@ Integer (persist=false, label="Output scale (% of original)", description="Both x and y. 100 = full resolution, 50 = half width & height, The pixel size is scaled to match, so measurements stay in real units, and the filename gains _downscale<PC>pc. For looking, not for measuring.", min="1", max="100", value=100) scalePercent
 #@ Boolean (persist=false, label="Verify output", description="Read each written file back and check its pixels against the checksum taken while writing", value=true) verify
 #@ Boolean (persist=false, label="Skip existing targets", description="An output whose TIFF and _gather.txt are both already in the output directory is left alone, so an interrupted run can be resumed", value=true) skipExisting
@@ -57,7 +57,7 @@
 // Headless:
 //   /Applications/Fiji.app/Contents/MacOS/ImageJ-macosx --headless --console \
 //     --run scripts/groovy/Make_LuxendoTiff.groovy \
-//     "seriesFile='/p/series.tsv',sourcesFile='/p/sources.tsv',outdir='/p/out',scalePercent=100,frames='0'"
+//     "seriesFile='/p/series.tsv',sourcesFile='/p/sources.tsv',outdir='/p/out',scalePercent=100,frames='1'"
 
 import ij.IJ
 

@@ -133,7 +133,8 @@ class TiffAssembler {
 
     /**
      * A time-point selection: blank or "all" = every frame (null), otherwise
-     * a comma list of time points and ranges -- "0", "0,47,95", "0-3,10".
+     * a comma list of time points and ranges -- "1", "1,48,96", "1-4,11".
+     * Counted from 1, as sources.tsv's `t` is.
      * Validated in code, like the format and scale.
      */
     static List<Integer> parseFrames(Object v) {
@@ -144,12 +145,18 @@ class TiffAssembler {
             def m = (part =~ /^(\d+)(?:\s*-\s*(\d+))?$/)
             if (!m) {
                 throw new IllegalArgumentException(
-                    "frames must be blank, 'all', or time points like 0,47,95 or 0-3; got >>>" + v + "<<<")
+                    "frames must be blank, 'all', or time points like 1,48,96 or 1-4; got >>>" + v + "<<<")
             }
             int a = Integer.parseInt(m[0][1] as String)
             int b = m[0][2] ? Integer.parseInt(m[0][2] as String) : a
             if (b < a) throw new IllegalArgumentException("frames: range " + part + " runs backwards")
             (a..b).each { out << it }
+        }
+        if (out.contains(0)) {
+            // Not "no source has time point 0": that is true, and sends a person
+            // looking for a missing file rather than at the count.
+            throw new IllegalArgumentException(
+                "frames: time points count from 1 since v0.8.0, as ImageJ shows them; got 0 in >>>" + v + "<<<")
         }
         return out.toList()
     }

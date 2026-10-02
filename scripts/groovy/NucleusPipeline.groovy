@@ -37,8 +37,14 @@ class NucleusPipeline {
 
     // Forced, so output columns do not depend on the operator's Fiji
     // preferences. Set Measurements is a PERSISTENT user preference.
+    //
+    // No `stack` since time_axis: it adds ImageJ's Ch/Slice/Frame, which mean
+    // different things on different image shapes (Slice is the TIME on a
+    // 1c 1z 4t image; note/time_series_plan.md §5.3). RoiExport.measureInto()
+    // writes roi, z, t and ch itself, from what it knows, and those are the
+    // only position columns.
     static final String MEASUREMENTS =
-        "area mean standard min centroid shape integrated median stack display"
+        "area mean standard min centroid shape integrated median display"
     // Overview settings used to be fixed here, with Run_Overview.groovy as the
     // way to vary them. That is no good for a merged tile scan: 500 px of a
     // 20000 px mosaic diagnoses nothing, and re-running a second script over a
@@ -231,98 +237,74 @@ class NucleusPipeline {
         RD.validateThreshold(p.nucleus_threshold as String,
                              (p.nucleus_threshold_range ?: "") as String)
 
-        def writeFeature = { String feature, List rois, List names, List sls ->
-            IJ.log("  " + feature + ": " + rois.size() + " ROIs")
-            if (rois.isEmpty()) return
+        // --- Frames ----------------------------------------------------------
+        // Every frame is analysed as an image of its own, by runFrame(). A
+        // single-frame image is passed through as itself -- no copy, so nothing
+        // about it changes. An open multi-frame image hands over one frame at a
+        // time; time_axis PR 3 adds a source that streams frames from disk and
+        // calls the same runFrame(), which is why the loop is shaped like this
+        // rather than as one pass over a hyperstack. Every whole-stack step
+        // inside -- the pooled histogram, the Duplicator of the z range -- is
+        // therefore per frame without being told.
+        int nFrames  = imp.getNFrames()
+        boolean multi = nFrames > 1
+        if (multi) {
+            IJ.log("  " + nFrames + " frames, each analysed on its own")
+            if (p.save_overview) {
+                // Said rather than skipped quietly. A multi-frame overview is a
+                // 16-bit TIFF written frame by frame (time_axis PR 3), not a
+                // PNG of whichever frame happened to be current.
+                IJ.log("  overview: not written for a multi-frame image yet")
+            }
+        }
+
+        // What every frame found, in frame order, written once at the end: ROIs
+        // and table rows are small; only the pixels are not.
+        def found  = [nucleus  : [rois: [], names: [], slices: [], ts: []],
+                      nucleolus: [rois: [], names: [], slices: [], ts: []]]
+        def tables = [nucleus: RX.newMeasurementTable(), nucleolus: RX.newMeasurementTable()]
+        def frameStats = []
+        for (int t = 1; t <= nFrames; t++) {
+            def frame = multi ? frameOf(imp, t) : imp
+            try {
+                def fr = runFrame(frame, t, multi, p, dnaCh, channels, slices, tables)
+                ["nucleus", "nucleolus"].each { String feature ->
+                    def got = fr[feature]
+                    found[feature].rois.addAll(got.rois)
+                    found[feature].names.addAll(got.names)
+                    found[feature].slices.addAll(got.slices)
+                    found[feature].ts.addAll(got.rois.collect { t })
+                }
+                frameStats << fr.stats
+            } finally {
+                // close() then flush(): close() alone frees nothing headless.
+                if (multi) { frame.close(); frame.flush() }
+            }
+        }
+        def nucRois  = found.nucleus.rois
+        def nuclRois = found.nucleolus.rois
+        def nucNames = found.nucleus.names,  nucSlices  = found.nucleus.slices
+        def nuclNames = found.nucleolus.names, nuclSlices = found.nucleolus.slices
+
+        ["nucleus", "nucleolus"].each { String feature ->
+            def f = found[feature]
+            if (multi) IJ.log("  " + feature + ": " + f.rois.size() + " ROIs over " + nFrames + " frames")
+            if (f.rois.isEmpty()) return
             def stem = outDirPath + seriesId + "_" + feature
-            if (p.save_outlines)     RX.saveOutlineCoords(imp, rois, names, sls, seriesId, stem + "_outline.txt")
-            if (p.save_roi_zips)     RX.saveRoiZip(rois, names, stem + "_outline_ROIs.zip")
-            if (p.save_measurements) RX.measureRois(imp, rois, sls, channels, stem + "_res.txt", true)
+            if (p.save_outlines)     RX.saveOutlineCoords(imp, f.rois, f.names, f.slices, f.ts, seriesId, stem + "_outline.txt")
+            if (p.save_roi_zips)     RX.saveRoiZip(f.rois, f.names, stem + "_outline_ROIs.zip")
+            if (p.save_measurements) RX.saveMeasurements(tables[feature], stem + "_res.txt")
         }
 
-        // --- Nucleus ---------------------------------------------------------
-        def built = RD.buildMask(imp, dnaCh, p.nucleus_blur_sigma as double,
-                                 p.nucleus_threshold as String, true,
-                                 p.nucleus_watershed as boolean,
-                                 [range         : (p.nucleus_threshold_range ?: ""),
-                                  stackHistogram: (p.nucleus_stack_histogram == null)
-                                                  ? true : (p.nucleus_stack_histogram as boolean)])
-        def dna = built.mask
-        // The threshold is reported as the RANGE it selected, and the coverage
-        // beside it. Both were previously thrown away, which left a run unable
-        // to say what it had thresholded at: no way to tell a sensible
-        // threshold from a disastrous one afterwards, and no way to read a
-        // value off in order to pin it.
-        //
-        // Coverage is the cheap signal that catches both failures an ROI count
-        // hides. 0.00% is a blank field; a number in the tens is the frame
-        // being selected rather than the objects in it. The size filter turns
-        // both into "no nuclei", which look identical.
-        def thresholdUsed = built.threshold
-        def maskPct       = String.format("%.2f", built.coverage)
-        IJ.log("  threshold: " + p.nucleus_threshold + " -> " + thresholdUsed +
-               "  (mask " + maskPct + "% of pixels)")
-        // Circularity is a SECOND line of defence after size, for imaging
-        // artefacts -- a reflection off the section edge thresholds like an
-        // object and is often the wrong shape for one.
-        //
-        // It is a pre-grouping filter, so it carries the hazard CLAUDE.md
-        // records for --min_circularity on the R side: dropping an ROI from the
-        // middle of an object opens a z-gap, and one object gets counted as two.
-        // Worse here than there, because the R filter marks the ROI and leaves
-        // it in the table for --bridge_roi to use, while this one deletes it
-        // before anything downstream can see that it existed.
-        //
-        // Hence the count: a filter that removes things silently is this repo's
-        // signature failure. The unfiltered pass runs ONLY when the filter is
-        // on, so the default costs nothing.
-        def nucCirc     = (p.nucleus_circularity ?: "") as String
-        def circRange   = RD.parseRange(nucCirc, 0d, 1d)
-        boolean circOn  = (circRange[0] > 0d || circRange[1] < 1d)
-        def nucRois   = RD.detect(dna, p.nucleus_particle_size as String, nucCirc, slices, true, true)
-        def circRejected = ""
-        if (circOn) {
-            int before = RD.detect(dna, p.nucleus_particle_size as String, "", slices, true, true).size()
-            circRejected = before - nucRois.size()
-            IJ.log("  nucleus: circularity " + nucCirc + " rejected " + circRejected +
-                   " of " + before + " ROI(s)")
-        }
-        def nucNames  = RD.autoLabels(nucRois).collect { "nucleus_" + it }
-        def nucSlices = nucRois.collect { it.getPosition() }
-        // NB: set the name ON the Roi, not just in the parallel names list. The
-        //     name is encoded into the .roi file and picked up by Analyzer into
-        //     the Label column, which is how read_fiji_result.r joins
-        //     measurements to outlines.
-        nucRois.eachWithIndex { r, i -> r.setName(nucNames[i]) }
-        // close() then flush(). close() alone frees NOTHING while a reference
-        // is still in scope -- measured headless, 0 MB of 768 MB released --
-        // because it only detaches a window, and there is no window. `dna` stays
-        // in scope to the end of the method, so without flush() this mask
-        // survives every later stage. It is why s0014 still ran out of heap in
-        // the overview after buildMask was fixed: the mask was nominally closed
-        // and still occupying 2594 MB.
-        dna.close(); dna.flush()
-        writeFeature("nucleus", nucRois, nucNames, nucSlices)
-
-        // --- Nucleolus -------------------------------------------------------
-        def nuclRois = [], nuclNames = [], nuclSlices = []
-        if (p.nucleoli_enabled && !nucRois.isEmpty()) {
-            int erodePx = p.nucleolus_erode_px as int
-            def useRois = (erodePx > 0) ? nucRois.collect { RoiEnlarger.enlarge(it, -erodePx) } : nucRois
-            def dna2 = new Duplicator().run(imp, dnaCh, dnaCh, 1, imp.getNSlices(), 1, 1)
-            def mask = ND.buildNucleolusMask(dna2, useRois, nucSlices,
-                                             p.nucleolus_blur_sigma as double,
-                                             p.nucleolus_threshold as String,
-                                             p.nucleolus_rel_fraction as double)
-            dna2.close(); dna2.flush()   // close() alone frees nothing; see above
-            nuclRois   = RD.detect(mask, p.nucleolus_particle_size as String,
-                                   p.nucleolus_circularity as String, slices, true, false)
-            nuclNames  = RD.autoLabels(nuclRois).collect { "nucleolus_" + it }
-            nuclSlices = nuclRois.collect { it.getPosition() }
-            nuclRois.eachWithIndex { r, i -> r.setName(nuclNames[i]) }
-            mask.close(); mask.flush()   // close() alone frees nothing; see above
-            writeFeature("nucleolus", nuclRois, nuclNames, nuclSlices)
-        }
+        // Per image, as _config.txt has always recorded them, when there is one
+        // frame; "per-frame" when there are several, with the numbers in
+        // _threshold_stats.tsv -- a word, not a number, so it cannot be read as
+        // one, the same device as the threshold's `none`.
+        def thresholdUsed = multi ? "per-frame" : frameStats[0].nucleus_threshold_used
+        def maskPct       = multi ? "per-frame" : frameStats[0].nucleus_mask_pct
+        def rejected      = frameStats.collect { it.nucleus_circ_rejected }
+        def circRejected  = (rejected.every { it == "" }) ? "" : rejected.sum { (it ?: 0) as int }
+        boolean overviewWritten = p.save_overview && !multi
 
         // --- Overview PNGs ---------------------------------------------------
         // A quick visual check, not an input to anything: the chosen channels
@@ -335,7 +317,7 @@ class NucleusPipeline {
         // serves both saves -- savePng() flattens into a NEW image and leaves
         // the view untouched, so the raw copy can go out before the outlines
         // are added.
-        if (p.save_overview) {
+        if (overviewWritten) {
             def proj = OV.project(imp, slices, p.overview_method as String, ovChannels)
             ovChannels.each { int c ->
                 // width/height 0 means "the original size", and one given makes
@@ -397,6 +379,7 @@ class NucleusPipeline {
                 image_height           : imp.getHeight(),
                 image_slices           : imp.getNSlices(),
                 image_channels         : imp.getNChannels(),
+                image_frames           : imp.getNFrames(),
                 pixel_width            : imp.getCalibration().pixelWidth,
                 pixel_height           : imp.getCalibration().pixelHeight,
                 // The z step, which nothing recorded before: feature_stat_cli.r
@@ -410,6 +393,13 @@ class NucleusPipeline {
                 // and `area_sum x 1.0` is an area wearing a volume's name.
                 pixel_depth            : (imp.getNSlices() > 1 ? imp.getCalibration().pixelDepth : null),
                 pixel_unit             : imp.getCalibration().getUnit(),
+                // The time step, as pixel_depth is the z step: measured off the
+                // image, so provenance, never a parameter. BLANK for one frame
+                // -- there is no interval -- and when the file did not say:
+                // ImageJ's 0 means "unknown", and a written 1 would be a
+                // plausible-looking second that nobody measured.
+                frame_interval         : frameInterval(imp),
+                frame_unit             : (frameInterval(imp) == null ? null : imp.getCalibration().getTimeUnit()),
                 // The id every file of this run is named after, and the value
                 // of the outline tables' `name` column. Provenance, not a
                 // parameter: see PARAM_TYPES.
@@ -453,12 +443,13 @@ class NucleusPipeline {
                 // OUTCOME rather than the request, it reads back as provenance
                 // rather than as a parameter, and it has been in this file
                 // since 0.2.0 beside overview_channels. The two cannot drift --
-                // they are the same expression.
-                overview_saved         : p.save_overview,
+                // they are the same expression -- save_overview, unless the
+                // image has several frames, where no PNG is written (yet).
+                overview_saved         : overviewWritten,
                 // Which overview files exist, so a results folder can be read
                 // later without guessing. Blank when none were written.
-                overview_channels      : (p.save_overview ? ovChannels.join(",") : ""),
-                overview_overlay_suffix: (p.save_overview ? OV.OVERLAY_SUFFIX : ""),
+                overview_channels      : (overviewWritten ? ovChannels.join(",") : ""),
+                overview_overlay_suffix: (overviewWritten ? OV.OVERLAY_SUFFIX : ""),
                 // How many ROIs the circularity filter deleted, and BLANK
                 // when it was off -- "0" would claim a filter ran and found
                 // nothing to remove. The ROIs themselves are gone: unlike the R
@@ -470,6 +461,8 @@ class NucleusPipeline {
                 // as a parameter; these two are the RESULT and are ignored on
                 // the way in -- a config fed forward must re-derive the
                 // threshold for the image it is given, never freeze this one.
+                // With several frames these two read `per-frame`, and the
+                // counts here are totals: _threshold_stats.tsv has each frame.
                 nucleus_threshold_used : thresholdUsed,
                 nucleus_mask_pct       : maskPct,
                 nucleus_circ_rejected  : circRejected,
@@ -483,6 +476,10 @@ class NucleusPipeline {
                 nucleolus_circularity  : p.nucleolus_circularity,
                 nucleolus_count        : nuclRois.size()
             ], outDirPath + seriesId + "_config.txt")
+            // The per-frame half of the record above, for every image -- one
+            // row when there is one frame -- so every results folder holds the
+            // same files.
+            RX.saveThresholdStats(frameStats, outDirPath + seriesId + "_threshold_stats.tsv")
         }
 
         IJ.log("Done: " + seriesId)
@@ -496,5 +493,148 @@ class NucleusPipeline {
                 maskPct   : maskPct,
                 nucRois   : nucRois,  nucNames : nucNames,  nucSlices : nucSlices,
                 nuclRois  : nuclRois, nuclNames: nuclNames, nuclSlices: nuclSlices]
+    }
+
+    /**
+     * One frame of an open multi-frame image, as an image of its own: every
+     * channel and slice of frame t. Titled as the original -- the measurement
+     * Label carries the title, and a Duplicator copy is called DUP_<title>.
+     */
+    /** The frame interval, or null for one frame or when the file did not record one. */
+    static Double frameInterval(ImagePlus imp) {
+        double fi = imp.getCalibration().frameInterval
+        return (imp.getNFrames() > 1 && fi > 0d) ? fi : null
+    }
+
+    static ImagePlus frameOf(ImagePlus imp, int t) {
+        def f = new Duplicator().run(imp, 1, imp.getNChannels(), 1, imp.getNSlices(), t, t)
+        f.setTitle(imp.getTitle())
+        return f
+    }
+
+    /**
+     * Detect, name and measure the nuclei and nucleoli of ONE frame.
+     *
+     * `frame` is always a single-frame image; t is its number in the series,
+     * from 1. ROI ids gain a `TTTT-` field only when the series has more than
+     * one frame (`multi`): four frames of one object would otherwise share a
+     * name, and the zip refuses a repeated entry. Measurement happens here,
+     * while the frame's pixels exist; the rows go into `tables`.
+     *
+     * @return [nucleus: [rois, names, slices], nucleolus: [...], stats: the
+     *         frame's _threshold_stats.tsv row]
+     */
+    Map runFrame(ImagePlus frame, int t, boolean multi, Map p, int dnaCh,
+                 List<Integer> channels, Collection<Integer> slices, Map tables) {
+        String tag   = multi ? ("t" + t + " ") : ""
+        String tPart = multi ? String.format("%04d-", t) : ""
+        def measure = { String feature, List rois, List names, List sls ->
+            IJ.log("  " + tag + feature + ": " + rois.size() + " ROIs")
+            if (rois.isEmpty() || !p.save_measurements) return
+            RX.measureInto(frame, rois, names, sls, channels, tables[feature], t)
+        }
+
+        // --- Nucleus ---------------------------------------------------------
+        def built = RD.buildMask(frame, dnaCh, p.nucleus_blur_sigma as double,
+                                 p.nucleus_threshold as String, true,
+                                 p.nucleus_watershed as boolean,
+                                 [range         : (p.nucleus_threshold_range ?: ""),
+                                  stackHistogram: (p.nucleus_stack_histogram == null)
+                                                  ? true : (p.nucleus_stack_histogram as boolean)])
+        def dna = built.mask
+        // The threshold is reported as the RANGE it selected, and the coverage
+        // beside it. Both were previously thrown away, which left a run unable
+        // to say what it had thresholded at: no way to tell a sensible
+        // threshold from a disastrous one afterwards, and no way to read a
+        // value off in order to pin it.
+        //
+        // Coverage is the cheap signal that catches both failures an ROI count
+        // hides. 0.00% is a blank field; a number in the tens is the frame
+        // being selected rather than the objects in it. The size filter turns
+        // both into "no nuclei", which look identical.
+        def thresholdUsed = built.threshold
+        def maskPct       = String.format("%.2f", built.coverage)
+        IJ.log("  " + tag + "threshold: " + p.nucleus_threshold + " -> " + thresholdUsed +
+               "  (mask " + maskPct + "% of pixels)")
+        // Circularity is a SECOND line of defence after size, for imaging
+        // artefacts -- a reflection off the section edge thresholds like an
+        // object and is often the wrong shape for one.
+        //
+        // It is a pre-grouping filter, so it carries the hazard CLAUDE.md
+        // records for --min_circularity on the R side: dropping an ROI from the
+        // middle of an object opens a z-gap, and one object gets counted as two.
+        // Worse here than there, because the R filter marks the ROI and leaves
+        // it in the table for --bridge_roi to use, while this one deletes it
+        // before anything downstream can see that it existed.
+        //
+        // Hence the count: a filter that removes things silently is this repo's
+        // signature failure. The unfiltered pass runs ONLY when the filter is
+        // on, so the default costs nothing.
+        def nucCirc     = (p.nucleus_circularity ?: "") as String
+        def circRange   = RD.parseRange(nucCirc, 0d, 1d)
+        boolean circOn  = (circRange[0] > 0d || circRange[1] < 1d)
+        def nucRois   = RD.detect(dna, p.nucleus_particle_size as String, nucCirc, slices, true, true)
+        def circRejected = ""
+        if (circOn) {
+            int before = RD.detect(dna, p.nucleus_particle_size as String, "", slices, true, true).size()
+            circRejected = before - nucRois.size()
+            IJ.log("  " + tag + "nucleus: circularity " + nucCirc + " rejected " + circRejected +
+                   " of " + before + " ROI(s)")
+        }
+        def nucNames  = RD.autoLabels(nucRois).collect { "nucleus_" + tPart + it }
+        def nucSlices = nucRois.collect { it.getPosition() }
+        // NB: set the name ON the Roi, not just in the parallel names list. The
+        //     name is encoded into the .roi file and picked up by Analyzer into
+        //     the Label column, which is how read_fiji_result.r joins
+        //     measurements to outlines.
+        nucRois.eachWithIndex { r, i -> r.setName(nucNames[i]) }
+        // close() then flush(). close() alone frees NOTHING while a reference
+        // is still in scope -- measured headless, 0 MB of 768 MB released --
+        // because it only detaches a window, and there is no window. `dna` stays
+        // in scope to the end of the method, so without flush() this mask
+        // survives every later stage. It is why s0014 still ran out of heap in
+        // the overview after buildMask was fixed: the mask was nominally closed
+        // and still occupying 2594 MB.
+        dna.close(); dna.flush()
+        measure("nucleus", nucRois, nucNames, nucSlices)
+
+        // --- Nucleolus -------------------------------------------------------
+        def nuclRois = [], nuclNames = [], nuclSlices = []
+        if (p.nucleoli_enabled && !nucRois.isEmpty()) {
+            int erodePx = p.nucleolus_erode_px as int
+            def useRois = (erodePx > 0) ? nucRois.collect { RoiEnlarger.enlarge(it, -erodePx) } : nucRois
+            def dna2 = new Duplicator().run(frame, dnaCh, dnaCh, 1, frame.getNSlices(), 1, 1)
+            def mask = ND.buildNucleolusMask(dna2, useRois, nucSlices,
+                                             p.nucleolus_blur_sigma as double,
+                                             p.nucleolus_threshold as String,
+                                             p.nucleolus_rel_fraction as double)
+            dna2.close(); dna2.flush()   // close() alone frees nothing; see above
+            nuclRois   = RD.detect(mask, p.nucleolus_particle_size as String,
+                                   p.nucleolus_circularity as String, slices, true, false)
+            nuclNames  = RD.autoLabels(nuclRois).collect { "nucleolus_" + tPart + it }
+            nuclSlices = nuclRois.collect { it.getPosition() }
+            nuclRois.eachWithIndex { r, i -> r.setName(nuclNames[i]) }
+            mask.close(); mask.flush()   // close() alone frees nothing; see above
+            measure("nucleolus", nuclRois, nuclNames, nuclSlices)
+        }
+
+
+        // Where a multi-frame ROI belongs, for anything that shows it over the
+        // series: the ROI Manager, or the zip dropped on the hyperstack. Set
+        // after measuring, which positions the frame itself. A single frame's
+        // ROIs keep the flat position they always had.
+        if (multi) {
+            [[nucRois, nucSlices], [nuclRois, nuclSlices]].each { pair ->
+                pair[0].eachWithIndex { r, i -> r.setPosition(0, pair[1][i] as int, t) }
+            }
+        }
+        return [nucleus  : [rois: nucRois,  names: nucNames,  slices: nucSlices],
+                nucleolus: [rois: nuclRois, names: nuclNames, slices: nuclSlices],
+                stats    : [t                     : t,
+                            nucleus_threshold_used: thresholdUsed,
+                            nucleus_mask_pct      : maskPct,
+                            nucleus_circ_rejected : circRejected,
+                            nucleus_count         : nucRois.size(),
+                            nucleolus_count       : nuclRois.size()]]
     }
 }

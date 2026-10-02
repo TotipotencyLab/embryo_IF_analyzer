@@ -15,6 +15,12 @@ read_fiji_result <- function(res_path){
   # Repair column names:
   res_df <- res_df %>% 
     dplyr::rename_all(.funs=function(x){tolower(str_remove(x, "\\.+$"))})
+
+  # Since v0.8.0 Fiji writes roi, z, t and ch itself, and the position is read
+  # from those -- never parsed back out of the Label. See .res_explicit().
+  if(all(c("roi", "z", "t", "ch") %in% colnames(res_df))){
+    return(.res_explicit(res_df, res_path))
+  }
   
   # Extract information from the Label column -----------------------------------------------------
   unq_label <- unique(res_df$label)
@@ -141,6 +147,41 @@ read_fiji_result <- function(res_path){
   
   # Join back to the main table and return as output
   res_df2 <- left_join(res_df, res_label_info, by="label")
+
+  # A table from before the time axis is ONE frame: absence means t = 1, the
+  # same way readParams tolerates a missing key. Counted from 1, like z.
+  if(!"t" %in% colnames(res_df2)){
+    res_df2$t <- 1
+  }
   
   return(res_df2)
+}
+
+#' A measurement table that carries its own roi, z, t and ch
+#'
+#' Those columns are authoritative. The Label still names the same roi, and
+#' (on a hyperstack) the same z, so it is checked against them rather than
+#' trusted or ignored: a disagreement means the table was assembled wrongly,
+#' and stopping here is the alternative to a join that attaches measurements
+#' to the wrong object.
+#'
+#' @keywords internal
+.res_explicit <- function(res_df, res_path){
+  lab <- as.character(res_df$label)
+  roi <- as.character(res_df$roi)
+  # <title>:<roi>:<slice label>, or <title>:<roi> when there is no slice label.
+  roi_ok <- stringr::str_detect(lab, stringr::fixed(paste0(":", roi, ":"))) |
+    endsWith(lab, paste0(":", roi))
+  lab_z <- suppressWarnings(as.numeric(stringr::str_extract(lab, "(?<=z\\:)\\d+")))
+  z_ok <- is.na(lab_z) | lab_z == as.numeric(res_df$z)
+  bad <- which(!(roi_ok & z_ok))
+  if(length(bad) > 0){
+    stop("Measurement table ", basename(res_path), ": its roi/z columns disagree with ",
+         "the Label on ", length(bad), " row(s), first row ", bad[1], " (roi ", roi[bad[1]],
+         ", z ", res_df$z[bad[1]], ", Label '", lab[bad[1]], "')", call. = FALSE)
+  }
+  res_df$z <- as.numeric(res_df$z)
+  res_df$t <- as.numeric(res_df$t)
+  res_df$ch <- as.numeric(res_df$ch)
+  return(res_df)
 }

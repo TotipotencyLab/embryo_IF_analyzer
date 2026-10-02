@@ -252,9 +252,17 @@ directory.
 | `source_path` | **yes** | the `.lux.h5`, relative to the acquisition directory in the series row's `path` |
 | `alias` | **yes** | the acquisition this source belongs to |
 | `series_index` | **yes** | the stack. With `alias`, the join to `series.tsv` — rows sharing the pair are one series: its channels and its time points |
-| `channel` | **yes** | 0-based channel index **in the output** |
+| `channel` | **yes** | channel index **in the output**, **from 1** — `ch1` in the results is channel 1 here. Luxendo's own channel 0 is channel 1 |
 | `channel_name` | no | `channel_description`; blank when unnamed. Here and not on the series table because it is per channel |
-| `t` | **yes** | 0-based time point within the series |
+| `t` | **yes** | time point within the series, **from 1** — Luxendo's `time_point` 0 is `t` 1 |
+
+⚠️ **Counted from 1 since v0.8.0**, like every image axis this repo writes
+(`note/fiji_vocabulary.md`); a sources table written before counted `t` and
+`channel` from 0. Read by today's code it would be off by one with no error, so
+it is **refused**, naming v0.8.0: every such table has `t = 0` and
+`channel = 0` rows and a new one cannot (`LuxendoScan.requireOneBased()`, inside
+the one join). Re-run `Make_LuxendoSheets` into another directory and take only
+its `sources.tsv` — the series table does not change, so yours keeps its edits.
 | `size_x`, `size_y`, `size_z` | **yes** | pixels |
 | `pixel_width`, `pixel_height`, `pixel_depth` | no | physical sizes; `pixel_depth` **blank for a single plane** |
 | `pixel_unit` | no | unit of those three |
@@ -341,7 +349,8 @@ scale_percent, status, reason, bytes, checksum, verified`. A `status` of
 `written` / `skipped` / `failed` with a `reason`, so a half-completed run is
 legible. `frames` is the number of time points in that output.
 
-**`frames` on `Make_LuxendoTiff` chooses time points** — `0`, `0,47,95`, `0-3`.
+**`frames` on `Make_LuxendoTiff` chooses time points** — `1`, `1,48,96`, `1-4`,
+counted from 1 as `sources.tsv`'s `t` is; a `0` is refused, naming the count.
 Each chosen time point of a multi-frame series becomes **its own file**, named
 `<series_id>_t<TTTT>`, which is the same name and the same pixels the
 per-time-point layout gives that frame. A series holding one frame keeps its own
@@ -358,7 +367,8 @@ same read, so a plane fetched wrongly would match itself. What it catches is the
 round trip: a truncated write, or channels, slices and frames transposed.
 
 `_gather.txt` names **every** source: one `channel_<c>_source` line per channel,
-or `t<N>_channel_<c>_source` when the output gathered several frames.
+or `t<N>_channel_<c>_source` when the output gathered several frames — `c` and
+`N` from 1, as in `sources.tsv`.
 
 ⚠️ **The TIFFs are not a required step.** The batch runner is to read the
 `.lux.h5` through the same two tables and assemble channels in memory, so it
@@ -381,6 +391,7 @@ id` field or, left blank, from the image title (see below).
 <series_id>_<feature>_outline_ROIs.zip   ImageJ ROIs
 <series_id>_<feature>_res.txt            measurements
 <series_id>_config.txt                   every parameter used
+<series_id>_threshold_stats.tsv          what the nucleus threshold did, per frame
 <series_id>_overview_ch<c>.png           quick-look projection      (optional)
 <series_id>_overview_ch<c>_overlay.png   the same, outlines drawn   (optional)
 ```
@@ -394,6 +405,14 @@ prefix in the file names but not in `name` would hide both files from R — no
 `volume`, no signal columns, a warning and not an error.
 
 `<feature>` is `nucleus` or `nucleolus` today.
+
+**An image may have several frames.** Each is analysed as an image of its own —
+its own threshold, its own ROIs — and the results of every frame go into the
+same files, told apart by `t` (from 1) and by the ROI id's `TTTT-` field
+(§5). Every file carries `t`, one frame being `t = 1`, so a single-frame
+image's tables have the same shape as a time course's. A multi-frame image
+writes no overview PNG yet; that is a 16-bit TIFF still to come
+(`note/time_series_plan.md`, `time_axis` PR 3).
 
 ### Where the R side gets the series id and the feature
 
@@ -514,40 +533,78 @@ degenerate and ImageJ falls back to the type's full range — pinned in
 | Column | Type | Notes |
 |---|---|---|
 | `name` | chr | the series id, the same string as the file stem — **never contains whitespace**, see §2 |
-| `roi` | chr | ROI id, `SSSS-NNNN-YYYY` |
+| `roi` | chr | ROI id, `<feature>_SSSS-NNNN-YYYY`, or `<feature>_TTTT-SSSS-NNNN-YYYY` when the image has several frames (§5) |
+| `t` | int | frame, from 1. **Since v0.8.0**; a table without it is one frame |
 | `z` | int | 1-based slice |
 | `x`, `y` | dbl | **calibrated units (µm), not pixels** |
 
 Vertices are in ring order and the ring is *not* closed — R repeats the first
 point when building the polygon.
 
-### `_res.txt` — Fiji's Results table, one row per ROI per channel
+### `_res.txt` — Fiji's Results table, one row per ROI per channel per frame
 
 Written with an unnamed first column (Fiji's row numbers), which
 `read_fiji_result()` drops. Columns come from `Set Measurements`, which the
 Groovy scripts force explicitly to:
 
 ```
-area mean standard min centroid shape integrated median stack display
+area mean standard min centroid shape integrated median display
 ```
 
-giving `Label, Area, Mean, StdDev, Min, Max, X, Y, Circ., IntDen, Median,
-RawIntDen, Ch, Slice, AR, Round, Solidity`.
+giving `Area, Mean, StdDev, Min, Max, X, Y, Circ., IntDen, Median, RawIntDen,
+AR, Round, Solidity` plus `Label` — and **four columns we write ourselves**. The
+file leads with the identity: the row number, then
+`Label, roi, z, t, ch`, then ImageJ's measurements in the order above
+(`RoiExport.saveMeasurements()`; ImageJ itself always puts its standard columns
+first, so the table is saved by ImageJ and its columns reordered — every cell
+keeps ImageJ's formatting). Readers find columns by name, never by position.
 
-**`Label` is the join key.** It packs image, ROI id, channel and slice into one
-string, e.g.
+| Column | Notes |
+|---|---|
+| `roi` | the ROI id, as in the outline table |
+| `z` | the slice measured, from 1 |
+| `t` | the frame, from 1 |
+| `ch` | the channel measured, from 1 |
+
+⚠️ **Since v0.8.0.** Before, `stack` was in the list and ImageJ wrote its own
+`Ch` and `Slice` — which mean different things on different image shapes
+(`Slice` is the *time* on a one-channel, one-slice time course;
+`note/time_series_plan.md` §5.3). They are gone, and these four are the only
+position columns. `read_fiji_result()` takes them as given and **checks the
+`Label` against them** — a disagreement stops the read rather than attaching
+measurements to the wrong object.
+
+**`Label` still carries the same facts** in ImageJ's words, e.g.
 
 ```
 20241216_dkD.lif-Position010-1.tif:nucleus_0001-0001-0433:c:1/4 z:1/50 - .../Position010
 ```
 
-`read_fiji_result()` parses it and returns the columns lower-cased and
-de-punctuated, plus four derived ones:
+and for a table written before v0.8.0 it is the only place they are:
+`read_fiji_result()` then parses it, as it always has, and returns the columns
+lower-cased and de-punctuated plus the derived ones, with `t = 1`:
 
 ```
 label area mean stddev min max x y circ intden median rawintden ch slice
-ar round solidity filename roi pos z
+ar round solidity filename roi pos z t
 ```
+
+⚠️ The measurement table's `z` never reaches a join: the **outline table is
+authoritative for `z`**. `summarise_feature_stats()` checks the two agree on
+every `(roi, t)` both hold, stops if not, and joins on `(roi, t)` only.
+
+### `_threshold_stats.tsv` — what the nucleus threshold did, one row per frame
+
+| Column | Notes |
+|---|---|
+| `t` | frame, from 1 |
+| then `nucleus_threshold_used`, `nucleus_mask_pct`, `nucleus_circ_rejected`, `nucleus_count`, `nucleolus_count` | for that frame, each meaning exactly what the `_config.txt` field of the same name means (below) |
+
+**Written for every image** when `save_config` is on — one row for a single
+frame — so every results folder holds the same files; `_config.txt` keeps the
+per-image record, and for several frames writes `per-frame` where a single
+value would not be true. The nucleolus threshold is not here: it is chosen per
+nucleus per slice.
 
 ### `_config.txt` — two columns, `parameter` and `value`
 
@@ -575,6 +632,8 @@ Fields that other code depends on:
 |---|---|
 | `image_width`, `image_height` | **pixels.** `montage_qc_cli.r`, to draw its panel over the same frame as the Fiji PNG |
 | `pixel_width`, `pixel_height`, `pixel_unit` | the same, to convert that frame to µm |
+| `image_frames` | how many frames the image had. **Since v0.8.0**; absent means one |
+| `frame_interval`, `frame_unit` | the time step and its unit, as `pixel_depth` is the z step — measured off the image, so provenance. **Blank for one frame, and when the file did not record one**: ImageJ's 0 means unknown, and a written 1 would be a plausible second nobody measured |
 | `pixel_depth` | the z step, in `pixel_unit`. **Blank when the image is a single plane** — ImageJ defaults the calibration to 1.0 with no z axis and Bio-Formats reports no physical size, so a written 1.0 would be a plausible number for a distance that does not exist. Written since 0.2.0, and `feature_stat_cli.r` now **defaults `--z_step` to it**, per series, from the config beside the inputs |
 | `script` | records the repo `VERSION` that produced the directory |
 | `source_file`, `series_index`, `series_name` | which series of which file produced this directory. Written by the batch, **blank in the interactive runner** where the image was already open and nothing told it. Identity comes from content, not from the filename, so the series id should not have to be parsed apart to answer this |
@@ -582,6 +641,7 @@ Fields that other code depends on:
 | `open_method` | which reader opened the image: `importer` (Bio-Formats' own) or `reader` (one held open across the file). **Blank when the image was already open**, i.e. the interactive runner, where the operator opened it however they liked. The two are asserted to produce byte-identical output, but two runs that used different ones must not be indistinguishable afterwards |
 | `overview_channels`, `overview_overlay_suffix` | which overview PNGs exist, so a results folder can be read later without guessing. Blank when none were written |
 | `nucleus_threshold_used` | the pixel range the threshold **selected**, as `lo-hi`; `per-slice <lo>..<hi>` (note the `..`) when `nucleus_stack_histogram` is off, since there were as many thresholds as slices and none of them is the answer. Not the algorithm's bare number: for bright objects that number is the *bottom* of the range and the top is the type's maximum, so the pair is what can be copied into a manual threshold without working out which end it was. The literal **`none`** when the frame had nothing to separate (see below) — a word, not a range, so it cannot be pasted anywhere by mistake |
+| `nucleus_threshold_used`, `nucleus_mask_pct` with several frames | the literal **`per-frame`** — there is one of each per frame, in `_threshold_stats.tsv`. A word, not a number, like `none`; `nucleus_count`, `nucleolus_count` and `nucleus_circ_rejected` are then totals |
 | `nucleus_mask_pct` | percent of pixels the threshold selected, **before** fill holes and watershed, because the question it answers is what the threshold chose. The cheap signal that one went wrong in either direction: `0.00` selected nothing (a blank field), a number in the tens selected the frame rather than the objects in it. Neither shows up in an ROI count — the size filter turns both into "no nuclei" |
 | `nucleus_circ_rejected` | how many ROIs `nucleus_circularity` deleted. **Blank when the filter was off** — a `0` would claim a filter ran and found nothing to remove. Unlike the R side's `--min_circularity`, which marks a row and leaves it in the table, this filter drops ROIs before anything is written, so this number is the only surviving evidence that they existed |
 
@@ -836,6 +896,7 @@ cannot read R. Columns, in both:
 | Column | Type | Notes |
 |---|---|---|
 | `roi` | chr | ROI id from Fiji |
+| `t` | int | frame, from 1 — from the outline table; `1` for one written before v0.8.0. ⚠️ An outline table holding **more than one frame is refused** until grouping learns time (`time_axis` PR 2) |
 | `z` | int | slice |
 | `area` | dbl | µm², from the polygon |
 | `is_bridge` | lgl | `TRUE` if this ROI only forms graph edges, see §5 |
@@ -922,6 +983,7 @@ rejects table instead of being folded in.
 | Column | Notes |
 |---|---|
 | `series_id`, `feature_type`, `feature_id` | the key |
+| `t` | the feature's frame, from 1 — one, because a feature is one object at one time point. A feature whose ROIs span two frames **stops the run** rather than averaging over time. `1` for a feature table from before v0.8.0 |
 | `n_roi`, `n_z` | **seed** ROIs in the feature, and distinct slices — bridges excluded |
 | `z_min`, `z_max`, `z_span` | extent; `z_span` = max − min + 1 |
 | `z_gaps` | `z_span − n_z` — slices inside the object's range where it was not detected |
@@ -1191,15 +1253,22 @@ unsuffixed PNG and `--overlay` the `_overlay` one, both for the same channel.
 ### ROI ids — Fiji assigns these
 
 ```
-<feature>_SSSS-NNNN-YYYY
-          │    │    └── y-centre of the ROI bounds, zero-padded
-          │    └─────── index within that slice
-          └──────────── slice number
+<feature>_SSSS-NNNN-YYYY              one frame
+<feature>_TTTT-SSSS-NNNN-YYYY         several frames
+          │    │    │    └── y-centre of the ROI bounds, zero-padded
+          │    │    └─────── index within that slice
+          │    └──────────── slice number, from 1
+          └───────────────── frame number, from 1
 ```
 
-e.g. `nucleus_0001-0001-0433`. Reproduced in Groovy so output stays compatible
-with the older macros. `read_fiji_result()` finds the id by matching
-`\d{4}-\d{4}-\d{4}$` inside `Label`.
+e.g. `nucleus_0001-0001-0433`, or `nucleus_0002-0001-0001-0433` for frame 2.
+Reproduced in Groovy so single-frame output stays compatible with the older
+macros. **`TTTT-` only when there are several frames**: the measurements join
+on `(roi, t)`, so a single frame's id needs no frame field, and four frames of
+one object would otherwise share one id — which the ROI zip refuses as a
+repeated entry. Every reader takes both shapes:
+`^(.+)_(\d{4}-)?\d{4}-\d{4}-\d{4}$`, where the greedy prefix is the feature
+name.
 
 ### `feature_id` — R assigns these, per image
 
