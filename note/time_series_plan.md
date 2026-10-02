@@ -191,12 +191,19 @@ the answer is another route table like `sources`, not another series sheet. The
 schema's sheet name follows: `samples` → `series` (one literal in
 `cli_helpers.r`).
 
-❓ **Should `series_id` stay hand-editable?** Today `prefix` is `seeded`, and the
-duplicate error even suggests editing it. Recommendation: make it derived only,
-controlled through `alias` — it is a join key across sources, outlines,
-features and tracks; editing it already breaks the sources join for Luxendo; and
-the duplicates editing used to fix are now prevented by construction. Readable
-labels belong in a user column. Not yet agreed — **decide in `vocab`**.
+🔒 **`series_id` stays hand-editable** (`seeded`), for readability; decided
+2026-10-02. An edited id must still pass the duplicate check. Editing it after
+a run means the results carry the old id, so the analysis must be re-run to
+match — the operator's choice to make. (Making it derived-only was proposed and
+declined.)
+
+⚠️ **So nothing may JOIN on it that the operator cannot see change.** Today
+`sources.tsv` joins the series table on `series_id`, and an edit would orphan
+every source row. In `vocab` the sources table is keyed on **`series_index`**
+instead — the stack, which the operator never edits and which is unique per
+acquisition now that a series is the whole position (§3.2b) — and
+`series_id` is looked up from the series row. The regeneration key was already
+`(path, series_index)`, so edits survive a rescan.
 
 ### 3.2b The sources table — when one series comes from many files
 
@@ -347,7 +354,7 @@ in. Same shape as `readParams` tolerating missing keys.
 or a series-table `t` for per-time-point Luxendo files — and the series-table
 one went with §3.1's revision. A table made with `gatherFrames` off still
 produces single-frame series, which this design analyses as unrelated images;
-that is a reason to remove the option in `vocab` (❓ §4).
+and is why the option is removed in `vocab`.
 
 The **frame interval** is the time calibration, as `pixel_depth` is for z, and
 belongs in `_config.txt` (and so in `PARAM_TYPES`' set-difference tests): Luxendo
@@ -529,8 +536,9 @@ Branch `luxendo-index_scan`. No column changed; the default layout did.
       verify-only, and a time point of a different depth would rest on
       `bdv.xml`'s one size per setup. Revisit only if a minute becomes too long.
 - [x] 🔒 **`gatherFrames` on by default** — one series per position, §3.1. Off
-      still gives the v0.6.0 per-time-point layout. ❓ Whether to remove the
-      option is for `vocab` (§4 `vocab`).
+      still gives the v0.6.0 per-time-point layout. **Removed in `vocab`**
+      (decided 2026-10-02): `Make_LuxendoSheets` will write only the folded
+      layout.
 - [x] `Make_LuxendoTiff` gains **`frames`** (`0`, `0,47,95`, `0-3`; blank =
       every frame in one file, as before): each chosen time point of a
       multi-frame series is its own file, `<series_id>_t<TTTT>` — the same name
@@ -573,9 +581,51 @@ is not a plan.
 
 ### `vocab` — identity and vocabulary
 
-One schema migration, so §3.1 and §3.2 land together.
+One schema migration, **two PRs, one release (v0.7.0)**. Both open questions
+were settled on 2026-10-02 (§3.2: `series_id` stays editable; `gatherFrames` is
+removed), so there is no separate decisions PR.
 
-- [ ] `series_id` as the one word; `sample` and `prefix` both retired.
+🔒 **The split follows what the code forces.** `schema/sheet_columns.tsv` is read
+at run time by both languages, so renaming the sheet or its id column breaks R
+unless the R sheet reader changes in the same PR. Inputs and outputs, on the
+other hand, separate cleanly. **Release after PR 2, not between them**: in
+between, `main` is consistent but speaks two vocabularies (sheets say
+`series_id`, outputs say `sample`).
+
+#### PR 1 — `vocab-series_table`: the sheets, in both languages
+
+Everything that reads or writes `files.tsv`, `series.tsv` and `sources.tsv`.
+
+- [ ] `schema/sheet_columns.tsv`: sheet `samples` → `series`, column `prefix` →
+      `series_id`, the §3.2 descriptions of `series_index` and `alias`.
+- [ ] `samples.tsv` → `series.tsv` everywhere it is named.
+- [ ] Groovy: `SampleSheet`, `Make_SampleSheet`, `BatchRunner` (and the `prefix`
+      column of `batch_summary.tsv`), `Run_Overview_Batch`, `SheetSchema`,
+      `LuxendoScan`, `Make_LuxendoTiff`.
+- [ ] ⚠️ **`sources.tsv` keyed on `series_index`, not `series_id`** (§3.2), so a
+      hand-edited id does not orphan the sources.
+- [ ] Remove `gatherFrames`: `Make_LuxendoSheets` writes the folded layout only.
+      `Make_LuxendoTiff`'s `frames` covers per-time-point files for tuning.
+- [ ] R: `.cli_read_sample_sheet()` (its `id_column` and the
+      `sheet == "samples"` literal), `group_montage_cli.r`'s sheet handling.
+- [ ] 🔒 **`merge()` refuses a renumbering**: same `(path, series_index)`,
+      different `series_name` (§3.2b). Both formats.
+- [ ] ⚠️ **Name the real cause when an old sheet is given.** Check the id column
+      up front, as `Make_LuxendoTiff` already does; otherwise the Groovy side
+      reports "duplicate prefix" (every id reads blank) for a sheet that is
+      merely old — `CLAUDE.md` § Versioning.
+- [ ] The glossary (Luxendo stack = series; ImageJ stack = planes of one frame)
+      in `note/data_formats.md`; `tests/testthat/test-data_formats.R`,
+      `README.md`, `config/*template*` with it.
+
+**Verification.** Regenerate a sheet from a real `.lif` and from the Luxendo
+acquisition and diff against today's: only the renamed column and filename may
+differ. An old sheet must fail naming the cause, on both sides. A hand-edited
+`series_id` must still reach the sources (Luxendo) and still be refused when it
+duplicates another. Both suites, R under 4.6.
+
+#### PR 2 — `vocab-output_identity`: what the analysis writes
+
 - [ ] 🔒 **`Run_NucleusSelector` gains a `series_id` source control**, because
       the interactive path has no series table to read an id from. One `String`
       field whose meaning depends on the mode:
@@ -591,38 +641,26 @@ One schema migration, so §3.1 and §3.2 land together.
       ⚠️ **`explicit` must not persist.** It names one image, so inheriting it
       into the next run would silently mislabel that run's output — the same
       category as `nucleus_threshold_range`, and the same treatment.
-- [ ] `samples.tsv` → `series.tsv`; the schema's sheet `samples` → `series`
-      (the one `sheet == "samples"` literal in `cli_helpers.r` moves with it).
-- [ ] Rewrite the `series_index` and `alias` descriptions in
-      `schema/sheet_columns.tsv` to the definitions in §3.2, and add the
-      glossary (Luxendo stack = series; ImageJ stack = planes of one frame) to
-      `note/data_formats.md`.
-- [ ] 🔒 **`merge()` refuses a renumbering**: same `(path, series_index)`,
-      different `series_name` (§3.2b). Both formats.
-- [ ] ⚠️ **Name the real cause when an old sheet is given.** A renamed id column
-      must be checked up front, as `Make_LuxendoTiff` already does; otherwise
-      the Groovy side reports "duplicate prefix" (every id reads blank) for a
-      sheet that is merely old — `CLAUDE.md` § Versioning.
-- [ ] `feature_id` numbered globally within a series; `track_id` reserved.
-- [ ] ❓ **Is `series_id` hand-editable?** Recommendation in §3.2: no.
-- [ ] ❓ **Remove `gatherFrames`?** Recommended at design time (two id shapes
-      for one format); the user chose instead to keep it with the default on
-      (Part 3). With the series-table `t` gone, a per-time-point table yields
-      single-frame series that this design analyses as unrelated images — so
-      decide here whether the option survives.
-- [ ] ~~`position_id` and `t` on the series table~~ — dropped 2026-10-02, §3.1.
-- [ ] `schema/sheet_columns.tsv`, `SheetSchema.groovy`,
-      `.cli_read_sample_sheet()`, `note/data_formats.md`,
-      `tests/testthat/test-data_formats.R`, R CLI flags, `README.md`,
-      `config/*template*`.
+- [ ] The interactive path stops writing `output_prefix` into `name`.
+- [ ] R outputs: the `sample` column → `series_id` in the feature tables,
+      counts, statistics and `montage_index.tsv`, with the CLI flags that name it.
+- [ ] Regenerate the fixture deliberately, and say so in the commit;
+      `note/data_formats.md` §2, §3 and §5.
 
-⚠️ **This changes an output file.** The interactive path stops writing
-`output_prefix` into `name`.
+⚠️ **This changes an output file.**
 
 **Verification.** Re-run the reference and assert the old and new outputs are
 identical **after dropping `name`**, and that `name` differs only by the removed
-`output_prefix`. That fails if anything else moved. Regenerate the fixture
-deliberately, and say so in the commit.
+`output_prefix`. That fails if anything else moved.
+
+**Then release v0.7.0**, with release notes saying old sheets stop loading and
+are regenerated with `Make_SampleSheet` / `Make_LuxendoSheets`.
+
+**Moved to `time_axis`** (2026-10-02): `feature_id` as `<feature_type>_<NNNN>`,
+numbered globally within a series. Today it is `nucleus_1` — unpadded, per
+image — and the global numbering only means something once
+`define_feature_group()` gains its time partition, which is `time_axis` work;
+changing the id once rather than twice.
 
 ### `time_axis` — time axis through the pipeline
 
@@ -674,7 +712,9 @@ parallelism — one job per series, §5.8 — not a different design.
 - [ ] ⚠️ `define_feature_group()` has **no partition argument today**
       ([define_feature_group.r:72-83](../scripts/R/define_feature_group.r)).
       Add one, **and make the numbering global within the series**, or every
-      timepoint emits `nucleus_1`.
+      timepoint emits `nucleus_1`. 🔒 And change the id format here, once:
+      `<feature_type>_<NNNN>`, four-digit padding (moved from `vocab`). The
+      fixture, `note/data_formats.md` §5 and the R tests move with it.
 - [ ] ⚠️ **`feature_stats.r` must be updated in the same change.**
       [:134](../scripts/R/feature_stats.r) dedups on `(roi, ch)` and
       [:141](../scripts/R/feature_stats.r) joins `by = "roi"`. Under time data
@@ -1528,16 +1568,11 @@ with its sidecar, stops the scan; an *unlisted* file is caught only by
 1. ❓ **Does `z` take part in the TrackMate distance?** Calibrated units are
    locked (§5.4). Needs a real dataset; try full 3D alongside `z = 0` (§4
    `tracking`), and **ask rather than pick**. (`tracking`)
-2. ❓ **Is `series_id` hand-editable?** Recommendation: no — derived, controlled
-   through `alias` (§3.2). (`vocab`)
-3. ❓ **Does `gatherFrames` survive?** Default on since `luxendo` Part 3; off
-   gives single-frame series the time-axis design treats as unrelated images.
-   (`vocab`)
-4. ❓ **Resume granularity for a streamed series** — per-frame markers, or
+2. ❓ **Resume granularity for a streamed series** — per-frame markers, or
    re-run the series. (`time_axis`)
-5. ❓ **Default `nucleus_threshold_scope`** — `frame` or `series`; compare on
+3. ❓ **Default `nucleus_threshold_scope`** — `frame` or `series`; compare on
    real data first (§4 `time_axis`). (`time_axis`)
-6. ❓ **Where `QoL` sits** — not before `time_axis`; decide once its absence has
+4. ❓ **Where `QoL` sits** — not before `time_axis`; decide once its absence has
    been felt. (§4 `QoL`)
 
 Settled on 2026-10-02 and recorded where they apply: a series is the whole
@@ -1546,4 +1581,6 @@ position (§3.1, §6.17); the word stays `series` (§6.19); `series_index` and
 (§3.2); one series sheet for every format (§3.2); no `position_id` (§6.20); the
 overview splits into data and render (§4 `time_axis`, `QoL`); the threshold
 scope is a parameter (§4 `time_axis`); the index file list with option A
-(§4 `luxendo` Part 3). The container class name is 🔒 **`image_region`** (§6.11).
+(§4 `luxendo` Part 3); `series_id` stays editable, with the sources keyed on
+`series_index` (§3.2); `gatherFrames` removed and `feature_id`'s format moved
+to `time_axis` (§4 `vocab`). The container class name is 🔒 **`image_region`** (§6.11).
