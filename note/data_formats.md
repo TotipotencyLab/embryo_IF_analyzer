@@ -900,7 +900,8 @@ both runners give identical per-feature statistics and identical channel signals
 
 ```
 <outdir>/<series_id>_features.rds     sf, one row per ROI      <- canonical
-<outdir>/<series_id>_features_qc.png  only with --qc_plot, and one frame
+<outdir>/<series_id>_features_qc.png  only with --qc_plot, one frame
+<outdir>/<series_id>_features_qc_t<TTTT>.png  only with --qc_plot, one per frame of several
 <outdir>/<output_prefix>features.tsv  the same, geometry dropped
 ```
 
@@ -928,8 +929,12 @@ cannot read R. Columns, in both:
 ⚠️ The `.rds` is a registered `sf` object, but the tibble that
 `define_feature_group()` returns is **not** — see the `sf` primer note.
 
-The QC plot draws one image, so a series of several frames gets none — the run
-says so. `--within` relates each frame on its own: the same nucleus one time
+The QC plot draws one image, so a series of several frames gets **one per
+frame**, all over the same extent and in the same colours, so that flicking
+through them shows the objects moving rather than the axes. The frame goes after
+the plot name: `<id>_t0001_features_qc.png` would equally be the plot of a
+per-frame TIFF's series `<id>_t0001`. A frame with no valid feature still gets
+its plot. `--within` relates each frame on its own: the same nucleus one time
 point later sits in nearly the same place, so it would score, and could win.
 
 ### `count_features_cli.r`

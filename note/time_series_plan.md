@@ -844,8 +844,9 @@ Real data, read only:
       - `feature_counts.tsv` gains `t` and counts per frame, the summary groups
         by `t`, and the plot is drawn over `t` (a bar per series would stack
         the frames into their sum);
-      - the annotate QC plot is not drawn for several frames (it says so), and
-        `montage_qc_cli.r` refuses them — both are pictures of one image;
+      - the annotate QC plot is drawn once per frame, over the series' extent
+        (added 2026-10-04, from the review on real data), and
+        `montage_qc_cli.r` refuses several frames until PR 3;
       - `t` joins the reserved series-table column names.
 
 **Verification, as carried out** (R 4.6.1, 1040 / 0):
@@ -891,6 +892,13 @@ streaming carries the real `t` and makes this a convenience again.
       one 16-bit, z-projected, downscaled TIFF per series, channels and frames
       inside, appended frame by frame, no contrast decided. Single-frame series
       keep the PNG unchanged. Rendering is `QoL`'s `Make_OverviewStack` (H8).
+- [ ] **The multi-frame QC montage, moved here from `QoL`** (decided 2026-10-04:
+      the absence was felt reviewing PR 2 on real data, so it lands with the
+      Fiji side it draws from). `montage_qc_cli.r` gains `--t` — which frames,
+      and the filter that keeps the feature rows to the same frame — and writes
+      a multi-frame 8-bit TIFF; it then stops refusing several frames. What it
+      draws the Fiji panels from needs settling here, since the rendering step
+      (`Make_OverviewStack`) stays in `QoL`.
 
 **Verification.** One real Luxendo position end to end, run at a heap that
 could not hold it whole — the proof that nothing loads the series.
@@ -979,12 +987,10 @@ range recorded. R never makes a contrast decision, which keeps §6.14's point;
 both. The earlier plan of a frame selection on the batch's PNG overview
 (`0,47,95`) is subsumed: the selection moves to the render step.
 
-- [ ] `montage_qc_cli.r` gains an optional **`--t`**: which frames of the
-      overview to use (default all), and the filter that keeps the feature rows
-      to the same frame. The panel extent stays the series' `_config.txt` one —
-      z, x and y are uniform across a series' frames.
-- [ ] A multi-frame QC montage is written as a **multi-frame 8-bit TIFF**, to
-      scroll through time in Fiji; `mg_write()`'s 8-bit guard carries over.
+- [x] ~~`montage_qc_cli.r --t` and the multi-frame QC montage~~ — moved to
+      `time_axis` PR 3 (2026-10-04). The panel extent stays the series'
+      `_config.txt` one — z, x and y are uniform across a series' frames — and
+      `mg_write()`'s 8-bit guard carries over.
 
 🔒 `Open_*` is the verb — `Open_LifFile.groovy` already establishes it as "opens
 something into the Fiji GUI for a human", interactive-only by nature. No fourth

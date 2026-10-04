@@ -264,9 +264,33 @@ test_that("several frames are grouped one frame at a time, and numbered on", {
   expect_identical(unname(unique(res$feature_id[res$t == 2])), "nucleus_0002")
   expect_identical(colnames(res)[1:3], c("roi", "t", "z"))
   expect_true(any(grepl("2 feature(s) over 2 frames", msgs, fixed = TRUE)))
-  # One picture of one image: not drawn, and said so.
-  expect_length(list.files(out, pattern = "_qc\\.png$"), 0)
-  expect_true(any(grepl("QC plot: not drawn for 2 frames", msgs, fixed = TRUE)))
+  # One QC plot per frame, the frame after the plot name -- and no plot of
+  # both frames drawn on top of each other.
+  expect_identical(sort(list.files(out, pattern = "_qc.*\\.png$")),
+                   c("tl_features_qc_t0001.png", "tl_features_qc_t0002.png"))
+  expect_true(any(grepl("2 QC plots, one per frame", msgs, fixed = TRUE)))
+})
+
+test_that("a frame with no valid feature still gets its QC plot", {
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2"))
+  source_cli("annotate_features_cli.r")
+  # Frame 2 holds one slice only, so min_z_span = 2 leaves it nothing valid.
+  # A frame missing from a run of 96 is not something anyone would notice.
+  d <- withr::local_tempdir()
+  sq <- function(roi, t, z) data.frame(name = "gap", roi = roi, t = t, z = z,
+                                       x = c(10, 20, 20, 10), y = c(10, 10, 20, 20))
+  write.table(rbind(sq("nucleus_0001-0001-0001-0015", 1, 1),
+                    sq("nucleus_0001-0002-0001-0015", 1, 2),
+                    sq("nucleus_0002-0001-0001-0015", 2, 1)),
+              file.path(d, "gap_nucleus_outline.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+  out <- withr::local_tempdir()
+  suppressWarnings(suppressMessages(annotate_features_cli(c(
+    "--input", d, "--feature", "nucleus", "--outdir", out,
+    "--min_z_span", "default=2", "--qc_plot"))))
+  png <- file.path(out, c("gap_features_qc_t0001.png", "gap_features_qc_t0002.png"))
+  expect_true(all(file.exists(png)))
+  expect_gt(file.size(png[2]), 5000)      # a drawing, not an empty canvas
 })
 
 test_that("a one-frame v0.8.0 outline keeps its t on every feature row", {
