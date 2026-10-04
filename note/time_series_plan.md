@@ -737,10 +737,8 @@ outputs in scratch:
 are regenerated with `Make_SeriesSheet` / `Make_LuxendoSheets`.
 
 **Moved to `time_axis`** (2026-10-02): `feature_id` as `<feature_type>_<NNNN>`,
-numbered globally within a series. Today it is `nucleus_1` — unpadded, per
-image — and the global numbering only means something once
-`define_feature_group()` gains its time partition, which is `time_axis` work;
-changing the id once rather than twice.
+numbered globally within a series — done in `time_axis` PR 2, together with
+the time partition the global numbering needed, so the id changed once.
 
 ### `time_axis` — time axis through the pipeline
 
@@ -830,15 +828,52 @@ Real data, read only:
   identical but `t` and `channel` each +1; `frames=1` writes the pixels
   `main`'s `frames=0` did (same checksum); an old table and `frames=0` refused.
 
-#### PR 2 — `time_axis-features`
+#### PR 2 — `time_axis-features`  ✅ done
 
-- [ ] ⚠️ `define_feature_group()` has **no partition argument today**
-      ([define_feature_group.r:72-83](../scripts/R/define_feature_group.r)).
-      Add one, **and make the numbering global within the series**, or every
-      timepoint emits `nucleus_1`. 🔒 And change the id format here, once:
-      `<feature_type>_<NNNN>`, four-digit padding (moved from `vocab`). The
-      fixture's R expectations, `note/data_formats.md` §5 and the R tests move
-      with it. Lifts PR 1's refusal of multi-frame tables.
+- [x] `define_feature_group(partition = "t")`: each frame grouped on its own,
+      in `t` order, **numbered on from the last frame** — frame 2 starts where
+      frame 1 ended, so a `feature_id` names one object at one time point and
+      is unique in the series. 🔒 `<feature_type>_<NNNN>`, four digits fixed
+      (`.feature_ids()`), and `invalid_<feature_type>_<NNNN>` likewise. A
+      warning from one frame names it (`t = 2: All ROIs were filtered out`);
+      a single frame reads as before. Lifts PR 1's refusal.
+- [x] **What lifting the refusal exposed**, each of which would otherwise have
+      summed or mixed frames silently:
+      - `--within` relates each `(series_id, t)` on its own — the same nucleus
+        one time point later sits in nearly the same place and would score;
+      - `feature_counts.tsv` gains `t` and counts per frame, the summary groups
+        by `t`, and the plot is drawn over `t` (a bar per series would stack
+        the frames into their sum);
+      - the annotate QC plot is drawn once per frame, over the series' extent
+        (added 2026-10-04, from the review on real data), and
+        `montage_qc_cli.r` refuses several frames until PR 3;
+      - `t` joins the reserved series-table column names.
+
+**Verification, as carried out** (R 4.6.1, 1040 / 0):
+- the fixture, `time_axis` against this branch, annotate → feature_stat →
+  count with `--within`: every table identical once `nucleus_3` is read as
+  `nucleus_0003`; the `.rds` identical in data and geometry; the QC PNG
+  byte-identical; `run_id` unchanged; the counts gain `t = 1`;
+- a real 3-frame image through Fiji — the fixture, the fixture shifted by
+  (12, 8) px, the fixture again: 6 nuclei and 7 nucleoli per frame, numbered
+  `0001–0006`, `0007–0012`, `0013–0018`; frames 1 and 3 identical in every
+  statistic to the single-frame run, frame 2 within 2 × 10⁻⁴ (the outline
+  coordinates' rounding); no nucleolus placed in another frame's nucleus;
+- the control, on the same table without the partition: 6 nuclei, each three
+  frames deep — the plausible wrong answer the partition exists to prevent.
+
+#### Extra — `time_axis-one_file`  ✅ done
+
+Asked for 2026-10-03, for testing before PR 3: until the batch streams a
+Luxendo series, a time course reaches it only as a TIFF, and `frames` wrote one
+file per time point. `Make_LuxendoTiff`'s `oneFile` gathers the chosen time
+points into one file per series, named after the selection
+(`_t0002_t0011_t0021`). Verified on 2026-09-10_203030 position 1: time points
+2, 11, 21 in one file, each frame pixel-identical (CRC32) to the v0.7.0
+per-frame TIFFs `_t0001`, `_t0010`, `_t0020` — which also confirms those were
+named 0-based. ⚠️ The analysis counts frames inside that file, so its `t` is
+not the time point; `_gather.txt`'s `time_points` maps one to the other. PR 3's
+streaming carries the real `t` and makes this a convenience again.
 
 #### PR 3 — `time_axis-stream`
 
@@ -857,6 +892,18 @@ Real data, read only:
       one 16-bit, z-projected, downscaled TIFF per series, channels and frames
       inside, appended frame by frame, no contrast decided. Single-frame series
       keep the PNG unchanged. Rendering is `QoL`'s `Make_OverviewStack` (H8).
+- [ ] **The multi-frame QC montage, moved here from `QoL`** (decided 2026-10-04:
+      the absence was felt reviewing PR 2 on real data, so it lands with the
+      Fiji side it draws from). `montage_qc_cli.r` gains `--t` — which frames,
+      and the filter that keeps the feature rows to the same frame — and writes
+      a multi-frame 8-bit TIFF; it then stops refusing several frames. What it
+      draws the Fiji panels from needs settling here, since the rendering step
+      (`Make_OverviewStack`) stays in `QoL`.
+- [ ] **`annotate --qc_plot` writes one multi-frame TIFF per series**
+      (`<series_id>_features_qc.tif`), replacing PR 2's one PNG per frame —
+      decided 2026-10-04: 96 PNGs per series is clutter, and the montage TIFF
+      above needs the same stacking. A single frame keeps its PNG, the rule the
+      Fiji overviews follow.
 
 **Verification.** One real Luxendo position end to end, run at a heap that
 could not hold it whole — the proof that nothing loads the series.
@@ -945,12 +992,10 @@ range recorded. R never makes a contrast decision, which keeps §6.14's point;
 both. The earlier plan of a frame selection on the batch's PNG overview
 (`0,47,95`) is subsumed: the selection moves to the render step.
 
-- [ ] `montage_qc_cli.r` gains an optional **`--t`**: which frames of the
-      overview to use (default all), and the filter that keeps the feature rows
-      to the same frame. The panel extent stays the series' `_config.txt` one —
-      z, x and y are uniform across a series' frames.
-- [ ] A multi-frame QC montage is written as a **multi-frame 8-bit TIFF**, to
-      scroll through time in Fiji; `mg_write()`'s 8-bit guard carries over.
+- [x] ~~`montage_qc_cli.r --t` and the multi-frame QC montage~~ — moved to
+      `time_axis` PR 3 (2026-10-04). The panel extent stays the series'
+      `_config.txt` one — z, x and y are uniform across a series' frames — and
+      `mg_write()`'s 8-bit guard carries over.
 
 🔒 `Open_*` is the verb — `Open_LifFile.groovy` already establishes it as "opens
 something into the Fiji GUI for a human", interactive-only by nature. No fourth

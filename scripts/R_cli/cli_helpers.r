@@ -517,8 +517,8 @@
 
 #' Rows holding a real, detected feature
 #'
-#' The vocabulary (note/data_formats.md §5) is: `<type>_N` is real, while
-#' `invalid_<type>_N`, `failed_<type>_<reason>` and NA are not. Testing that
+#' The vocabulary (note/data_formats.md §5) is: `<type>_NNNN` is real, while
+#' `invalid_<type>_NNNN`, `failed_<type>_<reason>` and NA are not. Testing that
 #' against the row's OWN feature_type works for any feature name; the earlier
 #' hardcoded list of nucleus/nucleolus/cell/cytoplasm silently dropped anything
 #' else from the QC plots, and would drop every renamed feature.
@@ -820,7 +820,7 @@
 # would be silently renamed by bind_cols() to `area...7`, producing a file that
 # violates the documented schema -- and the next stage then cannot find the
 # column it needs.
-.CLI_RESERVED_COLUMNS <- c("roi", "z", "area", "geometry", "series_id",
+.CLI_RESERVED_COLUMNS <- c("roi", "t", "z", "area", "geometry", "series_id",
                            "feature_id", "feature_type",
                            "parent_feature_id", "parent_feature_type",
                            "parent_containment", "parent_match",

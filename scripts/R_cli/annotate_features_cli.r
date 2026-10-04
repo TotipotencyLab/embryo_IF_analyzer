@@ -297,20 +297,6 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       # memory, confirm the tail agrees rather than assuming it.
       .cli_check_identity(roi_df$roi, path, roi_prefix)
 
-      # One frame per table until grouping learns time (time_axis PR 2):
-      # grouping across frames would join one object's frames into a single
-      # feature, by z overlap alone, and report a plausible count of nothing.
-      # Refused, not attempted. The frame is put back on the rows afterwards.
-      frames <- sort(unique(roi_df$t))
-      if (length(frames) > 1L) {
-        stop("Outline table ", basename(path), " holds ", length(frames),
-             " frames (t = ", paste(utils::head(frames, 5), collapse = ", "),
-             if (length(frames) > 5) ", ..." else "", "). Grouping ROIs into features ",
-             "across time is not supported yet: one frame per table.", call. = FALSE)
-      }
-      frame_t <- frames[1]
-      roi_df$t <- NULL
-
       # Optional circularity pre-filter, which needs the measurement table.
       circ_keys <- unique(c(feat, roi_prefix))
       circ_cut <- if (any(circ_keys %in% names(min_circ)) || "default" %in% names(min_circ)) {
@@ -352,14 +338,15 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
         feature_area_range  = eff_feat_area,
         feature_prefix         = paste0(feat, "_"),
         invalid_feature_prefix = paste0("invalid_", feat, "_"),
-        fail_ROI_feature_prefix = paste0("failed_", feat, "_")
+        fail_ROI_feature_prefix = paste0("failed_", feat, "_"),
+        # Each frame grouped on its own and numbered on from the last, so one
+        # object's frames never join into one feature and a feature_id names
+        # one object at one time point. t comes back beside roi, as in the
+        # outline table: (roi, t) is the key the measurements join on.
+        partition = "t"
       )
       feature_group$feature_type <- feat
       feature_group$series_id <- sid
-      # Beside roi, as in the outline table: (roi, t) is the key the
-      # measurements join on.
-      feature_group$t <- frame_t
-      feature_group <- dplyr::relocate(feature_group, "t", .after = "roi")
       per_feature[[feat]] <- feature_group
       
       n_valid <- length(unique(feature_group$feature_id[grepl(paste0("^", feat, "_"), feature_group$feature_id)]))
@@ -367,6 +354,8 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       message("    ", feat,
               if (feat != roi_prefix) paste0(" (from ", roi_prefix, ")") else "",
               ": ", nrow(feature_group), " ROIs -> ", n_valid, " feature(s)",
+              if (length(unique(feature_group$t)) > 1)
+                paste0(" over ", length(unique(feature_group$t)), " frames") else "",
               "  [max_z_dist=", eff_z_dist, " min_z_span=", eff_z_span,
               " min_intersect_ratio=", eff_ratio,
               if (!is.null(eff_roi_area))  paste0(" roi_area=", rng(eff_roi_area)) else "",
@@ -426,7 +415,14 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     saveRDS(series_sf, rds_path)
     message("    -> ", basename(rds_path))
     
-    if (argv$qc_plot) {
+    # One picture per image, so one per FRAME of a time course: drawn together,
+    # the same nucleus at 96 time points reads as one blot.
+    n_frames <- length(unique(series_sf$t))
+    if (argv$qc_plot && n_frames > 1) {
+      paths <- .qc_plot_frames(series_sf, sid, outdir)
+      message("    -> ", length(paths), " QC plots, one per frame: ",
+              basename(paths[1]), " .. ", basename(paths[length(paths)]))
+    } else if (argv$qc_plot) {
       png_path <- file.path(outdir, paste0(sid, "_features_qc.png"))
       .qc_plot(series_sf, sid, png_path)
       message("    -> ", basename(png_path))
@@ -550,6 +546,53 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   
   ggplot2::ggsave(path, p, width = 6, height = 6, dpi = 150)
   invisible(path)
+}
+
+#' One QC plot per frame of a time course: <sid>_features_qc_t<TTTT>.png
+#'
+#' The frame goes AFTER the plot name, not after the series id: the per-frame
+#' TIFFs Make_LuxendoTiff writes are series named <id>_t<TTTT>, so
+#' <id>_t0001_features_qc.png would be that series' plot as much as frame 1 of
+#' <id>'s.
+#'
+#' Every frame is drawn over the SAME extent, taken from the whole series, and
+#' with the same colour for each feature type -- flicking between frames must
+#' show the objects moving, not the axes or the legend. A frame with no valid
+#' feature still gets its plot, showing the ROIs that were rejected: a frame
+#' missing from a run of 96 is not something anyone notices.
+#'
+#' @return The paths written, in t order.
+.qc_plot_frames <- function(series_sf, sid, outdir) {
+  bb  <- sf::st_bbox(series_sf)
+  pad <- 0.02 * max(bb["xmax"] - bb["xmin"], bb["ymax"] - bb["ymin"])
+  xlim <- unname(c(bb["xmin"] - pad, bb["xmax"] + pad))
+  ylim <- unname(c(bb["ymin"] - pad, bb["ymax"] + pad))
+  # flip_y_image() maps y to y_ref - y; ymin + ymax maps the box onto itself,
+  # so ylim reads the same flipped or not.
+  y_ref <- unname(bb["ymin"] + bb["ymax"])
+  types <- sort(unique(series_sf$feature_type))
+  # ggplot's own default colours for the full set of types, fixed, so a frame
+  # lacking one type does not shift the colours of the rest.
+  palette <- stats::setNames(scales::hue_pal()(length(types)), types)
+
+  frames <- sort(unique(series_sf$t))
+  paths <- character(0)
+  for (t in frames) {
+    fr <- series_sf[series_sf$t == t, ]
+    valid <- .cli_valid_rows(fr)
+    unioned <- if (nrow(valid)) union_features(valid) else NULL
+    p <- plot_features_topView(fr, unioned, color_by = "feature_type", y_ref = y_ref,
+                               xlim = xlim, ylim = ylim, palette = palette) +
+      ggplot2::labs(
+        title = sid,
+        subtitle = paste0("t = ", t, " (frame ", match(t, frames), " of ", length(frames), "): ",
+                          nrow(fr), " ROIs -> ", if (is.null(unioned)) 0 else nrow(unioned),
+                          " features"))
+    path <- file.path(outdir, sprintf("%s_features_qc_t%04d.png", sid, as.integer(t)))
+    ggplot2::ggsave(path, p, width = 6, height = 6, dpi = 150)
+    paths <- c(paths, path)
+  }
+  return(paths)
 }
 
 if (!interactive() && sys.nframe() == 0L) annotate_features_cli()

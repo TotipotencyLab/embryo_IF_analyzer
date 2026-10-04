@@ -154,6 +154,15 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     if (!nrow(feats)) stop("No rows left after --feature filtering", call. = FALSE)
   }
 
+  # Three renderings of ONE image. A time course's frames would be drawn on top
+  # of each other, beside an overview that a multi-frame image does not have
+  # (its overview is the TIFF the batch writes, time_axis PR 3).
+  if ("t" %in% colnames(feats) && length(unique(feats$t)) > 1) {
+    stop("Feature file ", basename(argv$features), " holds ", length(unique(feats$t)),
+         " frames; the QC montage draws one image and has no per-frame form yet.",
+         call. = FALSE)
+  }
+
   sid <- sub("_features\\.rds$", "", basename(argv$features))
 
   # --- image extent -----------------------------------------------------------
