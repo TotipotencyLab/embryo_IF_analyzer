@@ -162,7 +162,7 @@ println "=== batch_summary.tsv is the deliverable ==="
 def sum = TSV.read(new File(out1, "batch_summary.tsv"))
 check("one row per sheet row, excluded too",   sum.size(), 4)
 check("columns",                               sum[0].keySet().toList(),
-      ["series_id", "path", "series_index", "status", "open_method",
+      ["series_id", "t", "path", "series_index", "status", "open_method",
        "threshold", "mask_pct", "n_nucleus",
        "n_nucleolus", "seconds", "message"])
 check("A is ok",                               sum.find { it.series_id == "A" }.status, "ok")
@@ -521,9 +521,9 @@ def outEach = new File(tmp, "each"); outEach.mkdirs()
 def seen = []
 def eachRes = runner.runEach(rows, raw, [open_mode: "auto"], outEach,
                              ["n_slices", "title"], null,
-                             { imp, prefix, si, openMethod, row ->
+                             { src, prefix, si, openMethod, row ->
                                  seen << prefix
-                                 return [n_slices: imp.getNSlices(), title: imp.getTitle()]
+                                 return [n_slices: src.nSlices, title: src.title]
                              })
 // A, B and C are included; B points at a file that is not there. So the work
 // closure must see exactly the rows that OPENED -- naming them, because a
@@ -536,7 +536,7 @@ def eachTsv = new File(outEach, "batch_summary.tsv")
 check("runEach writes batch_summary.tsv",     eachTsv.isFile(), true)
 def eachHdr = eachTsv.readLines()[0].split("\t").toList()
 check("...with the caller's columns, in place",
-      eachHdr, ["series_id", "path", "series_index", "status", "open_method",
+      eachHdr, ["series_id", "t", "path", "series_index", "status", "open_method",
                 "n_slices", "title", "seconds", "message"])
 
 // THE point of `blanks`: an excluded or failed row has no work output, and a
@@ -554,7 +554,7 @@ def outThrow = new File(tmp, "eachthrow"); outThrow.mkdirs()
 int called = 0
 def throwRes = runner.runEach(rows, raw, [open_mode: "auto"], outThrow,
                               ["n_slices"], null,
-                              { imp, prefix, si, openMethod, row ->
+                              { src, prefix, si, openMethod, row ->
                                   called++
                                   throw new IllegalStateException("deliberate")
                               })
@@ -577,7 +577,7 @@ check("...and B's reason is the missing file",
 // would warn about a blur sigma it never uses.
 def outNote = new File(tmp, "eachnote"); outNote.mkdirs()
 def noteRes = runner.runEach(mixed, raw, [open_mode: "auto"], outNote, [], null,
-                             { imp, prefix, si, openMethod, row -> [:] })
+                             { src, prefix, si, openMethod, row -> [:] })
 def mixedWarn = noteRes.warnings.find { it.contains("different pixel sizes") }
 check("mixed pixel sizes still warn",         mixedWarn != null, true)
 check("...with the generic note by default",

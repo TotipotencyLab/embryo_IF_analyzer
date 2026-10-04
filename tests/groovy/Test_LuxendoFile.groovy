@@ -89,6 +89,32 @@ throwsWith("plane above range refuses", "out of range", { lf2.plane(4) })
 throwsWith("negative plane refuses",    "out of range", { lf2.plane(-1) })
 lf2.close()
 
+println "\n=== volume(): the whole stack in strips, the same planes as plane(z) ==="
+def same = { LF_ ->
+    def v = LF_.volume()
+    (0..<LF_.sizeZ).every { int z -> java.util.Arrays.equals(v[z], LF_.plane(z)) }
+}
+def lf3 = LF.open(f1)
+check("contiguous /Data: every plane equals plane(z)", same(lf3), true)
+check("...and there are sizeZ of them",               lf3.volume().length, lf3.sizeZ)
+lf3.close()
+// Chunked as Luxendo chunks -- every chunk spanning all z -- but 4 rows tall
+// over 10 rows, so the last strip is partial: the case a strip loop gets wrong.
+def fc = new File(tmp, "chunked.lux.h5")
+def wc = ch.systemsx.cisd.hdf5.HDF5Factory.open(fc)
+short[] flatc = new short[3 * 10 * 5]
+for (int z = 0; z < 3; z++) for (int y = 0; y < 10; y++) for (int x = 0; x < 5; x++)
+    flatc[(z * 10 + y) * 5 + x] = (short) (z * 10000 + y * 100 + x)
+wc.uint16().createMDArray("/Data", [3L, 10L, 5L] as long[], [3, 4, 5] as int[])
+wc.uint16().writeMDArrayBlockWithOffset("/Data",
+    new ch.systemsx.cisd.base.mdarray.MDShortArray(flatc, [3, 10, 5] as int[]), [0L, 0L, 0L] as long[])
+wc.close()
+def lfc = LF.open(fc)
+check("the chunk height is read from the file",       lfc.chunkRows(), 4)
+check("chunked, partial last strip: planes agree",    same(lfc), true)
+check("...and a pixel in the last strip is right",    (lfc.volume()[2][9 * 5 + 4] & 0xFFFF), 2 * 10000 + 900 + 4)
+lfc.close()
+
 println "\n=== a single plane has NO z step, rather than a default one ==="
 def fFlat = writeLux(new File(tmp, "single.lux.h5"), 1, 4, 4)
 def lfFlat = LF.open(fFlat)

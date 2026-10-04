@@ -33,7 +33,10 @@ class LuxFixture {
      * check that an unpaired file is reported and skipped.
      *
      * opts: elementSize (bool), metadata (bool), sidecar (bool), el (float[3] z,y,x),
-     *       vox (map), stack, stackDesc, channel, chanDesc, tp, bias
+     *       vox (map), stack, stackDesc, channel, chanDesc, tp, bias,
+     *       pixel (closure z, y, x -> value, replacing the gradient: for a test
+     *       that needs something to segment), metaData (map, written beside
+     *       processingInformation as the real file does -- triggers live there)
      */
     static File writeLux(File f, int nz, int ny, int nx, Map opts = [:]) {
         f.getParentFile()?.mkdirs()
@@ -58,14 +61,17 @@ class LuxFixture {
             for (int z = 0; z < nz; z++)
                 for (int y = 0; y < ny; y++)
                     for (int x = 0; x < nx; x++)
-                        flat[(z * ny + y) * nx + x] = (short) (z * 10000 + y * 100 + x + bias)
+                        flat[(z * ny + y) * nx + x] = (short) (opts.pixel ? (opts.pixel(z, y, x) as int)
+                                                                       : (z * 10000 + y * 100 + x + bias))
             w.uint16().writeMDArray("/Data", new MDShortArray(flat, [nz, ny, nx] as int[]))
             if (opts.get("elementSize", true)) {
                 w.float32().setArrayAttr("/Data", "element_size_um",
                                          (opts.el ?: [5.0f, 0.208f, 0.208f]) as float[])
             }
             if (opts.get("metadata", true)) {
-                w.string().write("/metadata", JsonOutput.toJson([processingInformation: info]))
+                def meta = [processingInformation: info]
+                if (opts.metaData) meta.metaData = opts.metaData
+                w.string().write("/metadata", JsonOutput.toJson(meta))
             }
         } finally {
             w.close()
@@ -115,9 +121,11 @@ class LuxFixture {
      * @param nT        time points per position
      * @param bdv       also write the bdv.h5 + bdv.xml index, as Luxendo does at
      *                  the end of an acquisition (default true)
+     * @param extra     pixel: closure (pos, ch, t, z, y, x) -> value; metaData:
+     *                  map written into every file's /metadata JSON
      */
     static File buildTree(File root, List positions, List channels, int nT,
-                          int ny = 6, int nx = 4, boolean bdv = true) {
+                          int ny = 6, int nx = 4, boolean bdv = true, Map extra = [:]) {
         def raw = new File(root, "raw")
         positions.each { pos ->
             channels.each { ch ->
@@ -126,7 +134,10 @@ class LuxFixture {
                              (pos.nz as int), ny, nx,
                              [stack: pos.stack, stackDesc: pos.desc,
                               channel: ch.index, chanDesc: ch.name,
-                              tp: t, bias: ((pos.stack as int) * 1000 + (ch.index as int) * 100 + t)])
+                              tp: t, bias: ((pos.stack as int) * 1000 + (ch.index as int) * 100 + t),
+                              // extra.pixel(pos, ch, t, z, y, x), t as the FILE numbers it (from 0)
+                              pixel: (extra.pixel ? { int z, int y, int x -> extra.pixel(pos, ch, t, z, y, x) } : null),
+                              metaData: extra.metaData])
                 }
             }
         }

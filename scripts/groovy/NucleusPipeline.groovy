@@ -158,7 +158,7 @@ class NucleusPipeline {
     // The sibling libraries, held as Class objects rather than imported types:
     // scripts/groovy/ is parsed at run time the way scripts/R/ is source()d, and
     // there is no build step that would make them real imports.
-    Class ND, RX, RD, OV
+    Class ND, RX, RD, OV, SS
 
     /** Parse the sibling libraries out of the same directory this file sits in. */
     static NucleusPipeline load(String libDir) {
@@ -174,6 +174,7 @@ class NucleusPipeline {
         p.RX = gcl.parseClass(new File(dir, "RoiExport.groovy"))
         p.RD = gcl.parseClass(new File(dir, "RoiDetect.groovy"))
         p.OV = gcl.parseClass(new File(dir, "Overview.groovy"))
+        p.SS = gcl.parseClass(new File(dir, "SeriesSource.groovy"))
         return p
     }
 
@@ -189,6 +190,27 @@ class NucleusPipeline {
      *         those are not part of producing the files.
      */
     Map run(ImagePlus imp, File outdir, Map p) {
+        // An open image is one kind of series source; the batch hands over the
+        // other kinds. Not owned: the image is the caller's to close.
+        return runSource(SS.ofImage(imp, (p.open_method ?: "") as String, false), outdir, p)
+    }
+
+    /** Where a series' frames are staged while it runs, under the output directory. */
+    static final String STAGING_DIR = ".staging"
+
+    /**
+     * Run the pipeline over a series source (SeriesSource), one frame at a time.
+     *
+     * Typed Object, not SeriesSource: the batch and this class each parse their
+     * own copy of SeriesSource, and two parsings are two different classes.
+     *
+     * @param src    the series, handed over frame by frame
+     * @param wanted the frames to analyse (TiffAssembler.parseFrames), null = all.
+     *               A series of one frame is analysed whatever this says.
+     * @return as run(), plus `frames`: one entry per frame attempted -- t,
+     *         status, the frame's threshold stats, seconds, message
+     */
+    Map runSource(Object src, File outdir, Map p, List<Integer> wanted = null) {
         IJ.run("Set Measurements...", MEASUREMENTS + " redirect=None decimal=3")
 
         def channels = ((String) p.channels_measured).split(",").collect { it.trim() as Integer }
@@ -198,7 +220,7 @@ class NucleusPipeline {
         // the other channels is exactly how you check a signal against the
         // compartment it is supposed to be in.
         def ovChannels = ([dnaCh] + channels).unique().sort()
-        def slices     = RD.parseSlices(p.z_spec ?: "", imp.getNSlices())
+        def slices     = RD.parseSlices(p.z_spec ?: "", src.nSlices)
         def outDirPath = outdir.getAbsolutePath() + File.separator
 
         // The series id names everything this run writes: every file, and the
@@ -212,12 +234,14 @@ class NucleusPipeline {
         if (p.series_id) {
             seriesId = RX.checkSeriesId(p.series_id as String)
             IJ.log("  series id: '" + seriesId + "'  [given]")
+        } else if (src.whole != null) {
+            seriesId = RX.seriesIdFromTitle(src.whole)
         } else {
-            seriesId = RX.seriesIdFromTitle(imp)
+            seriesId = RX.checkSeriesId(src.title as String)
         }
 
         IJ.log("=== " + seriesId + " ===")
-        IJ.log("  analysing " + slices.size() + " of " + imp.getNSlices() + " slices")
+        IJ.log("  analysing " + slices.size() + " of " + src.nSlices + " slices")
 
         // Overview settings are checked HERE, not where they are used. The
         // overview is the last thing the pipeline does, so an unknown
@@ -238,62 +262,123 @@ class NucleusPipeline {
                              (p.nucleus_threshold_range ?: "") as String)
 
         // --- Frames ----------------------------------------------------------
-        // Every frame is analysed as an image of its own, by runFrame(). A
-        // single-frame image is passed through as itself -- no copy, so nothing
-        // about it changes. An open multi-frame image hands over one frame at a
-        // time; time_axis PR 3 adds a source that streams frames from disk and
-        // calls the same runFrame(), which is why the loop is shaped like this
-        // rather than as one pass over a hyperstack. Every whole-stack step
-        // inside -- the pooled histogram, the Duplicator of the z range -- is
-        // therefore per frame without being told.
-        int nFrames  = imp.getNFrames()
-        boolean multi = nFrames > 1
+        // Every frame is analysed as an image of its own, by runFrame(), handed
+        // over by the source one at a time and released before the next: a
+        // Luxendo position does not fit in memory, and nothing here may hold
+        // it. A single-frame image is passed through as itself -- no copy, so
+        // nothing about it changes. Every whole-stack step inside -- the pooled
+        // histogram, the Duplicator of the z range -- is therefore per frame
+        // without being told.
+        //
+        // `multi` is a fact about the SERIES, not about this run: frame 11 of a
+        // 96-frame position is t = 11 and carries TTTT- in its ROI ids whether
+        // one frame was asked for or all of them, so two runs over different
+        // frames of one series cannot collide.
+        boolean multi = src.nFrames > 1
+        def pick = src.choose(wanted)
+        def frames = pick.frames
+        if (pick.absent) {
+            IJ.log("  WARNING: no frame " + SS.describeFrames(pick.absent) + " in this series (it has " +
+                   SS.describeFrames(src.frameList) + "); nothing is done for them")
+        }
+        if (!frames) {
+            throw new IllegalArgumentException("none of the frames asked for is in this series (it has " +
+                                               SS.describeFrames(src.frameList) + ")")
+        }
         if (multi) {
-            IJ.log("  " + nFrames + " frames, each analysed on its own")
+            IJ.log("  " + (frames.size() == src.nFrames ? ("" + frames.size())
+                                                         : (frames.size() + " of " + src.nFrames)) +
+                   " frames, each analysed on its own")
             if (p.save_overview) {
                 // Said rather than skipped quietly. A multi-frame overview is a
-                // 16-bit TIFF written frame by frame (time_axis PR 3), not a
+                // 16-bit TIFF written frame by frame (time_axis PR 3b), not a
                 // PNG of whichever frame happened to be current.
                 IJ.log("  overview: not written for a multi-frame image yet")
             }
         }
 
-        // What every frame found, in frame order, written once at the end: ROIs
-        // and table rows are small; only the pixels are not.
+        // STAGING. Each frame's tables go to disk as soon as the frame is done,
+        // into a directory renamed into place only once all of them are
+        // written: a frame is finished exactly when <stage>/t<TTTT>/ exists. A
+        // crash at frame 90 of 96 then costs one frame, not 90 -- and resuming
+        // (time_axis PR 4) is skipping the frames already there. The series'
+        // files are the frames joined in t order at the end.
+        def stage = new File(new File(outdir, STAGING_DIR), seriesId)
+        if (stage.exists()) {
+            // Until resume exists, a leftover is a run that died: start over
+            // rather than join frames whose settings nobody can vouch for.
+            IJ.log("  discarding the staged frames of an earlier, unfinished run")
+            stage.deleteDir()
+        }
+        stage.mkdirs()
+
+        // What every frame found, in memory as well: the caller gets the ROIs
+        // back (the interactive runner fills the ROI Manager from them), and a
+        // single frame's overview draws them.
         def found  = [nucleus  : [rois: [], names: [], slices: [], ts: []],
                       nucleolus: [rois: [], names: [], slices: [], ts: []]]
-        def tables = [nucleus: RX.newMeasurementTable(), nucleolus: RX.newMeasurementTable()]
-        def frameStats = []
-        for (int t = 1; t <= nFrames; t++) {
-            def frame = multi ? frameOf(imp, t) : imp
-            try {
-                def fr = runFrame(frame, t, multi, p, dnaCh, channels, slices, tables)
-                ["nucleus", "nucleolus"].each { String feature ->
-                    def got = fr[feature]
-                    found[feature].rois.addAll(got.rois)
-                    found[feature].names.addAll(got.names)
-                    found[feature].slices.addAll(got.slices)
-                    found[feature].ts.addAll(got.rois.collect { t })
+        def frameResults = []
+        ImagePlus kept = null    // a single frame, kept for its overview
+        try {
+            frames.each { int t ->
+                long t0 = System.currentTimeMillis()
+                ImagePlus frame = null
+                try {
+                    frame = src.frame(t)
+                    def tables = [nucleus: RX.newMeasurementTable(), nucleolus: RX.newMeasurementTable()]
+                    def fr = runFrame(frame, t, multi, p, dnaCh, channels, slices, tables)
+                    stageFrame(stage, t, seriesId, src.calibration, fr, tables, p)
+                    ["nucleus", "nucleolus"].each { String feature ->
+                        def got = fr[feature]
+                        found[feature].rois.addAll(got.rois)
+                        found[feature].names.addAll(got.names)
+                        found[feature].slices.addAll(got.slices)
+                        found[feature].ts.addAll(got.rois.collect { t })
+                    }
+                    frameResults << [t: t, status: "ok", stats: fr.stats, message: "",
+                                     seconds: System.currentTimeMillis() - t0]
+                    if (!multi) kept = frame
+                } catch (Throwable e) {
+                    // One frame is one image's worth of work: a failure is a
+                    // fact about that frame, and the rest of the series goes on
+                    // -- as one row's failure does not stop a batch. A single
+                    // frame's failure is the series' failure, and propagates as
+                    // it always has.
+                    if (!multi) throw e
+                    def msg = e.getClass().getSimpleName() + ": " + (e.getMessage() ?: "(no message)")
+                    IJ.log("  t" + t + " FAILED: " + msg)
+                    frameResults << [t: t, status: "failed", stats: null, message: msg,
+                                     seconds: System.currentTimeMillis() - t0]
+                } finally {
+                    if (frame != null && !frame.is(kept)) src.release(frame)
                 }
-                frameStats << fr.stats
-            } finally {
-                // close() then flush(): close() alone frees nothing headless.
-                if (multi) { frame.close(); frame.flush() }
             }
+        } catch (Throwable e) {
+            stage.deleteDir()
+            throw e
         }
+        def okFrames = frameResults.findAll { it.status == "ok" }
+        if (!okFrames) {
+            stage.deleteDir()
+            throw new IllegalStateException("every frame failed; first: t" + frameResults[0].t + " " +
+                                            frameResults[0].message)
+        }
+        def frameStats = okFrames.collect { it.stats }
         def nucRois  = found.nucleus.rois
         def nuclRois = found.nucleolus.rois
         def nucNames = found.nucleus.names,  nucSlices  = found.nucleus.slices
         def nuclNames = found.nucleolus.names, nuclSlices = found.nucleolus.slices
 
+        // The series' files: the staged frames joined, in t order.
+        def okTs = okFrames.collect { it.t as int }
         ["nucleus", "nucleolus"].each { String feature ->
-            def f = found[feature]
-            if (multi) IJ.log("  " + feature + ": " + f.rois.size() + " ROIs over " + nFrames + " frames")
-            if (f.rois.isEmpty()) return
+            if (multi) IJ.log("  " + feature + ": " + found[feature].rois.size() + " ROIs over " +
+                              okTs.size() + " frame(s)")
+            def part = { String suffix -> okTs.collect { new File(stagedFrame(stage, it), feature + suffix) } }
             def stem = outDirPath + seriesId + "_" + feature
-            if (p.save_outlines)     RX.saveOutlineCoords(imp, f.rois, f.names, f.slices, f.ts, seriesId, stem + "_outline.txt")
-            if (p.save_roi_zips)     RX.saveRoiZip(f.rois, f.names, stem + "_outline_ROIs.zip")
-            if (p.save_measurements) RX.saveMeasurements(tables[feature], stem + "_res.txt")
+            RX.joinTables(part("_outline.txt"), new File(stem + "_outline.txt"), false)
+            RX.joinRoiZips(part("_outline_ROIs.zip"), new File(stem + "_outline_ROIs.zip"))
+            RX.joinTables(part("_res.txt"), new File(stem + "_res.txt"), true)
         }
 
         // Per image, as _config.txt has always recorded them, when there is one
@@ -305,6 +390,8 @@ class NucleusPipeline {
         def rejected      = frameStats.collect { it.nucleus_circ_rejected }
         def circRejected  = (rejected.every { it == "" }) ? "" : rejected.sum { (it ?: 0) as int }
         boolean overviewWritten = p.save_overview && !multi
+        // A single frame's pixels, still open for its overview; released below.
+        def imp = kept
 
         // --- Overview PNGs ---------------------------------------------------
         // A quick visual check, not an input to anything: the chosen channels
@@ -345,6 +432,7 @@ class NucleusPipeline {
             }
             proj.close(); proj.flush()   // close() alone frees nothing; see above
         }
+        if (kept != null) src.release(kept)
 
         // --- Run configuration -----------------------------------------------
         if (p.save_config) {
@@ -354,7 +442,7 @@ class NucleusPipeline {
                 // point produced the directory, and there is more than one now.
                 script                 : (p.script_name ?: "NucleusPipeline.groovy") + " " + RX.repoVersion(libDir),
                 imagej_version         : IJ.getVersion(),
-                image_title            : imp.getTitle(),
+                image_title            : src.title,
                 // How the image was opened: "importer" or "reader" from the
                 // batch, BLANK when the image was already open (the interactive
                 // runner, where the operator opened it however they liked).
@@ -375,13 +463,17 @@ class NucleusPipeline {
                 //     detected objects is not the frame. A QC panel drawn from R
                 //     would then be cropped differently from the Fiji overview
                 //     PNG it is meant to sit beside.
-                image_width            : imp.getWidth(),
-                image_height           : imp.getHeight(),
-                image_slices           : imp.getNSlices(),
-                image_channels         : imp.getNChannels(),
-                image_frames           : imp.getNFrames(),
-                pixel_width            : imp.getCalibration().pixelWidth,
-                pixel_height           : imp.getCalibration().pixelHeight,
+                image_width            : src.width,
+                image_height           : src.height,
+                image_slices           : src.nSlices,
+                image_channels         : src.nChannels,
+                image_frames           : src.nFrames,
+                // Which of them these results hold: the frames asked for, less
+                // any that failed (batch_summary.tsv says why). Space-separated,
+                // never commas -- a comma in a value is split by the R CLIs.
+                frames_analysed        : okTs.join(" "),
+                pixel_width            : src.calibration.pixelWidth,
+                pixel_height           : src.calibration.pixelHeight,
                 // The z step, which nothing recorded before: feature_stat_cli.r
                 // needs it for `volume` and had to be told by hand. Bio-Formats
                 // populates it on import.
@@ -391,15 +483,15 @@ class NucleusPipeline {
                 // physical size as null there -- writing 1.0 would hand a later
                 // reader a plausible number for a distance that does not exist,
                 // and `area_sum x 1.0` is an area wearing a volume's name.
-                pixel_depth            : (imp.getNSlices() > 1 ? imp.getCalibration().pixelDepth : null),
-                pixel_unit             : imp.getCalibration().getUnit(),
+                pixel_depth            : (src.nSlices > 1 ? src.calibration.pixelDepth : null),
+                pixel_unit             : src.calibration.getUnit(),
                 // The time step, as pixel_depth is the z step: measured off the
                 // image, so provenance, never a parameter. BLANK for one frame
                 // -- there is no interval -- and when the file did not say:
                 // ImageJ's 0 means "unknown", and a written 1 would be a
                 // plausible-looking second that nobody measured.
-                frame_interval         : frameInterval(imp),
-                frame_unit             : (frameInterval(imp) == null ? null : imp.getCalibration().getTimeUnit()),
+                frame_interval         : src.frameInterval,
+                frame_unit             : (src.frameInterval == null ? null : src.frameUnit),
                 // The id every file of this run is named after, and the value
                 // of the outline tables' `name` column. Provenance, not a
                 // parameter: see PARAM_TYPES.
@@ -479,8 +571,13 @@ class NucleusPipeline {
             // The per-frame half of the record above, for every image -- one
             // row when there is one frame -- so every results folder holds the
             // same files.
-            RX.saveThresholdStats(frameStats, outDirPath + seriesId + "_threshold_stats.tsv")
+            RX.joinTables(okTs.collect { new File(stagedFrame(stage, it), "threshold_stats.tsv") },
+                          new File(outDirPath + seriesId + "_threshold_stats.tsv"), false)
         }
+        // Joined: the staging has done its job.
+        stage.deleteDir()
+        def stageParent = stage.getParentFile()
+        if (stageParent.isDirectory() && !stageParent.list()) stageParent.delete()
 
         IJ.log("Done: " + seriesId)
         return [series_id : seriesId,
@@ -492,7 +589,38 @@ class NucleusPipeline {
                 threshold : thresholdUsed,
                 maskPct   : maskPct,
                 nucRois   : nucRois,  nucNames : nucNames,  nucSlices : nucSlices,
-                nuclRois  : nuclRois, nuclNames: nuclNames, nuclSlices: nuclSlices]
+                nuclRois  : nuclRois, nuclNames: nuclNames, nuclSlices: nuclSlices,
+                frames    : frameResults]
+    }
+
+    /** A finished frame's staged directory: t0001. */
+    static File stagedFrame(File stage, int t) {
+        return new File(stage, String.format("t%04d", t))
+    }
+
+    /**
+     * Write one finished frame's tables into the staging, as the series' files
+     * would hold them, then rename the frame's directory into place. A frame
+     * whose directory exists is complete; a `.part` one is not.
+     */
+    void stageFrame(File stage, int t, String seriesId, Object cal, Map fr, Map tables, Map p) {
+        def done = stagedFrame(stage, t)
+        def part = new File(stage, done.getName() + ".part")
+        part.deleteDir()
+        part.mkdirs()
+        ["nucleus", "nucleolus"].each { String feature ->
+            def f = fr[feature]
+            if (f.rois.isEmpty()) return
+            def stem = new File(part, feature).getPath()
+            def ts = f.rois.collect { t }
+            if (p.save_outlines)     RX.saveOutlineCoords(cal, f.rois, f.names, f.slices, ts, seriesId, stem + "_outline.txt")
+            if (p.save_roi_zips)     RX.saveRoiZip(f.rois, f.names, stem + "_outline_ROIs.zip")
+            if (p.save_measurements) RX.saveMeasurements(tables[feature], stem + "_res.txt")
+        }
+        RX.saveThresholdStats([fr.stats], new File(part, "threshold_stats.tsv").getPath())
+        if (!part.renameTo(done)) {
+            throw new IOException("could not finish staging " + done)
+        }
     }
 
     /**
