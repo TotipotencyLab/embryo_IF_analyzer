@@ -354,7 +354,19 @@ counted from 1 as `sources.tsv`'s `t` is; a `0` is refused, naming the count.
 Each chosen time point of a multi-frame series becomes **its own file**, named
 `<series_id>_t<TTTT>`, which is the same name and the same pixels the
 per-time-point layout gives that frame. A series holding one frame keeps its own
-name. Blank writes every frame of a series into one file, as before — which for
+name.
+
+**`oneFile`** (off by default) writes the chosen time points of a series into
+**one** file instead, named after the selection with runs compressed —
+`<series_id>_t0002_t0011_t0021`, `<series_id>_t0001-0004` — never the bare
+series id, which is the blank-`frames` file: `skipExisting` decides by name
+alone, so a selection under that name would later pass for every frame. ⚠️
+Inside the file frames count from 1 like any image's, so the analysis's `t = 2`
+of that file is **time point 11**; `_gather.txt`'s `time_points` line is the way
+back. The pixels are the per-time-point files' own, frame by frame (verified on
+the 2026-09-10_203030 acquisition).
+
+Blank writes every frame of a series into one file, as before — which for
 a 96-frame position is ~94 GB, so it fails as a row: over the classic TIFF limit
 for `tiff`, and over 75% of the heap for either format, both decided from the
 tables before anything is read.
@@ -368,7 +380,9 @@ round trip: a truncated write, or channels, slices and frames transposed.
 
 `_gather.txt` names **every** source: one `channel_<c>_source` line per channel,
 or `t<N>_channel_<c>_source` when the output gathered several frames — `c` and
-`N` from 1, as in `sources.tsv`.
+`N` from 1, as in `sources.tsv`. A file of several frames also has
+`time_points`, space-separated in frame order: frame *k* of the file is the
+*k*-th.
 
 ⚠️ **The TIFFs are not a required step.** The batch runner is to read the
 `.lux.h5` through the same two tables and assemble channels in memory, so it
