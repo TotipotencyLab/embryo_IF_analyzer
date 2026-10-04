@@ -899,6 +899,11 @@ streaming carries the real `t` and makes this a convenience again.
       a multi-frame 8-bit TIFF; it then stops refusing several frames. What it
       draws the Fiji panels from needs settling here, since the rendering step
       (`Make_OverviewStack`) stays in `QoL`.
+- [ ] **`annotate --qc_plot` writes one multi-frame TIFF per series**
+      (`<series_id>_features_qc.tif`), replacing PR 2's one PNG per frame —
+      decided 2026-10-04: 96 PNGs per series is clutter, and the montage TIFF
+      above needs the same stacking. A single frame keeps its PNG, the rule the
+      Fiji overviews follow.
 
 **Verification.** One real Luxendo position end to end, run at a heap that
 could not hold it whole — the proof that nothing loads the series.
