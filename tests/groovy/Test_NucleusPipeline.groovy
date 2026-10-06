@@ -435,6 +435,71 @@ check("...so the rerun from that config writes one too",
 
 
 println ""
+println "=== nucleus_blur_unit: px is the old behaviour, um is a physical size ==="
+// analysis-oo_count-physical_blur. Three things to tell apart: "um" converting
+// correctly, "um" being read at all, and "px" changing nothing. A run in um must
+// equal the same blur given in pixels (correct), and must DIFFER from the same
+// number taken as pixels (read) -- identical output alone would be consistent
+// with the unit never being looked at.
+def cal = { double pw, double ph, String unit ->
+    def c = new ij.measure.Calibration(); c.pixelWidth = pw; c.pixelHeight = ph; c.setUnit(unit); c
+}
+check("px passes the sigma through",           NP.blurSigmaPx(8.0d, "px", cal(0.5d, 0.5d, "micron")), 8.0d)
+check("no unit is px (older callers)",         NP.blurSigmaPx(8.0d, null, cal(0.5d, 0.5d, "micron")), 8.0d)
+check("um divides by the pixel width",         NP.blurSigmaPx(2.0d, "um", cal(0.5d, 0.5d, "micron")), 4.0d)
+check("...and a um-calibrated image works",    NP.blurSigmaPx(1.0d, "um", cal(0.25d, 0.25d, "um")), 4.0d)
+def unitErr = { Closure c -> try { c(); "no error" } catch (IllegalArgumentException e) { e.getMessage() } }
+check("an unknown unit is refused",
+      unitErr { NP.blurSigmaPx(2.0d, "nm", cal(0.5d, 0.5d, "micron")) }.contains("must be one of"), true)
+check("um on an uncalibrated image is refused",
+      unitErr { NP.blurSigmaPx(2.0d, "um", new ij.measure.Calibration()) }.contains("calibrated in micrometres"), true)
+check("um on non-square pixels is refused",
+      unitErr { NP.blurSigmaPx(2.0d, "um", cal(0.5d, 0.6d, "micron")) }.contains("square pixels"), true)
+
+// End to end on a calibrated image. The blur has to be large enough to move a
+// thresholded edge, or every run would agree whatever the unit did: 8 px on a
+// 50 px disc shifts the Otsu contour by about a pixel, 2 px does not.
+def makeCalImp = { String title ->
+    def imp = makeImp(title)
+    imp.getCalibration().pixelWidth = 0.25d; imp.getCalibration().pixelHeight = 0.25d
+    imp.getCalibration().setUnit("micron")
+    return imp
+}
+// The discs are 122 um^2 at 0.25 um/px, under baseParams' 200.
+def calParams = baseParams + [nucleus_particle_size: "20-Infinity"]
+def runU = { String name, double sigma, String unit ->
+    def o = new File(tmp, "blur_" + name); o.mkdirs()
+    def r = pipe.run(makeCalImp("blur" + name), o, calParams + [nucleus_blur_sigma: sigma, nucleus_blur_unit: unit])
+    def c = [:]
+    new File(o, "blur" + name + "_config.txt").eachLine { line ->
+        def parts = line.split("\t", -1)
+        if (parts.length == 2 && parts[0] != "parameter") c[parts[0]] = parts[1]
+    }
+    return [res: r, cfg: c, geom: stripName(new File(o, "blur" + name + "_nucleus_outline.txt"))]
+}
+def b8px  = runU("8px", 8.0d, "px")
+def b2um  = runU("2um", 2.0d, "um")
+def b2px  = runU("2px", 2.0d, "px")
+check("8 px finds the discs",                  b8px.res.nucRois.size(), 8)
+check("2 um at 0.25 um/px = 8 px: same outlines",
+      (b8px.geom != null && b8px.geom == b2um.geom), true)
+check("2 px is a different blur: outlines differ",
+      (b2px.geom != null && b2px.geom != b2um.geom), true)
+check("the config records the unit",           b2um.cfg["nucleus_blur_unit"], "um")
+check("...the sigma as given",                 b2um.cfg["nucleus_blur_sigma"], "2.0")
+check("...and the pixel sigma it became",      b2um.cfg["nucleus_blur_sigma_px_used"], "8.0")
+check("a px run records px and its own sigma", [b8px.cfg["nucleus_blur_unit"], b8px.cfg["nucleus_blur_sigma_px_used"]],
+                                                ["px", "8.0"])
+def umParams = RC.readParams(new File(tmp, "blur_2um/blur2um_config.txt"), NP.PARAM_TYPES)
+check("the unit reads back as a parameter",    umParams.nucleus_blur_unit, "um")
+check("the pixel sigma does NOT read back",    umParams.containsKey("nucleus_blur_sigma_px_used"), false)
+// Fails before any output, not after detection.
+def oUncal = new File(tmp, "blur_uncal"); oUncal.mkdirs()
+check("um on an uncalibrated image fails before writing",
+      unitErr { pipe.run(makeImp("uncal"), oUncal, calParams + [nucleus_blur_sigma: 2.0d, nucleus_blur_unit: "um"]) }
+          .contains("calibrated in micrometres") && oUncal.listFiles().size() == 0, true)
+
+println ""
 println "=== every ImagePlus close() is paired with flush() ==="
 
 // ImagePlus.close() does NOT release pixels while a reference is still in

@@ -225,6 +225,25 @@ test_that("the overview settings are parameters and survive the config round tri
   expect_true(any(grepl("stretches each picture to full range", doc, fixed = TRUE)))
 })
 
+test_that("the blur unit is a parameter and the pixel sigma is provenance", {
+  # analysis-oo_count-physical_blur. nucleus_blur_unit must read back as a
+  # parameter (or a um run fed forward silently becomes px); the pixel sigma it
+  # became must NOT (or it would freeze one image's conversion onto the next).
+  np <- file.path(repo_root(), "scripts", "groovy", "NucleusPipeline.groovy")
+  rc <- file.path(repo_root(), "scripts", "groovy", "RunConfig.groovy")
+  skip_if_not(all(file.exists(np, rc)), "Groovy library not found")
+  np_src <- paste(readLines(np, warn = FALSE), collapse = "\n")
+  expect_match(np_src, 'nucleus_blur_unit      : "string"', fixed = TRUE)
+  expect_match(np_src, "nucleus_blur_sigma_px_used", fixed = TRUE)
+  rc_src <- paste(readLines(rc, warn = FALSE), collapse = "\n")
+  expect_match(rc_src, '"nucleus_blur_sigma_px_used"', fixed = TRUE)
+  expect_false(grepl('"nucleus_blur_unit"', rc_src, fixed = TRUE))
+
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  expect_length(grep("^\\|\\s*`nucleus_blur_sigma_px_used`\\s*\\|", doc), 1L)
+  expect_length(grep("^\\|\\s*`nucleus_blur_unit`\\s*\\|", doc), 1L)
+})
+
 test_that("the threshold a run used is recorded, and is provenance not a parameter", {
   # The number the auto method chose was thrown away until now, so a run could
   # not say what it had thresholded at -- no way to tell a sensible threshold

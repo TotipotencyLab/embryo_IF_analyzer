@@ -13,6 +13,7 @@ z_spec	(all)
 dna_channel	1
 channels_measured	1,2,3
 nucleus_blur_sigma	8.0
+nucleus_blur_unit	px
 nucleus_threshold	Huang2
 nucleus_threshold_range	
 nucleus_stack_histogram	true

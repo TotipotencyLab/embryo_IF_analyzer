@@ -369,6 +369,7 @@ Fields that other code depends on:
 | `nucleus_threshold_used` | the pixel range the threshold **selected**, as `lo-hi`; `per-slice <lo>..<hi>` (note the `..`) when `nucleus_stack_histogram` is off, since there were as many thresholds as slices and none of them is the answer. Not the algorithm's bare number: for bright objects that number is the *bottom* of the range and the top is the type's maximum, so the pair is what can be copied into a manual threshold without working out which end it was. The literal **`none`** when the frame had nothing to separate (see below) — a word, not a range, so it cannot be pasted anywhere by mistake |
 | `nucleus_mask_pct` | percent of pixels the threshold selected, **before** fill holes and watershed, because the question it answers is what the threshold chose. The cheap signal that one went wrong in either direction: `0.00` selected nothing (a blank field), a number in the tens selected the frame rather than the objects in it. Neither shows up in an ROI count — the size filter turns both into "no nuclei" |
 | `nucleus_circ_rejected` | how many ROIs `nucleus_circularity` deleted. **Blank when the filter was off** — a `0` would claim a filter ran and found nothing to remove. Unlike the R side's `--min_circularity`, which marks a row and leaves it in the table, this filter drops ROIs before anything is written, so this number is the only surviving evidence that they existed |
+| `nucleus_blur_sigma_px_used` | the nucleus blur sigma **in pixels** that the blur was actually given: `nucleus_blur_sigma` itself when `nucleus_blur_unit` is `px`, `nucleus_blur_sigma` ÷ `pixel_width` when it is `um`. Provenance, so a config fed forward to another pixel size re-derives it. *`analysis-oo_count-physical_blur` only — not in v0.5.1 or `main`* |
 
 Everything else is a record of the run's parameters. A key that is absent must
 be handled, not assumed: configs written before a field existed are still valid
@@ -529,6 +530,22 @@ the scale bar.
 `run` uses one scale for every montage, so two of them can be compared with each
 other. Because `group` means two montages are **not** comparable, the scale bar
 is drawn by default and the value is recorded in the index and in the title.
+
+### How big the nucleus blur is
+
+*`analysis-oo_count-physical_blur` only (a situational branch off v0.5.1 for the
+oocyte count, not merged).*
+
+| parameter | |
+|---|---|
+| `nucleus_blur_sigma` | the Gaussian sigma, in the unit below |
+| `nucleus_blur_unit` | `px` (default — what the sigma always meant) or `um`: a physical size, converted per image by its pixel width, so one value is the same blur on every pixel size. `um` refuses an image not calibrated in micrometres and pixels that are not square to within 1% |
+
+`px` changes nothing: a config without the key reads as `px`. ⚠️ Blur and a
+manual threshold are not independent — blur lowers a small object's peak far
+more than a large one's — so a changed blur needs its threshold found again.
+What the blur was given in pixels is recorded as `nucleus_blur_sigma_px_used`.
+`nucleolus_blur_sigma` and `nucleolus_erode_px` are still pixels.
 
 ### How the nucleus threshold is chosen
 

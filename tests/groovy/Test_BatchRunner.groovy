@@ -261,6 +261,26 @@ def res2 = runner.run(mixed, raw, params, new File(tmp, "out2"))
 check("...and warned about",                   res2.warnings.any { it.contains("different pixel sizes") }, true)
 check("the warning names the risk",            res2.warnings.any { it.contains("PIXELS") }, true)
 check("both still ran",                        res2.ok, 2)
+// analysis-oo_count-physical_blur: with the blur in um the same config is a
+// different pixel sigma on each size -- which is the point -- and the warning
+// must stop saying the blur does not transfer.
+def resUm = runner.run(mixed, raw, params + [nucleus_blur_sigma: 1.0d, nucleus_blur_unit: "um"],
+                       new File(tmp, "out2um"))
+check("um: both still ran",                    resUm.ok, 2)
+def umWarn = resUm.warnings.find { it.contains("different pixel sizes") }
+check("um: the note says the blur transfers",
+      umWarn == null ? "no warning" : umWarn.contains("nucleus_blur_unit = um"), true)
+def pxUsed = { String pre ->
+    def f = new File(tmp, "out2um/" + pre + "_config.txt")
+    f.isFile() ? f.readLines().find { it.startsWith("nucleus_blur_sigma_px_used\t") }?.split("\t")[1] : null
+}
+check("um: 1 um is 4 px at 0.25 and 2 px at 0.5", [pxUsed("P"), pxUsed("Q")], ["4.0", "2.0"])
+def outBadU = new File(tmp, "outBadUnit")
+String badUnit = null
+try { runner.run(mixed, raw, params + [nucleus_blur_unit: "mm"], outBadU) }
+catch (IllegalArgumentException e) { badUnit = e.getMessage() }
+check("a bad unit is refused before any row",
+      (badUnit ?: "").contains("nucleus_blur_unit") && !outBadU.exists(), true)
 // One pixel size must NOT warn, or the warning means nothing.
 def same = [[prefix: "P", path: "one.ome.tif", series_index: 0, include: "true", pixel_width: "0.25"],
             [prefix: "Q", path: "two.ome.tif", series_index: 0, include: "true", pixel_width: "0.25"]]

@@ -178,6 +178,13 @@ Its `batch_summary.tsv` records the **display range per channel**, which is the
 one thing a picture cannot tell you: `auto` contrast stretches whatever it is
 given, so a channel holding only noise saves a convincing picture of nothing.
 
+**Blur in micrometres** (`analysis-oo_count-physical_blur` only): set
+`nucleus_blur_unit` to `um` and `nucleus_blur_sigma` becomes a physical size,
+the same blur on every pixel size in a mixed batch; the default `px` is the old
+behaviour. The pixel sigma each image actually got is recorded as
+`nucleus_blur_sigma_px_used`. A changed blur needs its manual threshold found
+again. `config/oocyte_count_nucleus_config.txt` is the tuned oocyte setting.
+
 Every run records **the threshold it actually used**, as the pixel range it
 selected (`nucleus_threshold_used`, e.g. `90-255`), and **how much of the frame
 that selected** (`nucleus_mask_pct`). Both go into `_config.txt` and, for a

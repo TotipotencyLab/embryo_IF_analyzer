@@ -9,6 +9,7 @@
 #@ String  (label="Channels to measure (comma separated)", value="1,2,3") channelsCsv
 #@ String  (visibility=MESSAGE, value="Nucleus detection", required=false) msg2
 #@ Double  (label="Blur sigma", value=8.0) nucSigma
+#@ String  (label="  ...in", value="px", choices={"px","um"}) nucBlurUnit
 #@ String  (label="Threshold method", value="Huang2", description="Select the auto-thresholding method. If 'Manual' is selected, then the threshold range must be provided.", choices={"Huang2","Huang","Default","Otsu","Triangle","IsoData","Li","Yen","Mean","Moments","Percentile","MaxEntropy","RenyiEntropy","Shanbhag","Intermodes","Minimum","IJ_IsoData","MinError(I)","Manual"}) nucMethod
 #@ String  (persist=false, label="  ...if Manual: threshold range low-high", description="Provide the value range between [0-255]", value="") nucRange
 #@ Boolean (persist=false, label="One threshold from the whole stack (off = per slice)", value=true) nucStackHist
@@ -90,6 +91,7 @@ def res = NP.load(LIBDIR).run(imp, outdir, [
     dna_channel            : dnaCh,
     channels_measured      : channelsCsv,
     nucleus_blur_sigma     : nucSigma,
+    nucleus_blur_unit      : nucBlurUnit,
     nucleus_threshold      : nucMethod,
     nucleus_threshold_range: nucRange,
     nucleus_stack_histogram: nucStackHist,

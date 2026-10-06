@@ -1,0 +1,55 @@
+# Oocyte count (rnf4_project), nucleus = oocyte detection on DDX4 -- the setting
+# chosen by the 2026-10-06 tuning. analysis-oo_count-physical_blur branch only:
+# nucleus_blur_unit does not exist in v0.5.1 or main.
+#
+# Changed from the original batch (segmentation/batch/batch_params.txt):
+#   nucleus_blur_sigma       8.0 px    -> 1.782 um  (nucleus_blur_unit um)
+#   nucleus_threshold_range  40-255    -> 32-255
+#   nucleus_particle_size    150-10000 -> 50-10000
+# 1.782 um is 4.00 px on the 0.4456 um series and 8.00 px on the 0.2227 um
+# ones, to within 0.05%: the grid cell B18_T32 that scored best. The old 8 px
+# was 3.6 um on the 0.4456 um series and 1.8 um on the 0.2227 um ones.
+#
+# Blur and threshold were tuned TOGETHER (blur lowers a small oocyte's peak), so
+# change one and the other has to be found again.
+#
+# Scored on 10 hand-annotated sections (6 WT, 4 KI; tuning/manual_check), after
+# the contrast filter: WT small 161/179, large 60/65; KI small 32/37, large
+# 22/23. The contrast filter is NOT in this pipeline -- without it expect the
+# bright-tile texture on sections like KI s0005 to come through as features.
+#
+# R annotation used with it (unchanged, as in oocyte_count.sh):
+#   --max_z_dist 'nucleus=1' --min_z_span 'nucleus=2'
+#   --feature_area 'nucleus=80:Inf' --min_circularity 'nucleus=0.1'
+#   --min_intersect_ratio 'default=0.8'
+parameter	value
+output_prefix	
+position_pattern	
+z_spec	
+dna_channel	2
+channels_measured	1,2
+nucleus_blur_sigma	1.782
+nucleus_blur_unit	um
+nucleus_threshold	Manual
+nucleus_threshold_range	32-255
+nucleus_stack_histogram	true
+nucleus_particle_size	50-10000
+nucleus_circularity	0.10-1.00
+nucleus_watershed	false
+nucleoli_enabled	false
+nucleolus_blur_sigma	3.0
+nucleolus_threshold	Relative
+nucleolus_rel_fraction	0.6
+nucleolus_erode_px	0
+nucleolus_particle_size	3-150
+nucleolus_circularity	0.50-1.00
+save_roi_zips	true
+save_outlines	true
+save_measurements	true
+save_config	true
+save_overview	true
+overview_method	mean
+overview_width	1000
+overview_height	0
+overview_contrast	auto
+overview_saturated	0.35

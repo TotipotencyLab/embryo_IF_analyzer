@@ -64,6 +64,16 @@ class BatchRunner {
         "value is a different physical size on each. Check the result on one series from " +
         "each group before trusting the rest."
 
+    /** ...and when the nucleus blur is in um (analysis-oo_count-physical_blur):
+     *  the blur now transfers, so the note must stop saying it does not. */
+    static final String PIXEL_SIZE_NOTE_NUCLEUS_UM =
+        "nucleus_particle_size and nucleus_blur_sigma (nucleus_blur_unit = um) are in " +
+        "calibrated units and transfer; nucleolus_blur_sigma and nucleolus_erode_px are " +
+        "in PIXELS and do NOT -- the same value is a different physical size on each. " +
+        "A manual nucleus threshold may still not transfer: the same tissue imaged at " +
+        "another pixel size need not have the same intensities. Check the result on one " +
+        "series from each group before trusting the rest."
+
     static boolean isIncluded(Object v) {
         if (v == null) return true                       // no column: everything
         def s = v.toString().trim().toLowerCase()
@@ -406,8 +416,17 @@ class BatchRunner {
         // and the columns that work reports. Kept as its own entry point
         // because it is what every existing caller asks for.
         def cols = ["threshold", "mask_pct", "n_nucleus", "n_nucleolus"]
+        // The blur unit's spelling is checked once, before any row opens; that
+        // the image is calibrated in um is the pipeline's check, per row.
+        def blurUnit = (params.nucleus_blur_unit ?: "px").toString().trim()
+        if (!NP.BLUR_UNITS.contains(blurUnit)) {
+            throw new IllegalArgumentException(
+                "nucleus_blur_unit must be one of " + NP.BLUR_UNITS + "; got >>>" +
+                params.nucleus_blur_unit + "<<<")
+        }
+        def note = (blurUnit == "um") ? PIXEL_SIZE_NOTE_NUCLEUS_UM : PIXEL_SIZE_NOTE_NUCLEUS
         def res = runEach(rows, imageRoot,
-                          params + [pixel_size_note: PIXEL_SIZE_NOTE_NUCLEUS],
+                          params + [pixel_size_note: note],
                           outdir, cols, log) {
                       imp, prefix, si, method, row ->
             // The sheet's prefix is authoritative: resolveImageId() would dig

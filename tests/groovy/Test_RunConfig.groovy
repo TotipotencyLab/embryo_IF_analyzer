@@ -271,7 +271,8 @@ println "=== the GUI defaults and the class defaults agree ==="
 def VAR_TO_PARAM = [
     outPrefix: "output_prefix", positionPattern: "position_pattern", zSpec: "z_spec",
     dnaCh: "dna_channel", channelsCsv: "channels_measured",
-    nucSigma: "nucleus_blur_sigma", nucMethod: "nucleus_threshold",
+    nucSigma: "nucleus_blur_sigma", nucBlurUnit: "nucleus_blur_unit",
+    nucMethod: "nucleus_threshold",
     nucRange: "nucleus_threshold_range", nucStackHist: "nucleus_stack_histogram",
     nucSize: "nucleus_particle_size", nucCircularity: "nucleus_circularity",
     nucWatershed: "nucleus_watershed",

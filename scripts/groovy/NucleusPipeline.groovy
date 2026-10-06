@@ -70,6 +70,7 @@ class NucleusPipeline {
         dna_channel            : "int",
         channels_measured      : "string",
         nucleus_blur_sigma     : "double",
+        nucleus_blur_unit      : "string",
         nucleus_threshold      : "string",
         nucleus_threshold_range: "string",
         nucleus_stack_histogram: "boolean",
@@ -107,6 +108,11 @@ class NucleusPipeline {
         dna_channel            : 1,
         channels_measured      : "1,2,3",
         nucleus_blur_sigma     : 8.0d,
+        // What nucleus_blur_sigma is measured in. "px" is what it always was,
+        // so every existing config means what it meant; "um" makes the blur a
+        // physical size, the same on every pixel size. See blurSigmaPx().
+        // (analysis-oo_count-physical_blur, off v0.5.1 -- not merged.)
+        nucleus_blur_unit      : "px",
         nucleus_threshold      : "Huang2",
         // Only read when nucleus_threshold is "Manual", exactly as
         // nucleolus_rel_fraction is only read for "Relative".
@@ -138,6 +144,44 @@ class NucleusPipeline {
         overview_contrast      : "auto",
         overview_saturated     : 0.35d,
     ]
+
+    /** The values nucleus_blur_unit accepts. */
+    static final List<String> BLUR_UNITS = ["px", "um"]
+    /** ImageJ calibration units that are micrometres. ImageJ stores "um" as
+     *  "\u00B5m"; Bio-Formats-opened images say "micron". */
+    static final List<String> MICRON_UNITS = ["micron", "microns", "um", "\u00B5m", "\u03BCm"]
+
+    /**
+     * The nucleus blur sigma in PIXELS, which is what the blur takes.
+     *
+     * "px" (or no unit, as from a caller that predates the key) passes the
+     * sigma through untouched. "um" divides by the pixel width. Refused rather
+     * than guessed: an unknown unit; "um" on an image whose calibration is not
+     * in micrometres (an uncalibrated image is "pixel", and dividing by its 1.0
+     * would silently blur by the micrometre value in pixels); and "um" on
+     * pixels that are not square to within 1%, where one sigma cannot be one
+     * physical size in both directions. The pixels here are square to 1e-6.
+     */
+    static double blurSigmaPx(double sigma, Object unit, ij.measure.Calibration cal) {
+        String u = (unit == null || unit.toString().trim().isEmpty()) ? "px" : unit.toString().trim()
+        if (!BLUR_UNITS.contains(u)) {
+            throw new IllegalArgumentException(
+                "nucleus_blur_unit must be one of " + BLUR_UNITS + "; got >>>" + unit + "<<<")
+        }
+        if (u == "px") return sigma
+        String calUnit = cal.getUnit()
+        if (!MICRON_UNITS.contains(calUnit)) {
+            throw new IllegalArgumentException(
+                "nucleus_blur_unit = um needs an image calibrated in micrometres; this one is in >>>" +
+                calUnit + "<<< (pixel width " + cal.pixelWidth + ")")
+        }
+        double pw = cal.pixelWidth, ph = cal.pixelHeight
+        if (!(pw > 0) || Math.abs(pw - ph) > 0.01d * pw) {
+            throw new IllegalArgumentException(
+                "nucleus_blur_unit = um needs square pixels; this image is " + pw + " x " + ph + " " + calUnit)
+        }
+        return sigma / pw
+    }
 
     /**
      * Turn a parsed config into parameters, over the defaults.
@@ -232,6 +276,15 @@ class NucleusPipeline {
         // early copy, not the only one.
         RD.validateThreshold(p.nucleus_threshold as String,
                              (p.nucleus_threshold_range ?: "") as String)
+        // The blur unit likewise: a bad unit or an uncalibrated image fails
+        // here, before any work.
+        double nucSigmaPx = blurSigmaPx(p.nucleus_blur_sigma as double, p.nucleus_blur_unit,
+                                        imp.getCalibration())
+        if ((p.nucleus_blur_unit ?: "px") != "px") {
+            IJ.log("  nucleus blur " + p.nucleus_blur_sigma + " " + p.nucleus_blur_unit +
+                   " = " + String.format("%.4f", nucSigmaPx) + " px at " +
+                   imp.getCalibration().pixelWidth + " " + imp.getCalibration().getUnit() + "/px")
+        }
 
         def writeFeature = { String feature, List rois, List names, List sls ->
             IJ.log("  " + feature + ": " + rois.size() + " ROIs")
@@ -243,7 +296,7 @@ class NucleusPipeline {
         }
 
         // --- Nucleus ---------------------------------------------------------
-        def built = RD.buildMask(imp, dnaCh, p.nucleus_blur_sigma as double,
+        def built = RD.buildMask(imp, dnaCh, nucSigmaPx,
                                  p.nucleus_threshold as String, true,
                                  p.nucleus_watershed as boolean,
                                  [range         : (p.nucleus_threshold_range ?: ""),
@@ -420,6 +473,13 @@ class NucleusPipeline {
                 channels_measured      : p.channels_measured,
                 measurements           : MEASUREMENTS,
                 nucleus_blur_sigma     : p.nucleus_blur_sigma,
+                // The unit as it took effect: a caller that predates the key
+                // passes none, which is "px".
+                nucleus_blur_unit      : (p.nucleus_blur_unit ?: "px"),
+                // What the blur was actually given, in pixels. Provenance --
+                // ignored on the way in, like nucleus_threshold_used: the same
+                // config on another pixel size must re-derive it.
+                nucleus_blur_sigma_px_used: nucSigmaPx,
                 nucleus_threshold      : p.nucleus_threshold,
                 nucleus_threshold_range: p.nucleus_threshold_range,
                 nucleus_stack_histogram: p.nucleus_stack_histogram,
