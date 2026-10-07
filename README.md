@@ -390,6 +390,21 @@ silently — unless `--drop_orphan_feature` — it is evidence about where the b
 wrong. `class` is an ordinary column, so `--group_by class` and
 `feature_scatter_cli.r --color_by class` both work.
 
+**Ring-contrast filter** (`analysis-oo_count-physical_blur` only). After
+annotation, drop features that are no brighter than the tissue right around
+them — the bright-tile texture a global threshold cannot reject:
+
+```bash
+ImageJ-macosx --headless --console --mem=10000m --run scripts/groovy/Run_RoiContrast_Batch.groovy \
+  "sheetFile='samples.tsv',segDir='seg',outdir='contrast',imageRoot='raw',openMode='reader'"
+Rscript scripts/R_cli/feature_contrast_cli.r --features feature/ --contrast contrast/ \
+  --outdir feature_contrast/
+```
+
+The filtered `*_features.rds` replace the originals for counting and montages:
+dropped features become `invalid_contrast_*`. Defaults (DDX4 ≥ 2.5× the ring,
+or DAPI < 0.6×) were chosen on 10 hand-annotated sections.
+
 [`PLA_analysis/`](PLA_analysis/) contains the proximity ligation assay analysis
 (published separately) and serves as a worked example of the R side end to end.
 

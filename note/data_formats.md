@@ -438,6 +438,34 @@ is a complete record of what the run did rather than of what succeeded:
 A row failing does not stop the batch. On a long run this file, not the log, is
 what says which images need attention.
 
+### Ring contrast — `Run_RoiContrast_Batch.groovy`
+
+*`analysis-oo_count-physical_blur` only (the oocyte count; not merged).* A
+post-annotation step: for each included sheet row it reads that series'
+`<series_id>_<feature>_outline_ROIs.zip` from the segmentation folder and
+measures every ROI and a ring around it **on the ROI's own slice**. Writes, per
+series, `<series_id>_<feature>_contrast.txt` — one row per ROI per channel, as
+`_res.txt` is:
+
+| column | |
+|---|---|
+| `name` | the series id (as `_outline.txt`'s `name`) |
+| `roi` | the ROI id, as in the zip, `_outline.txt` and `features.rds` |
+| `z` | the slice, 1-based, read from the ROI id |
+| `ch` | channel, 1-based |
+| `area_px` | pixels inside the ROI |
+| `inside_mean` | mean inside the ROI |
+| `ring_area_px` | pixels in the ring — fewer at the image edge, where the ring is clipped rather than padded |
+| `ring_mean` | mean in the ring: the band from `ring_inner_um` to `ring_outer_um` outside the ROI's edge (default 3–12 µm, set in **µm**), **everything in it, other ROIs included** |
+
+A series whose `_config.txt` says `<feature>_count 0` has no zip and gets a
+header-only table; one with neither is a **failed** row — a wrong segmentation
+folder must not look like a run of empty sections. Beside the tables:
+`batch_summary.tsv` (the shared batch columns plus `n_roi`) and
+`contrast_params.txt` (the ring, channels, feature, folders, version). The
+columns are `RoiContrast.COLUMNS`; `test-data_formats.R` holds the Groovy, the
+R reader and this table to one list.
+
 ### Overview-only batch — `Run_Overview_Batch.groovy`
 
 Projections and nothing else: no threshold, no particles, no measurement, no
@@ -968,6 +996,24 @@ One PNG, panels left to right: raw z-projection, Fiji overlay, R union. The
 first two are the Fiji overview pair described in §2 — `--projection` takes the
 unsuffixed PNG and `--overlay` the `_overlay` one, both for the same channel.
 
+### `feature_contrast_cli.r`
+
+*`analysis-oo_count-physical_blur` only.* Reads `*_features.rds` and the ring
+contrast tables above and decides per counted feature: the inside/ring ratio
+per ROI, **area-weighted** over the feature's ROIs, on `--signal_ch` (default
+2) and `--hole_ch` (default 1, `0` = off); keep when signal ≥ `--min_contrast`
+(2.5) **or** hole < `--max_hole` (0.6). Writes to `--outdir`, which may not be
+the features' own folder:
+
+| file | |
+|---|---|
+| `<sample>_features.rds` | the input, every row kept, each **dropped** feature renamed `invalid_contrast_<feature_id>` — so every reader that counts `<feature>_N` and reports `invalid_*` takes it unchanged. `run_id` is re-derived: a table built on the unfiltered features refuses to join |
+| `feature_contrast.tsv` | one row per counted input feature: `sample`, `feature_id`, `signal_ratio`, `n_roi`, `area_px`, `hole_ratio`, `keep`, `new_feature_id` |
+| `feature_contrast_params.txt` | the rule and the input folders |
+
+A counted ROI without a contrast row is an **error**, not a skip: it means the
+contrast table came from a different segmentation.
+
 ---
 
 ## 4. Argument conventions, shared by every CLI
@@ -1012,6 +1058,7 @@ with the older macros. `read_fiji_result()` finds the id by matching
 |---|---|
 | `<feature>_N` | a real detected feature — **this is what gets counted** |
 | `invalid_<feature>_N` | a group that failed `min_z_span` or `min_avg_area` |
+| `invalid_contrast_<feature>_N` | *(analysis branch)* a feature `feature_contrast_cli.r` dropped; counted as invalid like the row above |
 | `failed_<feature>_<reason>` | an ROI that never reached grouping; `<reason>` is `excluded`, `name`, `area`, `overlap` or `bridge` |
 | `NA` | an ROI that reached no group at all |
 

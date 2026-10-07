@@ -225,6 +225,35 @@ test_that("the overview settings are parameters and survive the config round tri
   expect_true(any(grepl("stretches each picture to full range", doc, fixed = TRUE)))
 })
 
+test_that("the ring-contrast table is one column list in Groovy, R and the doc", {
+  # analysis-oo_count-physical_blur. Run_RoiContrast_Batch.groovy writes it,
+  # feature_contrast_cli.r reads it by name; a column renamed on one side would
+  # otherwise surface only as "is not a Run_RoiContrast_Batch table".
+  rc <- file.path(repo_root(), "scripts", "groovy", "RoiContrast.groovy")
+  cli <- file.path(repo_root(), "scripts", "R_cli", "feature_contrast_cli.r")
+  skip_if_not(all(file.exists(rc, cli)), "contrast scripts not found")
+  src <- paste(readLines(rc, warn = FALSE), collapse = "\n")
+  m <- regmatches(src, regexpr('COLUMNS =\\s*\\[[^]]*\\]', src))
+  groovy_cols <- regmatches(m, gregexpr('"[a-z_]+"', m))[[1]]
+  groovy_cols <- gsub('"', "", groovy_cols)
+  expect_true(length(groovy_cols) >= 8)
+
+  env <- new.env()
+  exprs <- parse(cli)
+  for (e in exprs) {
+    if (is.call(e) && identical(as.character(e[[1]]), "<-") &&
+        identical(as.character(e[[2]]), "FC_CONTRAST_COLUMNS")) eval(e, env)
+  }
+  expect_identical(env$FC_CONTRAST_COLUMNS, groovy_cols)
+
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  start <- grep("^### Ring contrast", doc)
+  expect_length(start, 1L)
+  sect <- doc[start:(start + 25L)]
+  doc_cols <- sub("^\\|\\s*`([a-z_]+)`.*", "\\1", grep("^\\|\\s*`[a-z_]+`\\s*\\|", sect, value = TRUE))
+  expect_identical(doc_cols, groovy_cols)
+})
+
 test_that("the blur unit is a parameter and the pixel sigma is provenance", {
   # analysis-oo_count-physical_blur. nucleus_blur_unit must read back as a
   # parameter (or a um run fed forward silently becomes px); the pixel sigma it
