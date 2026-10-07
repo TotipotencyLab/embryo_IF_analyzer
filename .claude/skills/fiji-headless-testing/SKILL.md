@@ -219,15 +219,34 @@ A single launch costs roughly 30 s to several minutes, dominated by startup.
 **Put every assertion for one question into one script.** Do not iterate one
 assertion per launch.
 
-Run in the background and poll the output file rather than blocking:
+Run in the background and poll the output file rather than blocking — and the
+process, because a JVM that died writes nothing to wait for:
 
 ```bash
-<launcher> ... > "$SP/out.txt" 2>&1        # run_in_background: true
-until grep -qE "DONE|Exception" "$SP/out.txt"; do sleep 8; done
+<launcher> ... > "$SP/out.txt" 2>&1 &
+pid=$!
+until grep -qE "DONE|\[ERROR\]|startup failed" "$SP/out.txt" \
+      || ! kill -0 "$pid" 2>/dev/null; do sleep 8; done
+kill "$pid" 2>/dev/null
 ```
 
 Always end the script with a sentinel line (`println "DONE"`) so the poll has
-something to wait for, including on the failure path.
+something to wait for, including on the failure path. For a test file, the
+sentinel is its summary line (`=== N passed, M FAILED ===` or
+`passed: N   FAILED: M` — both shapes exist here).
+
+⚠️ **Do not stop on the bare word `Exception`.** Tests log exceptions they
+provoke on purpose (`Test_SeriesSource`'s corrupted frame prints
+`HDF5FileNotFoundException`), and a batch logs a failed row or frame —
+`FAILED <id>: IllegalArgumentException: …`, a worker thread's
+`OutOfMemoryError` trace — and carries on. A poll that stops there kills a run
+mid-way and reads as a hang or a failure that was neither: it cut a test off
+three times in a row here before the pattern was found. An error that really
+stops a script reaches Fiji's console as `[ERROR]`.
+
+The runbooks' `fiji_wait` helper (`scripts/shell/fiji_wait.sh`, local until the
+`QoL` milestone commits it) is this loop for shell scripts: sentinel, `[ERROR]`,
+process gone, timeout, and it kills only the PID it waited on.
 
 Whether the JVM exits after the script finishes is not consistent: a small probe
 that opens no images may exit cleanly while a full pipeline run sits there
