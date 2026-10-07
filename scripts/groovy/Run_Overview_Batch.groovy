@@ -100,7 +100,14 @@ def cols = ["channels", "png_size", "display_range"]
 // parameter has a default, so two trailing closure blocks would leave which
 // one is which to arity resolution -- and getting that wrong silently swaps
 // the progress log for the work.
-def perRow = { imp, seriesId, si, openMethod, row ->
+def perRow = { src, seriesId, si, openMethod, row ->
+    // The series as one image: a file's is already open. A series streamed a
+    // frame at a time (Luxendo) has no whole image to project, and its
+    // overview is a TIFF written frame by frame -- time_axis PR 3b.
+    def imp = (src.whole != null) ? src.whole : (src.nFrames == 1 ? src.frame(1) : null)
+    if (imp == null) {
+        throw new IllegalStateException("an overview of a series streamed frame by frame is not written yet")
+    }
     def slices = RD.parseSlices(zSpec ?: "", imp.getNSlices())
     def proj   = OV.project(imp, slices, method, wanted)
     try {
@@ -124,6 +131,7 @@ def perRow = { imp, seriesId, si, openMethod, row ->
         // nothing while `proj` is in scope -- it detaches a window and there is
         // none headless -- so both calls, every time.
         proj.close(); proj.flush()
+        src.release(imp)
     }
 }
 

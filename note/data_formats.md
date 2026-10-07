@@ -384,11 +384,15 @@ or `t<N>_channel_<c>_source` when the output gathered several frames — `c` and
 `time_points`, space-separated in frame order: frame *k* of the file is the
 *k*-th.
 
-⚠️ **The TIFFs are not a required step.** The batch runner is to read the
-`.lux.h5` through the same two tables and assemble channels in memory, so it
-never reads them. (That route — one resolver shared by the batch,
-`Make_LuxendoTiff` and the overview — is planned, not built: today the batch
-opens files only.) Converting is for tuning a threshold interactively and for drag-and-drop.
+⚠️ **The TIFFs are not a required step.** Since v0.8.0 the batch reads the
+`.lux.h5` through the same two tables — `Run_NucleusSelector_Batch`'s
+`sourcesFile` — **one frame at a time**, assembling its channels in memory and
+releasing them before the next, so a 94 GB position runs in a few GB of heap
+and nothing is converted. Which rows are Luxendo is decided by **membership**:
+a row whose `series_id` has rows in the sources table is read from them, any
+other from its `path`, so one sheet can mix both. `Make_LuxendoTiff` reads
+through the same code (`SeriesSource`). Converting is for tuning a threshold
+interactively and for drag-and-drop.
 The sources *are* the pixels and TIFF does not compress them, so a mandatory
 conversion would mean holding two copies of the acquisition.
 
@@ -647,6 +651,7 @@ Fields that other code depends on:
 | `image_width`, `image_height` | **pixels.** `montage_qc_cli.r`, to draw its panel over the same frame as the Fiji PNG |
 | `pixel_width`, `pixel_height`, `pixel_unit` | the same, to convert that frame to µm |
 | `image_frames` | how many frames the image had. **Since v0.8.0**; absent means one |
+| `frames_analysed` | which of them these results hold, space-separated: the frames asked for (the batch's `frames`), less any that failed — `batch_summary.tsv` says why. `1` for a single frame. **Since v0.8.0** |
 | `frame_interval`, `frame_unit` | the time step and its unit, as `pixel_depth` is the z step — measured off the image, so provenance. **Blank for one frame, and when the file did not record one**: ImageJ's 0 means unknown, and a written 1 would be a plausible second nobody measured |
 | `pixel_depth` | the z step, in `pixel_unit`. **Blank when the image is a single plane** — ImageJ defaults the calibration to 1.0 with no z axis and Bio-Formats reports no physical size, so a written 1.0 would be a plausible number for a distance that does not exist. Written since 0.2.0, and `feature_stat_cli.r` now **defaults `--z_step` to it**, per series, from the config beside the inputs |
 | `script` | records the repo `VERSION` that produced the directory |
@@ -704,23 +709,38 @@ Per image it writes exactly what the interactive runner writes; the outline,
 `_res.txt`, ROI zip and `_config.txt` are the same contract. Two extra files
 describe the batch as a whole.
 
-`batch_summary.tsv` — one row per **sheet row**, excluded ones included, so it
-is a complete record of what the run did rather than of what succeeded:
+`batch_summary.tsv` — one row per **frame** of every sheet row, excluded rows
+included, so it is a complete record of what the run did rather than of what
+succeeded. A single-frame series is one row, `t = 1`; a row that never reached
+a frame (excluded, or it failed to open) is one row with `t` blank.
 
 | Column | Meaning |
 |---|---|
 | `series_id` | the series, as the sheet named it (`prefix` before v0.7.0) |
+| `t` | the frame, from 1 — for Luxendo the time point itself. **Since v0.8.0** |
 | `path`, `series_index` | which image it came from |
-| `status` | `ok`, `failed`, or `excluded` |
-| `open_method` | `importer` or `reader`, whichever actually opened it; blank for `excluded` rows |
+| `status` | `ok`, `failed`, or `excluded`. A **failed frame** does not stop its series: the series' files hold the frames that worked (`frames_analysed` in its `_config.txt`) |
+| `open_method` | `importer` or `reader`, whichever actually opened it, or `luxendo` for a series read from the sources table; blank for `excluded` rows |
 | `threshold` | the pixel range the nucleus threshold **selected**, `lo-hi`, same syntax the manual threshold takes; `none` when the frame had nothing to separate. Blank when the row did not run |
 | `mask_pct` | percent of pixels inside that range, measured **before** fill holes and watershed. Blank when the row did not run |
 | `n_nucleus`, `n_nucleolus` | counts, blank when the row did not run |
-| `seconds` | wall time for that image |
+| `seconds` | wall time for that frame (for a single frame, the image, opening included) |
 | `message` | for `failed`, the exception, flattened to one line |
 
-A row failing does not stop the batch. On a long run this file, not the log, is
-what says which images need attention.
+A row or a frame failing does not stop the batch. On a long run this file, not
+the log, is what says which images need attention.
+
+**Frames are staged while a series runs.** Each finished frame's tables go to
+`<outdir>/.staging/<series_id>/t<TTTT>/` at once, and the series' files are
+those frames joined in `t` order when it finishes — byte for byte what one pass
+would have written. The staging is deleted after the join; one left behind is a
+run that died, and is discarded by the next run of that series.
+
+The batch's **`frames`** chooses time points of a multi-frame series (`1`,
+`2,11,21`, `1-4`, from 1; blank = all), as `Make_LuxendoTiff`'s does — but here
+`t` stays the time point: frames 2, 11 and 21 are reported as t = 2, 11, 21,
+and their ROI ids carry `0002-`, `0011-`, `0021-`. A single-frame series is
+analysed whatever it says.
 
 ### Overview-only batch — `Run_Overview_Batch.groovy`
 
@@ -741,7 +761,7 @@ is offered: the suffix exists to mark that outlines were drawn, and nothing here
 draws any.
 
 **`batch_summary.tsv` has a fixed frame and a variable middle.** Every batch
-writes `series_id`, `path`, `series_index`, `status`, `open_method` first and
+writes `series_id`, `t`, `path`, `series_index`, `status`, `open_method` first and
 `seconds`, `message` last, with the same meanings as the table above; between
 them sit the columns that *that* batch's work reports. Blank in those columns
 means the row did not run, and every row carries every column — an `excluded`

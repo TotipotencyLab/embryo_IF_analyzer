@@ -613,7 +613,8 @@ def unpaired = []
  "scripts/groovy/Overview.groovy",
  "scripts/groovy/RoiDetect.groovy",
  "scripts/groovy/NucleolusDetect.groovy",
- "scripts/groovy/BatchRunner.groovy"].each { unpaired.addAll(bareCloses(it)) }
+ "scripts/groovy/BatchRunner.groovy",
+ "scripts/groovy/SeriesSource.groovy"].each { unpaired.addAll(bareCloses(it)) }
 check("no close() without flush() in the library", unpaired, [])
 
 // Once everything has been read back, not partway through: sections added after

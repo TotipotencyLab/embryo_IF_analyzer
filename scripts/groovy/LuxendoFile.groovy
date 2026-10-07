@@ -167,6 +167,43 @@ class LuxendoFile implements Closeable {
                      .getAsFlatArray()
     }
 
+    /**
+     * Every plane, read in strips of rows rather than plane by plane.
+     *
+     * For a caller that wants the whole stack anyway -- the batch, which
+     * analyses a frame at a time. /Data is chunked [nz, 64, 64]: every chunk
+     * spans ALL slices, so reading plane by plane reads each chunk once per
+     * plane, and over a network mount that is the cost of a frame. A strip of
+     * rows as tall as a chunk, across every slice, reads each chunk exactly
+     * once. Holds no more than the planes it returns plus one strip
+     * (nz x 64 rows: ~10 MB for a 2048-wide, 39-slice stack).
+     *
+     * @return planes[z], each as plane(z) returns it
+     */
+    short[][] volume() {
+        short[][] planes = new short[sizeZ][]
+        for (int z = 0; z < sizeZ; z++) planes[z] = new short[sizeY * sizeX]
+        int strip = chunkRows()
+        for (int y0 = 0; y0 < sizeY; y0 += strip) {
+            int h = Math.min(strip, sizeY - y0)
+            short[] block = reader.uint16()
+                                  .readMDArrayBlockWithOffset(DATA, [sizeZ, h, sizeX] as int[], [0, y0, 0] as long[])
+                                  .getAsFlatArray()
+            // block is [z][h][x]; each z's h rows land at row y0 of its plane.
+            for (int z = 0; z < sizeZ; z++) {
+                System.arraycopy(block, z * h * sizeX, planes[z], y0 * sizeX, h * sizeX)
+            }
+        }
+        return planes
+    }
+
+    /** Rows per chunk of /Data, or 64 when it is not chunked (64 is what Luxendo writes). */
+    int chunkRows() {
+        def cs = null
+        try { cs = reader.object().getDataSetInformation(DATA).tryGetChunkSizes() } catch (ignored) { }
+        return (cs != null && cs.length == 3 && cs[1] > 0) ? (cs[1] as int) : 64
+    }
+
     /** Bytes of pixel data this file holds. uint16, so two per voxel. */
     long payloadBytes() { return 2L * sizeZ * sizeY * sizeX }
 

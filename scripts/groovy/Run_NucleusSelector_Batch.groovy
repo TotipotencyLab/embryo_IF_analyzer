@@ -4,6 +4,8 @@
 #@ File    (persist=false, label="Run config (blank = defaults)", style="file", required=false) configFile
 #@ String  (persist=false, label="Save overview PNGs", value="(from config)", choices={"(from config)","yes","no"}) saveOverview
 #@ String  (persist=false, label="Image opening method", value="auto", choices={"auto","importer","reader"}) openMode
+#@ File    (persist=false, label="Sources table (sources.tsv; Luxendo only, blank = none)", style="file", required=false) sourcesFile
+#@ String  (persist=false, label="Time points (blank = all)", description="Which frames of a multi-frame series to analyse: 1, or 2,11,21, or 1-4 -- counted from 1, and reported as themselves (t = 11 is time point 11). A series of one frame is analysed whatever this says.", value="") frames
 
 // Run_NucleusSelector_Batch.groovy
 //
@@ -87,15 +89,29 @@ if (configFile != null && configFile.isFile()) {
 
 def rows = TSV.read(sheetFile)
 def root = (imageRoot?.trim()) ? new File(imageRoot.trim()) : null
+
+// LUXENDO. A series whose series_id has rows in the sources table is read from
+// its .lux.h5 files, one frame at a time -- a position does not fit in memory,
+// and nothing is converted first. Every other row is opened from its file.
+if (sourcesFile != null && sourcesFile.isFile()) {
+    params.sources = TSV.read(sourcesFile)
+    IJ.log("sources: " + sourcesFile.getName() + ", " + params.sources.size() + " file(s)")
+}
+// Not a run parameter: which frames to look at is a choice about this batch,
+// like include, not about how an image is analysed. _config.txt records the
+// frames each series' results hold (frames_analysed).
+params.frames = frames
+
 def res = BR.load(LIBDIR).run(rows, root, params, outdir) { IJ.log(it) }
 
 // The summary is the deliverable when a batch is large: it says which rows to
 // look at, and it exists whether or not any of them failed.
 IJ.log("Summary: " + new File(outdir, "batch_summary.tsv").getAbsolutePath())
-if (res.failed > 0) {
+if (res.failed > 0 || res.frames_failed > 0) {
     IJ.log("")
-    IJ.log(res.failed + " row(s) FAILED -- the rest completed. In batch_summary.tsv:")
+    IJ.log(res.failed + " row(s) and " + res.frames_failed + " frame(s) FAILED -- the rest completed. " +
+           "In batch_summary.tsv:")
     res.summary.findAll { it.status == "failed" }.take(10).each {
-        IJ.log("  " + it.series_id + "  " + it.message)
+        IJ.log("  " + it.series_id + (it.t != "" ? (" t" + it.t) : "") + "  " + it.message)
     }
 }

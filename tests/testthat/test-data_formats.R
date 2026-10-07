@@ -193,7 +193,9 @@ test_that("pixel_depth is written by the Groovy side and documented here", {
   expect_match(src, "pixel_depth", fixed = TRUE)
   # Blank for a single plane, not ImageJ's default 1.0 -- a z step that does
   # not exist must not arrive looking usable.
-  expect_match(src, "getNSlices() > 1", fixed = TRUE)
+  # The guard on the line that writes it -- `src.nSlices` since the pipeline
+  # reads a series source rather than an ImagePlus.
+  expect_match(src, "pixel_depth\\s*:\\s*\\(src\\.nSlices > 1 \\?")
 
   doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
   # The ROW in the _config.txt field table, not merely a mention of the name:

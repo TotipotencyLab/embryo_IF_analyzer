@@ -216,7 +216,9 @@ loop, including how to diff.
   removed `gatherFrames`; a time point is taken out at use, as
   `Make_LuxendoTiff`'s `frames`. The consequence to know before touching the batch: a 96-frame
   position is ~94 GB against a ~9 GB heap, so nothing may hold a Luxendo series
-  whole — it has to be streamed frame by frame, which is the `time_axis` work.
+  whole. `SeriesSource.groovy` hands the batch one frame at a time: each frame is
+  analysed, staged under `.staging/<series_id>/` and released before the next is
+  read, and the series' files are joined from the staged frames at the end.
 
   **`Make_LuxendoSheets.groovy` writes `series.tsv` + `sources.tsv`.** Two
   tables because Luxendo breaks the assumption every other format here
@@ -236,14 +238,19 @@ loop, including how to diff.
   stack number. There is one join, `LuxendoScan.withSeriesId()` — use it.
 
   **`Make_LuxendoTiff.groovy` is for tuning and drag-and-drop, not a required
-  step.** The batch runner is meant to read the `.lux.h5` through the same two
-  tables and never touch what this writes — deliberately: the sources *are* the
-  pixels and TIFF does not compress them, so a mandatory conversion would mean
-  holding two copies of an 800 GB acquisition. ⚠️ **That route is not built
-  yet**: the resolver moved into `time_axis` because it has to hand over one
-  frame at a time, and today the batch opens files only. Set `include=false` on
-  all but a few series first, and choose time points with `frames` — each
-  becomes its own `<series_id>_t<TTTT>` file.
+  step.** The batch reads the `.lux.h5` through the same two tables
+  (`sourcesFile`) and never touches what this writes — deliberately: the sources
+  *are* the pixels and TIFF does not compress them, so a mandatory conversion
+  would mean holding two copies of an 800 GB acquisition. A row whose series is
+  in the sources table is read from the sources, any other is opened as a file,
+  so one sheet can hold both. For `Make_LuxendoTiff`, set `include=false` on all
+  but a few series first, and choose time points with `frames` — each becomes
+  its own `<series_id>_t<TTTT>` file unless `oneFile` gathers them into one.
+  ⚠️ The two routes do not give identical files for the same time points: the
+  batch's `t` is the acquisition's time point where a gathered TIFF's counts
+  from 1 again, and the TIFF stores the pixel size as float32, so calibrated
+  measurements (`Area`, `X`, `Y`, `IntDen`) differ by up to 1 part in 10^5.
+  Outlines and pixel statistics agree exactly.
 
   ⚠️ **The series id carries the alias**, built with the repo's own
   `composeSeriesId()` rather than a second copy of the rule. `s<NNNN>_<stack

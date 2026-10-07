@@ -47,6 +47,7 @@ class TiffAssembler {
     static final List<String> FORMATS = [TIFF, BIGTIFF]
 
     Object LFC          // LuxendoFile class
+    Object SS           // SeriesSource class: the one reader of a Luxendo series
     Object RX           // RoiExport, for repoVersion()
     String libDir
 
@@ -56,6 +57,7 @@ class TiffAssembler {
         def a = new TiffAssembler()
         a.libDir = libDir
         a.LFC = gcl.parseClass(new File(dir, "LuxendoFile.groovy"))
+        a.SS  = gcl.parseClass(new File(dir, "SeriesSource.groovy"))
         a.RX  = gcl.parseClass(new File(dir, "RoiExport.groovy"))
         return a
     }
@@ -314,32 +316,26 @@ class TiffAssembler {
             return summary
         }
 
-        // Channels in sources-table order, which is the source metadata's own channel
-        // index -- never directory order, which the .ims files show can differ.
-        // Frames in time order, for the same reason.
-        def ordered = []
-        frames.each { tp -> ordered.addAll(byFrame[tp].sort(false) { a, b -> (a.channel as int) <=> (b.channel as int) }) }
-        def open  = []
-        def crc   = new CRC32()
+        // Read through SeriesSource, the one reader of a Luxendo series -- the
+        // batch reads the same way, so the two cannot drift apart. Channels in
+        // sources-table order, which is the source metadata's own channel index
+        // -- never directory order, which the .ims files show can differ --
+        // and frames in time order. A frame's files are open only while its
+        // planes are read.
+        def src = null
+        def crc = new CRC32()
         try {
-            ordered.each { open << LFC.open(new File(srcRoot, it.source_path as String)) }
-            open.eachWithIndex { lf, i ->
-                if (lf.sizeZ != nz) {
-                    throw new IllegalStateException(
-                        name + ": " + ordered[i].source_path + " has " + lf.sizeZ +
-                        " slices, expected " + nz +
-                        " -- a gathered position must hold one volume shape, not several")
-                }
-            }
+            src = SS.ofLuxendo(rows, srcRoot, name.replaceAll(/\.(ome\.)?tiff?$/, ""), LFC)
             // XYCZT: channel fastest, then z, then t -- matching
             // setDimensions(c, z, t) below. Getting this order wrong produces a
             // perfectly well-formed stack of the wrong planes.
             def stack = new ImageStack(outX, outY)
             for (int t = 0; t < nt; t++) {
+                int tp = frames[t] as int
                 for (int z = 0; z < nz; z++) {
                     for (int c = 0; c < nc; c++) {
-                        def row = ordered[t * nc + c]
-                        short[] px = open[t * nc + c].plane(z)
+                        def row = src.sourceRow(tp, c + 1)
+                        short[] px = src.plane(tp, c + 1, z + 1)
                         def sp = new ShortProcessor(first.size_x as int, first.size_y as int, px, null)
                         if (pct < FULL) sp = (ShortProcessor) sp.resize(outX, outY, true)
                         // Checksum what is WRITTEN, not what was read. At 100%
@@ -367,7 +363,7 @@ class TiffAssembler {
             summary.status = "failed"
             summary.reason = e.getClass().getSimpleName() + ": " + e.getMessage()
         } finally {
-            open.each { try { it.close() } catch (ignored) { } }
+            if (src != null) src.dispose()
         }
         return summary
     }

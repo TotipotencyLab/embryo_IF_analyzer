@@ -30,7 +30,13 @@ class RoiExport {
     static void saveOutlineCoords(ImagePlus imp, List<Roi> rois, List<String> names,
                                   List<Integer> slices, List<Integer> ts,
                                   String seriesId, String path) {
-        def cal = imp.getCalibration()
+        saveOutlineCoords(imp.getCalibration(), rois, names, slices, ts, seriesId, path)
+    }
+
+    /** The same, from the calibration alone: a streamed series has no whole image to ask. */
+    static void saveOutlineCoords(ij.measure.Calibration cal, List<Roi> rois, List<String> names,
+                                  List<Integer> slices, List<Integer> ts,
+                                  String seriesId, String path) {
         double pw = cal.pixelWidth, ph = cal.pixelHeight
         def rt = new ResultsTable()
         rt.showRowNumbers(false)
@@ -116,6 +122,11 @@ class RoiExport {
             tmp.delete()
             throw t
         }
+        replaceWith(tmp, dest)
+    }
+
+    /** Move a finished temporary file over its destination, in one directory. */
+    static void replaceWith(File tmp, File dest) {
         if (!tmp.renameTo(dest)) {
             // renameTo() will not replace an existing file on every platform.
             dest.delete()
@@ -124,6 +135,104 @@ class RoiExport {
                 throw new IOException("could not move " + tmp + " to " + dest)
             }
         }
+    }
+
+    // --- joining a series' frames ---------------------------------------------
+    //
+    // A series is analysed a frame at a time, and each frame's tables are staged
+    // on disk as soon as the frame is done (NucleusPipeline): a crash at frame
+    // 90 of 96 must not lose the 89 before it. The series' files are then these
+    // parts joined in t order -- as text, never by reading the tables back into
+    // ImageJ, so a joined file holds exactly the bytes each frame wrote.
+
+    /**
+     * Tables sharing one header: the header once, then every part's rows in the
+     * order given. Parts that do not exist are skipped -- a frame that found no
+     * nucleoli wrote no nucleolus table.
+     *
+     * @param renumber the first column is ImageJ's row number, which every part
+     *                 restarts at 1; rewritten to run 1..n across the join.
+     * @return the number of rows written; nothing is written when it is 0
+     */
+    static int joinTables(List<File> parts, File dest, boolean renumber) {
+        def present = parts.findAll { it.isFile() }
+        if (!present) return 0
+        def tmp = new File(dest.getParentFile(), dest.getName() + ".part")
+        int n = 0
+        try {
+            tmp.withWriter("UTF-8") { w ->
+                String header = null
+                present.each { File f ->
+                    def lines = f.readLines("UTF-8")
+                    if (!lines) return
+                    if (header == null) {
+                        header = lines[0]
+                        w.write(header); w.write("\n")
+                    } else if (lines[0] != header) {
+                        throw new IllegalStateException(
+                            f.getName() + " has different columns from the frames before it:\n  " +
+                            lines[0] + "\n  " + header)
+                    }
+                    for (int i = 1; i < lines.size(); i++) {
+                        def l = lines[i]
+                        if (renumber) {
+                            int tab = l.indexOf("\t")
+                            l = (n + 1) + (tab < 0 ? "" : l.substring(tab))
+                        }
+                        w.write(l); w.write("\n")
+                        n++
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            tmp.delete()
+            throw t
+        }
+        replaceWith(tmp, dest)
+        return n
+    }
+
+    /**
+     * ROI zips joined by copying their entries' bytes, in the order given.
+     * Nothing is decoded and re-encoded, so a joined ROI is the ROI the frame
+     * saved. A repeated entry name is refused -- the zip format would keep both
+     * and ImageJ would open only one.
+     *
+     * @return the number of ROIs written; nothing is written when it is 0
+     */
+    static int joinRoiZips(List<File> parts, File dest) {
+        def present = parts.findAll { it.isFile() }
+        if (!present) return 0
+        def tmp = new File(dest.getParentFile(), dest.getName() + ".part")
+        def seen = new HashSet<String>()
+        def zos = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(tmp)))
+        try {
+            byte[] chunk = new byte[8192]
+            present.each { File f ->
+                def zis = new ZipInputStream(new BufferedInputStream(new FileInputStream(f)))
+                try {
+                    def e
+                    while ((e = zis.getNextEntry()) != null) {
+                        if (!seen.add(e.getName())) {
+                            throw new IllegalStateException(e.getName() + " is in two frames' ROI zips")
+                        }
+                        zos.putNextEntry(new ZipEntry(e.getName()))
+                        int k
+                        while ((k = zis.read(chunk)) > 0) zos.write(chunk, 0, k)
+                        zos.closeEntry()
+                    }
+                } finally {
+                    zis.close()
+                }
+            }
+            zos.close()
+        } catch (Throwable t) {
+            try { zos.close() } catch (Throwable ignored) { }
+            tmp.delete()
+            throw t
+        }
+        replaceWith(tmp, dest)
+        return seen.size()
     }
 
     /** A measurement table for measureInto() to append to; save it with saveMeasurements(). */

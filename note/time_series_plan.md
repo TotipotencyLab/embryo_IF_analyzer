@@ -877,17 +877,32 @@ streaming carries the real `t` and makes this a convenience again.
 
 #### PR 3 — `time_axis-stream`
 
-- [ ] 🔒 **The one resolver** (§3.2b): membership in the sources table decides,
+Split on 2026-10-04 into **3a** (streaming: the four items below) and **3b**
+(the QC pictures: the overview TIFF, the montage, `--qc_plot`'s TIFF), so the
+change to how a series is read can be reviewed apart from what is drawn.
+
+- [x] 🔒 **The one resolver** (§3.2b): membership in the sources table decides,
       and a multi-frame series is handed over **one frame at a time**.
-      `Make_LuxendoTiff` moves onto it.
-- [ ] 🔒 **The unit of work is the frame, not the row.** `batch_summary.tsv`
+      `Make_LuxendoTiff` moves onto it. *3a:* `SeriesSource` — an open image,
+      or a series' sources rows — chosen by `BatchRunner.openSource()`;
+      `TiffAssembler` reads through its `plane(t, c, z)`, the batch through
+      `frame(t)`, which reads each file whole in chunk-high strips
+      (`LuxendoFile.volume()`): plane by plane re-reads every chunk once per
+      slice. The batch's `sourcesFile` and **`frames`** (time points kept as
+      themselves: frames 2, 11, 21 are t = 2, 11, 21, ids `0002-` …).
+- [x] 🔒 **The unit of work is the frame, not the row.** `batch_summary.tsv`
       gains one row per `(series_id, t)`; a failed frame is recorded and the
       rest of the series continues, as `runEach()` already does for rows.
-- [ ] 🔒 **Per-frame staging**: each frame's outputs are written to staging
+      *3a:* `t` after `series_id`, blank where no frame was reached;
+      `frames_analysed` in `_config.txt` names the frames the results hold.
+- [x] 🔒 **Per-frame staging**: each frame's outputs are written to staging
       files under a temporary name and renamed when complete, then joined in
       `t` order when the series finishes. Without it, a crash at frame 90 of
       96 loses all 90. It is also what makes PR 4 cheap: a frame is done
-      exactly when its staged files exist.
+      exactly when its staged files exist. *3a:* `<outdir>/.staging/<series_id>/
+      t<TTTT>.part` renamed to `t<TTTT>`, joined as text (ROI zips entry by
+      entry), deleted after; a leftover is discarded until PR 4 resumes from it.
+      Every image is staged, one frame too — one path, not two.
 - [ ] 🔒 **The overview of a multi-frame series is DATA, written by the batch**:
       one 16-bit, z-projected, downscaled TIFF per series, channels and frames
       inside, appended frame by frame, no contrast decided. Single-frame series
