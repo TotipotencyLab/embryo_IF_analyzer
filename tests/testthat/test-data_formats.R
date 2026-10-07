@@ -254,6 +254,32 @@ test_that("the ring-contrast table is one column list in Groovy, R and the doc",
   expect_identical(doc_cols, groovy_cols)
 })
 
+test_that("the footprint table is one column list in R, Groovy and the doc", {
+  # analysis-oo_count-physical_blur. feature_footprint_cli.r writes it,
+  # Run_Overview_Batch.groovy (FeatureOverlay) reads it by name.
+  fo <- file.path(repo_root(), "scripts", "groovy", "FeatureOverlay.groovy")
+  rl <- file.path(repo_root(), "scripts", "R", "feature_footprint.r")
+  skip_if_not(all(file.exists(fo, rl)), "footprint scripts not found")
+  src <- paste(readLines(fo, warn = FALSE), collapse = "\n")
+  m <- regmatches(src, regexpr('FOOTPRINT_COLUMNS =\\s*\\[[^]]*\\]', src))
+  groovy_cols <- gsub('"', "", regmatches(m, gregexpr('"[a-z_]+"', m))[[1]])
+  expect_true(length(groovy_cols) >= 6)
+
+  env <- new.env()
+  for (e in parse(rl)) {
+    if (is.call(e) && identical(as.character(e[[1]]), "<-") &&
+        identical(as.character(e[[2]]), "FOOTPRINT_COLUMNS")) eval(e, env)
+  }
+  expect_identical(env$FOOTPRINT_COLUMNS, groovy_cols)
+
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  start <- grep("^### Feature footprints", doc)
+  expect_length(start, 1L)
+  sect <- doc[start:(start + 25L)]
+  doc_cols <- sub("^\\|\\s*`([a-z_]+)`.*", "\\1", grep("^\\|\\s*`[a-z_]+`\\s*\\|", sect, value = TRUE))
+  expect_identical(doc_cols, groovy_cols)
+})
+
 test_that("the blur unit is a parameter and the pixel sigma is provenance", {
   # analysis-oo_count-physical_blur. nucleus_blur_unit must read back as a
   # parameter (or a um run fed forward silently becomes px); the pixel sigma it

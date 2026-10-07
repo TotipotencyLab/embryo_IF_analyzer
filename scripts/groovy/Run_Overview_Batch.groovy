@@ -9,6 +9,17 @@
 #@ Integer (persist=false, label="Output width in px (0 = original)", value=1000) outWidth
 #@ Integer (persist=false, label="Output height in px (0 = follow width)", value=0) outHeight
 #@ String  (persist=false, label="Image opening method", value="auto", choices={"auto","importer","reader"}) openMode
+#@ Boolean (persist=false, label="Save a PNG per channel (greyscale, resized)", value=true) savePng
+#@ Boolean (persist=false, label="Save one multi-channel TIFF (full resolution, calibrated)", value=false) saveTiff
+#@ String  (persist=false, label="TIFF channel colours (comma separated; blank = red,green,blue,...)", value="") tiffColors
+#@ String  (persist=false, label="TIFF overlay: footprint folder (feature_footprint_cli.r; blank = none)", value="") footprintDir
+#@ String  (persist=false, label="TIFF overlay: ROI zip folder, instead of footprints (blank = none)", value="") roiDir
+#@ String  (persist=false, label="TIFF overlay: ROI zip drawing", value="merged", choices={"merged","all"}) roiMode
+#@ String  (persist=false, label="TIFF overlay: feature", value="nucleus") feature
+#@ String  (persist=false, label="TIFF overlay: also draw rejected features", value="none", choices={"none","invalid","all"}) drawRejected
+#@ String  (persist=false, label="Colour: counted features", value="yellow") countedColor
+#@ String  (persist=false, label="Colour: invalid_* features", value="cyan") invalidColor
+#@ String  (persist=false, label="Colour: failed_* ROIs", value="magenta") failedColor
 
 // Run_Overview_Batch.groovy
 //
@@ -42,8 +53,40 @@
 // Like the nucleus batch: the sheet's `prefix` names the output and `include`
 // decides what runs, one row's failure does not stop the others, and
 // batch_summary.tsv says what happened to every row including the excluded.
+//
+// THE TIFF (saveTiff; analysis-oo_count-physical_blur, the oocyte count)
+//
+//   <prefix>_overview.tif
+//
+// The same projection as the PNGs, but as ONE image: every channel, full
+// resolution, calibrated, pixel values untouched -- what Z Project gives in
+// the GUI. Each channel opens at the display window the PNG of that channel
+// used. It is the image hand-placed points go on, so a point's pixel position
+// and the outlines share one frame by construction.
+//
+// Outlines are an OVERLAY, never burned in: the pixels stay measurable, the
+// channel count stays the acquisition's, Image > Overlay > Hide/Show toggles
+// them and To ROI Manager lists them by name. Two sources, one per run:
+//
+//   footprintDir  <prefix>_<feature>_footprint.txt from feature_footprint_cli.r
+//                 -- one outline per FEATURE (its ROIs' union over z), named by
+//                 feature_id, coloured by status. drawRejected adds invalid_*
+//                 (`invalid`) and also failed_* (`all`) in their own colours.
+//                 The geometry is R's, the same one confirm_features_cli.r
+//                 tests points against.
+//   roiDir        the nucleus batch's ROI zips, before R has run: every ROI
+//                 (`all`) or their 2D union (`merged`), in the counted colour.
+//
+// With saveTiff off this script does exactly what it did before -- the PNGs and
+// batch_summary.tsv are unchanged; the TIFF adds two summary columns, `tiff`
+// and `overlay`.
+//
+//   ImageJ-macosx --headless --console --mem=10000m \
+//     --run scripts/groovy/Run_Overview_Batch.groovy \
+//     "sheetFile='/p/samples.tsv',outdir='/p/overview',imageRoot='/p/raw',savePng=false,saveTiff=true,tiffColors='blue,green',footprintDir='/p/footprint'"
 
 import ij.IJ
+import ij.ImagePlus
 
 def resolveLibDir = {
     def cands = []
@@ -66,6 +109,8 @@ def BR  = gcl.parseClass(new File(LIBDIR + "/BatchRunner.groovy"))
 def TSV = gcl.parseClass(new File(LIBDIR + "/Tsv.groovy"))
 def OV  = gcl.parseClass(new File(LIBDIR + "/Overview.groovy"))
 def RD  = gcl.parseClass(new File(LIBDIR + "/RoiDetect.groovy"))
+def FO  = gcl.parseClass(new File(LIBDIR + "/FeatureOverlay.groovy"))
+def RX  = gcl.parseClass(new File(LIBDIR + "/RoiExport.groovy"))
 
 // Checked ONCE, before a single image opens. Overview.validateSettings throws
 // exactly what project() and prepare() throw, from the same code, so passing
@@ -73,6 +118,11 @@ def RD  = gcl.parseClass(new File(LIBDIR + "/RoiDetect.groovy"))
 // a dialog should cost one error message, not one per row of a thousand-row
 // sheet, each after a series has been read off disk.
 OV.validateSettings(method, contrast, saturated, outWidth, outHeight)
+def tiff = FO.validateBatch([savePng: savePng, saveTiff: saveTiff, tiffColors: tiffColors,
+                             footprintDir: footprintDir, roiDir: roiDir, roiMode: roiMode,
+                             feature: feature, drawRejected: drawRejected,
+                             countedColor: countedColor, invalidColor: invalidColor,
+                             failedColor: failedColor], OV)
 
 // Parsed once too, and for the same reason.
 def wanted = (channelsCsv?.trim()) ? channelsCsv.trim().split(",").collect {
@@ -94,7 +144,9 @@ def runner = BR.load(LIBDIR)
 // channel is the tell -- but only if it is written down, and opening every PNG
 // to find the handful that went wrong is exactly what this table exists to
 // avoid.
-def cols = ["channels", "png_size", "display_range"]
+// The TIFF's two columns only when it is written, so a PNG-only run's summary
+// is byte-for-byte what it was before the TIFF existed.
+def cols = ["channels", "png_size", "display_range"] + (tiff.saveTiff ? ["tiff", "overlay"] : [])
 
 // Both closures passed INSIDE the parentheses on purpose. runEach's log
 // parameter has a default, so two trailing closure blocks would leave which
@@ -107,18 +159,68 @@ def perRow = { imp, prefix, si, openMethod, row ->
         def chans  = OV.projectedChannels(proj)
         def ranges = []
         def size   = ""
-        chans.each { int c ->
-            def view = OV.prepare(proj, c, [width    : outWidth,
-                                            height   : outHeight,
-                                            contrast : contrast,
-                                            saturated: saturated])
-            def f = OV.savePng(view, OV.overviewPath(outdir.getPath(), prefix, c))
-            ranges << ("ch" + c + ":" + IJ.d2s(view.lo, 1) + "-" + IJ.d2s(view.hi, 1))
-            size = view.image.getWidth() + "x" + view.image.getHeight()
-            IJ.log("  overview ch" + c + " -> " + f.getName())
+        // The overlay's source is read BEFORE anything is written, so a row
+        // whose footprints or ROIs are missing fails with no files at all,
+        // rather than with its PNGs written and its TIFF not.
+        List overlayRois = null
+        String drawn = "none"
+        if (tiff.source == "footprint") {
+            def fp = new File(FO.footprintPath(tiff.dir.getPath(), prefix, tiff.feature))
+            overlayRois = FO.readFootprints(fp, prefix, proj.getCalibration(), proj.getWidth(), proj.getHeight())
+        } else if (tiff.source == "roi") {
+            def zip = new File(FO.roiZipPath(tiff.dir.getPath(), prefix, tiff.feature))
+            if (zip.isFile()) {
+                overlayRois = RX.loadRoiZip(zip.getPath())
+            } else if (FO.configSaysNone(tiff.dir, prefix, tiff.feature)) {
+                overlayRois = []
+            } else {
+                throw new IllegalArgumentException("no ROI zip " + zip.getName() + " in " + tiff.dir +
+                    ", and no _config.txt there saying " + tiff.feature + "_count 0")
+            }
         }
-        return [channels: chans.join(","), png_size: size,
-                display_range: ranges.join(" ")]
+        if (tiff.savePng) {
+            chans.each { int c ->
+                def view = OV.prepare(proj, c, [width    : outWidth,
+                                                height   : outHeight,
+                                                contrast : contrast,
+                                                saturated: saturated])
+                def f = OV.savePng(view, OV.overviewPath(outdir.getPath(), prefix, c))
+                ranges << ("ch" + c + ":" + IJ.d2s(view.lo, 1) + "-" + IJ.d2s(view.hi, 1))
+                size = view.image.getWidth() + "x" + view.image.getHeight()
+                IJ.log("  overview ch" + c + " -> " + f.getName())
+            }
+        }
+        def out = [channels: chans.join(","), png_size: size]
+        if (tiff.saveTiff) {
+            // AFTER the PNGs: the composite shares the projection's planes.
+            def comp = OV.composite(proj, [contrast: contrast, saturated: saturated,
+                                           colours: tiff.channelColours])
+            ImagePlus img = comp.image
+            try {
+                if (!tiff.savePng) {
+                    // The same windows the PNGs would have reported, from the same code.
+                    chans.eachWithIndex { int c, int i ->
+                        ranges << ("ch" + c + ":" + IJ.d2s(comp.ranges[i][0], 1) + "-" + IJ.d2s(comp.ranges[i][1], 1))
+                    }
+                }
+                if (tiff.source == "footprint") {
+                    def n = FO.draw(img, overlayRois, tiff.statuses, tiff.colours)
+                    drawn = FO.STATUSES.findAll { it in tiff.statuses }.collect { it + ":" + n[it] }.join(" ")
+                } else if (tiff.source == "roi") {
+                    int n = OV.addOutlines(img, overlayRois, [mode: tiff.roiMode, color: tiff.colours.counted])
+                    drawn = "roi_" + tiff.roiMode + ":" + n
+                }
+                img.setTitle(prefix + "_overview")
+                def f = OV.saveTiff(img, OV.tiffPath(outdir.getPath(), prefix))
+                IJ.log("  overview tiff -> " + f.getName() + "  (overlay " + drawn + ")")
+                out.tiff = f.getName()
+                out.overlay = drawn
+            } finally {
+                img.close(); img.flush()
+            }
+        }
+        out.display_range = ranges.join(" ")
+        return out
     } finally {
         // A projection of a tile merge is hundreds of MB. close() alone frees
         // nothing while `proj` is in scope -- it detaches a window and there is

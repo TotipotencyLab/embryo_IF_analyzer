@@ -405,6 +405,22 @@ The filtered `*_features.rds` replace the originals for counting and montages:
 dropped features become `invalid_contrast_*`. Defaults (DDX4 ≥ 2.5× the ring,
 or DAPI < 0.6×) were chosen on 10 hand-annotated sections.
 
+**Overview TIFF with feature outlines** (`analysis-oo_count-physical_blur`
+only), for checking — and pointing at — what the pipeline found:
+
+```bash
+Rscript scripts/R_cli/feature_footprint_cli.r --features feature_contrast/ --outdir footprint/
+ImageJ-macosx --headless --console --mem=10000m --run scripts/groovy/Run_Overview_Batch.groovy \
+  "sheetFile='samples.tsv',outdir='overview',imageRoot='raw',openMode='reader',savePng=false,saveTiff=true,tiffColors='blue,green',footprintDir='footprint',drawRejected='invalid'"
+```
+
+`<prefix>_overview.tif` is the full-resolution, calibrated max projection with
+every channel; each feature's outline (its ROIs' union over z) is an overlay
+named by `feature_id` — Image › Overlay › Show/Hide toggles it, To ROI Manager
+lists it. Yellow is counted; `drawRejected='invalid'` adds `invalid_*` in cyan
+(contrast-dropped included), `'all'` also `failed_*` in magenta (single-slice
+ROIs). `include` in the sheet decides which series get one.
+
 [`PLA_analysis/`](PLA_analysis/) contains the proximity ligation assay analysis
 (published separately) and serves as a worked example of the R side end to end.
 

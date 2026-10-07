@@ -36,6 +36,7 @@ import ij.plugin.ContrastEnhancer
 import ij.plugin.RoiScaler
 import ij.plugin.ZProjector
 import ij.process.ImageProcessor
+import ij.process.LUT
 import java.awt.Color
 
 class Overview {
@@ -199,22 +200,8 @@ class Overview {
 
         // Contrast is computed at FULL resolution, so the statistics are exact,
         // and applied after resizing so both images use the same range.
-        double lo, hi
-        if (contrast == "auto") {
-            // NB: for 32-bit data the stretch works on a 256-bin histogram laid
-            //     over the FULL min-max, so its limits snap to bin edges. With
-            //     extreme outliers the bins get coarse: a 0-995 ramp plus three
-            //     pixels of 100000 gets a top of 781, not ~995, and the brightest
-            //     fifth saturates. Harmless unless outliers are hundreds of times
-            //     brighter than the signal.
-            new ContrastEnhancer().stretchHistogram(ip, saturated)
-            lo = ip.getMin(); hi = ip.getMax()
-        } else if (ip.getBitDepth() == 32) {
-            ip.resetMinAndMax()
-            lo = ip.getMin(); hi = ip.getMax()
-        } else {
-            lo = 0; hi = (ip.getBitDepth() == 16) ? 65535 : 255
-        }
+        double[] range = displayRange(ip, contrast, saturated)
+        double lo = range[0], hi = range[1]
 
         // Output size.
         Integer w = sizeOpt(opts.width, "width"), h = sizeOpt(opts.height, "height")
@@ -255,6 +242,33 @@ class Overview {
         img.setCalibration(cal)
 
         return new View(image: img, sx: sx, sy: sy, channel: channel, lo: lo, hi: hi)
+    }
+
+    /**
+     * The display window a contrast setting chooses for one plane: [lo, hi].
+     *
+     * One definition shared by the PNG (prepare) and the TIFF (composite), so
+     * the window a TIFF channel opens with is the one batch_summary.tsv's
+     * display_range reports for the PNG of the same channel.
+     *
+     * Sets `ip`'s own min/max as a side effect (stretchHistogram works that
+     * way); pass a copy if that matters. Pixel values are not changed.
+     */
+    static double[] displayRange(ImageProcessor ip, String contrast, double saturated) {
+        if (contrast == "auto") {
+            // NB: for 32-bit data the stretch works on a 256-bin histogram laid
+            //     over the FULL min-max, so its limits snap to bin edges. With
+            //     extreme outliers the bins get coarse: a 0-995 ramp plus three
+            //     pixels of 100000 gets a top of 781, not ~995, and the brightest
+            //     fifth saturates. Harmless unless outliers are hundreds of times
+            //     brighter than the signal.
+            new ContrastEnhancer().stretchHistogram(ip, saturated)
+            return [ip.getMin(), ip.getMax()] as double[]
+        } else if (ip.getBitDepth() == 32) {
+            ip.resetMinAndMax()
+            return [ip.getMin(), ip.getMax()] as double[]
+        }
+        return [0d, (ip.getBitDepth() == 16) ? 65535d : 255d] as double[]
     }
 
     // An option's value, or `dflt` when it was not given.
@@ -390,6 +404,14 @@ class Overview {
         return shapes.size()
     }
 
+    /**
+     * addOutlines() onto a full-resolution image rather than a resized view:
+     * the overview TIFF, whose pixels are the projection's own (no scaling).
+     */
+    static int addOutlines(ImagePlus img, List<Roi> rois, Map opts) {
+        return addOutlines(new View(image: img, sx: 1d, sy: 1d, channel: 0), rois, opts)
+    }
+
     // Union of all ROIs, split back into one Roi per connected piece.
     private static List<Roi> union(List<Roi> rois) {
         ShapeRoi u = null
@@ -417,6 +439,121 @@ class Overview {
             }
         } finally {
             flat.close(); flat.flush()   // close() alone frees nothing headless
+        }
+        return file
+    }
+
+    /**
+     * Default TIFF channel colours, in channel order: the order Fiji's own
+     * composites use. Written out rather than left to CompositeImage so the
+     * TIFF does not change with the ImageJ version -- or with how the series
+     * was opened: the importer may carry the acquisition's colours and the
+     * reader path carries none, so inheriting them would colour one series two
+     * ways depending on openMode.
+     */
+    static final List<String> DEFAULT_COLOURS = ["red", "green", "blue", "gray", "cyan", "magenta", "yellow"]
+
+    /**
+     * Channel colours from a comma-separated list of names or #rrggbb. Blank
+     * means DEFAULT_COLOURS. Checked before any image is opened, so a typo
+     * costs one message, not one per row. Whether the count matches the
+     * channels can only be known per image (composite() checks it).
+     */
+    static List<Color> channelColours(Object spec) {
+        String t = (spec == null) ? "" : spec.toString().trim()
+        List<String> names = t ? t.split(",").collect { it.trim() } : DEFAULT_COLOURS
+        return names.collect { String n ->
+            Color c = n ? Colors.decode(n, null) : null
+            if (c == null) {
+                throw new IllegalArgumentException("unknown colour '${n}' in '${spec}'; use names such as blue,green, or #rrggbb")
+            }
+            c
+        }
+    }
+
+    /**
+     * The projection as ONE multi-channel image: full resolution, calibrated,
+     * pixel values untouched -- what Image > Stacks > Z Project gives in the
+     * GUI. Each channel opens at the display window displayRange() chooses, so
+     * the file looks right without its pixels being changed.
+     *
+     * @param proj     output of project()
+     * @param opts     contrast, saturated : as prepare()
+     *                 colours  : List<Color> from channelColours(), or null for
+     *                            the defaults. Given explicitly, it must have one
+     *                            colour per projected channel; the defaults are
+     *                            taken in order and must simply be enough.
+     * @return [image: ImagePlus (a CompositeImage for 2+ channels), ranges:
+     *         List<double[]>, one per channel in projection order]
+     *
+     * NB: the image SHARES the projection's planes -- a tile merge's projection
+     *     is hundreds of MB, and a copy would be another. Use the projection for
+     *     anything else (prepare() copies what it needs) BEFORE flushing either.
+     */
+    static Map composite(ImagePlus proj, Map opts = [:]) {
+        def chans = projectedChannels(proj)
+        int n = chans.size()
+        String contrast = contrastMode(opts.contrast)
+        double saturated = saturatedPercent(opts.saturated)
+        List<Color> cols = (List<Color>) opts.colours
+        if (cols == null) {
+            cols = channelColours(null)
+            if (n > cols.size()) {
+                throw new IllegalArgumentException("${n} channels and only ${cols.size()} default colours; give the colours")
+            }
+            cols = cols.take(n)
+        } else if (cols.size() != n) {
+            throw new IllegalArgumentException(
+                "${cols.size()} colour(s) given for ${n} projected channel(s) ${chans}; give one per channel")
+        }
+
+        def stack = proj.getStack()
+        List<double[]> ranges = (1..n).collect { int i ->
+            // A copy: stretchHistogram sets the plane's min/max.
+            displayRange(stack.getProcessor(i).duplicate(), contrast, saturated)
+        }
+
+        def img = new ImagePlus(proj.getTitle(), stack)
+        img.setDimensions(n, 1, 1)
+        img.setCalibration(proj.getCalibration().copy())
+        ImagePlus out
+        if (n > 1) {
+            def ci = new CompositeImage(img, IJ.COMPOSITE)
+            (0..<n).each { int i ->
+                LUT lut = LUT.createLutFromColor(cols[i])
+                lut.min = ranges[i][0]; lut.max = ranges[i][1]
+                ci.setChannelLut(lut, i + 1)
+            }
+            // setChannelLut does not move the current channel's processor
+            // range; set it too so channel 1 opens at its own window.
+            ci.setPositionWithoutUpdate(1, 1, 1)
+            ci.getProcessor().setMinAndMax(ranges[0][0], ranges[0][1])
+            out = ci
+        } else {
+            LUT lut = LUT.createLutFromColor(cols[0])
+            img.getProcessor().setColorModel(lut)
+            // After setColorModel, which resets the range (see prepare()).
+            img.setDisplayRange(ranges[0][0], ranges[0][1])
+            out = img
+        }
+        out.setCalibration(proj.getCalibration().copy())
+        return [image: out, ranges: ranges]
+    }
+
+    /** <basename>_overview.tif -- one file, every projected channel. */
+    static String tiffPath(String dir, String basename) {
+        new File(dir, "${basename}_overview.tif").getPath()
+    }
+
+    /**
+     * Write an image as TIFF, overlay included (ImageJ stores it in the file;
+     * Image > Overlay > Hide/Show toggles it, To ROI Manager lists it).
+     */
+    static File saveTiff(ImagePlus img, String path) {
+        def file = new File(path)
+        file.getAbsoluteFile().getParentFile()?.mkdirs()
+        if (!new FileSaver(img).saveAsTiff(file.getPath())) {
+            throw new IOException("could not write ${file}")
         }
         return file
     }

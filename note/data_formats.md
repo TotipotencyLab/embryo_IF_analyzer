@@ -481,8 +481,28 @@ load-bearing rather than a coincidence. Both go through
 settings the two produce byte-identical PNGs (verified on the fixture, both
 channels). A file from either runner is interchangeable to anything downstream,
 so a montage or a QC panel need not know which one made it. No suffix parameter
-is offered: the suffix exists to mark that outlines were drawn, and nothing here
-draws any.
+is offered: the suffix exists to mark that outlines were drawn, and no PNG here
+has any (`savePng`, default on, turns them off).
+
+*`analysis-oo_count-physical_blur` only:* with `saveTiff` it also writes
+
+```
+<prefix>_overview.tif
+```
+
+— the same projection as **one** image: every projected channel, full
+resolution, calibrated, pixel values untouched (what Z Project gives in the
+GUI). Each channel opens at the window the PNG of that channel used, coloured by
+`tiffColors` (default red, green, blue, … in channel order — set explicitly,
+never inherited, because the reader path carries no colours and the importer
+may). It is the image hand-placed points go on. Outlines, when asked for, are an
+ImageJ **overlay** stored in the file, never pixels: from `footprintDir`, one
+polygon per feature (the footprint tables below), named by `feature_id`,
+counted features in `countedColor` and — with `drawRejected` `invalid` / `all`
+— `invalid_*` and `failed_*` in their own colours; or from `roiDir`, the
+nucleus batch's ROI zips (`roiMode` `merged` or `all`, counted colour only). A
+row whose footprint table is missing fails before anything of it is written; a
+header-only one draws nothing.
 
 **`batch_summary.tsv` has a fixed frame and a variable middle.** Every batch
 writes `prefix`, `path`, `series_index`, `status`, `open_method` first and
@@ -498,7 +518,12 @@ For this runner the middle is:
 |---|---|
 | `channels` | the channels projected, comma separated, in the order written |
 | `png_size` | `<width>x<height>` of the PNG actually written, after any resize |
-| `display_range` | per channel, `ch<N>:lo-hi` — the display window the contrast setting chose |
+| `display_range` | per channel, `ch<N>:lo-hi` — the display window the contrast setting chose (the PNG's and the TIFF's, which are the same) |
+| `tiff` | *only with `saveTiff`:* the TIFF's file name |
+| `overlay` | *only with `saveTiff`:* what was drawn — `none`; `counted:N invalid:M failed:K` for the statuses drawn from footprints; `roi_<mode>:N` from an ROI zip |
+
+`png_size` is blank when no PNG was written. `tiff` and `overlay` are absent,
+not blank, when the TIFF is off, so a PNG-only summary is what it always was.
 
 `display_range` is there because `auto` contrast stretches whatever it is given:
 a channel holding only noise has that noise stretched to full range and saves a
@@ -1013,6 +1038,30 @@ the features' own folder:
 
 A counted ROI without a contrast row is an **error**, not a skip: it means the
 contrast table came from a different segmentation.
+
+### Feature footprints — `feature_footprint_cli.r`
+
+*`analysis-oo_count-physical_blur` only.* Each feature's **footprint** — the
+union of its ROIs over z — as a vertex table, for `Run_Overview_Batch.groovy` to
+draw on the overview TIFF. One file per `*_features.rds`,
+`<sample>_<feature>_footprint.txt`, one row per vertex:
+
+| column | |
+|---|---|
+| `name` | the series id (as `_outline.txt`'s `name`); the reader refuses a table for another series |
+| `feature_id` | as in `features.rds` — counted, `invalid_*` and `failed_*` alike; the status is read from it |
+| `part` | which piece of the feature, from 1 (a union can be in several) |
+| `ring` | `0` for a piece's outer boundary, `1`, `2`, … for its holes |
+| `x` | calibrated units, as `_outline.txt` |
+| `y` | calibrated units, **y down** (image orientation), as `_outline.txt` |
+
+A ring does not repeat its first vertex. `failed_<feature>_<reason>` is a bucket
+of unrelated ROIs, so its parts are those ROIs (merged where they touch). A
+sample with no rows of the feature gets a header-only table, so a missing file
+means "not run". The union is `feature_footprints()` in
+`scripts/R/feature_footprint.r`, and is meant to be the one any later step
+matching points against features uses — so the outline drawn and the outline
+matched are one geometry.
 
 ---
 
