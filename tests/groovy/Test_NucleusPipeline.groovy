@@ -588,7 +588,14 @@ check("config: threshold is `per-frame`",       [cfgTL.nucleus_threshold_used, c
 check("config: the count is the total",         cfgTL.nucleus_count, "24")
 check("no overview PNG for a multi-frame image",
       outTL.list().findAll { it.endsWith(".png") }.toList(), [])
-check("...and the config says none was written", [cfgTL.overview_saved, cfgTL.overview_channels], ["false", ""])
+// Its overview is a TIFF per channel, a page per frame (Test_Overview and
+// Test_SeriesSource check what is on the pages).
+def tifsTL = outTL.list().findAll { it.endsWith(".tif") }.sort()
+check("...but a TIFF per channel, and its overlay", tifsTL,
+      cfgTL.overview_channels.split(",").collect { ["tl_overview_ch" + it + ".tif", "tl_overview_ch" + it + "_overlay.tif"] }.flatten().sort())
+check("...a page per frame",                    ij.IJ.openImage(new File(outTL, tifsTL[0]).getPath()).getNFrames(), 4)
+check("...and the config says it was written",  [cfgTL.overview_saved, cfgTL.overview_display_range.split(" ").size()],
+      ["true", cfgTL.overview_channels.split(",").size()])
 def zipped = RX.loadRoiZip(new File(outTL, "tl_nucleus_outline_ROIs.zip").getPath())
 check("the zip holds all 24",                   zipped.size(), 24)
 check("each zipped ROI sits on its own frame",

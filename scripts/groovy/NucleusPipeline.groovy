@@ -290,12 +290,20 @@ class NucleusPipeline {
                                                          : (frames.size() + " of " + src.nFrames)) +
                    " frames, each analysed on its own")
             if (p.save_overview) {
-                // Said rather than skipped quietly. A multi-frame overview is a
-                // 16-bit TIFF written frame by frame (time_axis PR 3b), not a
-                // PNG of whichever frame happened to be current.
-                IJ.log("  overview: not written for a multi-frame image yet")
+                // Checked before the first frame, as validateSettings() above
+                // is: a 32-bit projection's range cannot be accumulated, and
+                // finding out after 96 frames would cost the whole series.
+                OV.validateSeriesSettings(p.overview_method as String)
             }
         }
+        // A multi-frame series' overview is one TIFF per channel, rendered at
+        // the end from what each frame leaves in its staging directory (see
+        // Overview.writeSeries); a single frame keeps its PNGs, below.
+        boolean seriesOverview = multi && p.save_overview
+        def ovOpts = [width    : p.overview_width,
+                      height   : p.overview_height,
+                      contrast : p.overview_contrast,
+                      saturated: p.overview_saturated]
 
         // STAGING. Each frame's tables go to disk as soon as the frame is done,
         // into a directory renamed into place only once all of them are
@@ -327,7 +335,10 @@ class NucleusPipeline {
                     frame = src.frame(t)
                     def tables = [nucleus: RX.newMeasurementTable(), nucleolus: RX.newMeasurementTable()]
                     def fr = runFrame(frame, t, multi, p, dnaCh, channels, slices, tables)
-                    stageFrame(stage, t, seriesId, src.calibration, fr, tables, p)
+                    stageFrame(stage, t, seriesId, src.calibration, fr, tables, p,
+                               seriesOverview ? { File part ->
+                                   OV.stageFrame(frame, slices, p.overview_method as String, ovChannels, ovOpts, part)
+                               } : null)
                     ["nucleus", "nucleolus"].each { String feature ->
                         def got = fr[feature]
                         found[feature].rois.addAll(got.rois)
@@ -389,9 +400,30 @@ class NucleusPipeline {
         def maskPct       = multi ? "per-frame" : frameStats[0].nucleus_mask_pct
         def rejected      = frameStats.collect { it.nucleus_circ_rejected }
         def circRejected  = (rejected.every { it == "" }) ? "" : rejected.sum { (it ?: 0) as int }
-        boolean overviewWritten = p.save_overview && !multi
+        boolean overviewWritten = p.save_overview
+        // What each overview channel was displayed at, for _config.txt.
+        def ovRanges = []
         // A single frame's pixels, still open for its overview; released below.
         def imp = kept
+
+        // --- Overview TIFFs, a multi-frame series ----------------------------
+        // One display range per channel across every frame analysed, so a cell
+        // does not appear to brighten because the stretch moved. One page per
+        // frame in t order -- the frames frames_analysed names -- with this
+        // frame's outlines only on the overlay.
+        if (seriesOverview) {
+            def ov = OV.writeSeries(okTs.collect { stagedFrame(stage, it) }, okTs, outDirPath, seriesId,
+                                    ovChannels, ovOpts, src.width as int, src.height as int,
+                                    [[rois: found.nucleus.rois,   ts: found.nucleus.ts,   color: "yellow"],
+                                     [rois: found.nucleolus.rois, ts: found.nucleolus.ts, color: "magenta"]],
+                                    src.frameInterval as Double)
+            ov.each { c, r ->
+                ovRanges << ("ch" + c + ":" + IJ.d2s(r.lo as double, 1) + "-" + IJ.d2s(r.hi as double, 1))
+                IJ.log("  overview ch" + c + ": display " + IJ.d2s(r.lo as double, 1) + "-" +
+                       IJ.d2s(r.hi as double, 1) + " over " + okTs.size() + " frame(s) -> " +
+                       r.files.collect { it.getName() }.join(", "))
+            }
+        }
 
         // --- Overview PNGs ---------------------------------------------------
         // A quick visual check, not an input to anything: the chosen channels
@@ -404,7 +436,7 @@ class NucleusPipeline {
         // serves both saves -- savePng() flattens into a NEW image and leaves
         // the view untouched, so the raw copy can go out before the outlines
         // are added.
-        if (overviewWritten) {
+        if (overviewWritten && !multi) {
             def proj = OV.project(imp, slices, p.overview_method as String, ovChannels)
             ovChannels.each { int c ->
                 // width/height 0 means "the original size", and one given makes
@@ -429,6 +461,7 @@ class NucleusPipeline {
                 // is the tell -- but only if it is written down.
                 IJ.log("  overview ch" + c + ": display " + IJ.d2s(view.lo, 1) + "-" + IJ.d2s(view.hi, 1) +
                        " -> " + raw.getName() + ", " + ovl.getName())
+                ovRanges << ("ch" + c + ":" + IJ.d2s(view.lo, 1) + "-" + IJ.d2s(view.hi, 1))
             }
             proj.close(); proj.flush()   // close() alone frees nothing; see above
         }
@@ -535,13 +568,19 @@ class NucleusPipeline {
                 // OUTCOME rather than the request, it reads back as provenance
                 // rather than as a parameter, and it has been in this file
                 // since 0.2.0 beside overview_channels. The two cannot drift --
-                // they are the same expression -- save_overview, unless the
-                // image has several frames, where no PNG is written (yet).
+                // they are the same expression.
                 overview_saved         : overviewWritten,
                 // Which overview files exist, so a results folder can be read
-                // later without guessing. Blank when none were written.
+                // later without guessing. Blank when none were written. PNGs
+                // for one frame, TIFFs (one page per frame of frames_analysed)
+                // for several -- image_frames says which.
                 overview_channels      : (overviewWritten ? ovChannels.join(",") : ""),
                 overview_overlay_suffix: (overviewWritten ? OV.OVERLAY_SUFFIX : ""),
+                // The display range each channel was rendered at -- "auto"
+                // stretches whatever is there, so a channel of pure noise saves
+                // a convincing picture, and a narrow range beside a wide one is
+                // the tell. One range per channel for a whole series.
+                overview_display_range : ovRanges.join(" "),
                 // How many ROIs the circularity filter deleted, and BLANK
                 // when it was off -- "0" would claim a filter ran and found
                 // nothing to remove. The ROIs themselves are gone: unlike the R
@@ -603,7 +642,8 @@ class NucleusPipeline {
      * would hold them, then rename the frame's directory into place. A frame
      * whose directory exists is complete; a `.part` one is not.
      */
-    void stageFrame(File stage, int t, String seriesId, Object cal, Map fr, Map tables, Map p) {
+    void stageFrame(File stage, int t, String seriesId, Object cal, Map fr, Map tables, Map p,
+                    Closure overview = null) {
         def done = stagedFrame(stage, t)
         def part = new File(stage, done.getName() + ".part")
         part.deleteDir()
@@ -618,6 +658,9 @@ class NucleusPipeline {
             if (p.save_measurements) RX.saveMeasurements(tables[feature], stem + "_res.txt")
         }
         RX.saveThresholdStats([fr.stats], new File(part, "threshold_stats.tsv").getPath())
+        // The frame's share of a multi-frame overview: staged with its tables,
+        // so a frame is in the overview exactly when its results are.
+        if (overview != null) overview.call(part)
         if (!part.renameTo(done)) {
             throw new IOException("could not finish staging " + done)
         }

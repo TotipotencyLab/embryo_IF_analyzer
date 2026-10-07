@@ -253,6 +253,96 @@ check("...or that the table has no rows for it",  sumN[0].message.contains("its 
 throwsWith("a sources table from before v0.7.0 is named",
            "before v0.7.0", { runner.loadSources([[source_path: "x", series_id: "s", channel: "1", t: "1"]], sheet) })
 
+println "\n=== a multi-frame series' overview: one TIFF per channel, a page per frame ==="
+def ovParams = params + [save_overview: true, overview_width: 0, overview_height: 0,
+                         overview_contrast: "auto", overview_saturated: 0.35d, overview_method: "max"]
+def readCfg = { File f -> def m = [:]; f.eachLine { l -> def q = l.split("\t", 2); if (q.size() == 2) m[q[0]] = q[1] }; m }
+def outO = new File(tmp, "batch_ov")
+runner.run(sheet, null, ovParams + [frames: "1-3"], outO) { }
+def ovT = IJ.openImage(new File(outO, sid + "_overview_ch1.tif").getPath())
+check("a page per frame, as frames",               [ovT.getNChannels(), ovT.getNSlices(), ovT.getNFrames()], [1, 1, 3])
+check("...labelled with their t",                  (1..3).collect { ovT.getStack().getSliceLabel(it) }, ["t=1", "t=2", "t=3"])
+check("...8-bit, at the image's size",             [ovT.getBitDepth(), ovT.getWidth(), ovT.getHeight()], [8, NX, NY])
+check("...with the acquisition's frame interval",  ovT.getCalibration().frameInterval, 1800d)
+def ovO = IJ.openImage(new File(outO, sid + "_overview_ch1_overlay.tif").getPath())
+check("and an overlay TIFF, RGB, a page per frame", [ovO.getBitDepth(), ovO.getNFrames()], [24, 3])
+// The discs move 5 px a frame, so frame 1's outline is not where frame 3's is:
+// a page drawing another frame's ROIs would show it.
+def coloured = { ImagePlus im, int page, int x, int y ->
+    int v = im.getStack().getProcessor(page).getPixel(x, y); ((v >> 16) & 255) != (v & 255) }
+// Disc 1's left edge at y = 50: x = 40 + 5(t - 1) - 18, the fixture counting
+// its time points from 0.
+check("page t's outline is at frame t's disc",
+      (1..3).collect { int t -> (1..3).collect { int u -> (-1..1).any { dx -> coloured(ovO, u, 17 + 5 * t + dx, 50) } } },
+      [[true, false, false], [false, true, false], [false, false, true]])
+def cfgO = readCfg(new File(outO, sid + "_config.txt"))
+println "         (display range recorded: ${cfgO.overview_display_range})"
+check("the config says what was written",
+      [cfgO.overview_saved, cfgO.overview_channels, cfgO.frames_analysed], ["true", "1,2", "1 2 3"])
+check("...and one display range per channel",      cfgO.overview_display_range ==~ /ch1:[\d.]+-[\d.]+ ch2:[\d.]+-[\d.]+/, true)
+check("no multi-frame PNG",                        new File(outO, sid + "_overview_ch1.png").exists(), false)
+check("the single-frame row keeps its PNGs",
+      ["tif1_overview_ch1.png", "tif1_overview_ch1_overlay.png"].every { new File(outO, it).isFile() }, true)
+check("...and records its range too",              readCfg(new File(outO, "tif1_config.txt")).overview_display_range ==~ /ch1:[\d.]+-[\d.]+ ch2:[\d.]+-[\d.]+/, true)
+check("nothing left staged",                       new File(outO, ".staging").exists(), false)
+// Channel 2 brightens 100 a frame; one range for the series keeps that visible.
+def pageMean = { int page -> ovT.getStack().getProcessor(page).getStatistics().mean }
+def ov2 = IJ.openImage(new File(outO, sid + "_overview_ch2.tif").getPath())
+def means2 = (1..3).collect { ov2.getStack().getProcessor(it).getStatistics().mean }
+println "         (ch2 page means ${means2.collect { IJ.d2s(it, 1) }})"
+check("ch2 brightens across the pages",            means2[0] < means2[1] && means2[1] < means2[2], true)
+
+// The two routes to one frame: time point 2 streamed from the sources as a
+// series of one chosen frame, and the same frame as a TIFF file (tif1). Its
+// one page has the range its PNG has, so the pixels must be the PNG's.
+// Channel 1 only: channel 2 is FLAT in x-y here, and with nothing to stretch
+// ImageJ leaves whatever range the processor carried -- for the PNG, one left
+// on the projection's stack (ch1's) -- where the series uses the type's full
+// range. A real channel always has something to stretch.
+def out2 = new File(tmp, "batch_ov_t2")
+runner.run(sheet, null, ovParams + [frames: "2"], out2) { }
+[1].each { int c ->
+    def page = IJ.openImage(new File(out2, sid + "_overview_ch" + c + ".tif").getPath())
+    def png  = IJ.openImage(new File(out2, "tif1_overview_ch" + c + ".png").getPath())
+    def red  = ((ij.process.ColorProcessor) png.getProcessor()).getChannel(1, null).getPixels() as byte[]
+    check("ch" + c + ": streamed t=2's page = the TIFF route's PNG", page.getProcessor().getPixels() as byte[] == red, true)
+    def pageO = IJ.openImage(new File(out2, sid + "_overview_ch" + c + "_overlay.tif").getPath())
+    def pngO  = IJ.openImage(new File(out2, "tif1_overview_ch" + c + "_overlay.png").getPath())
+    check("ch" + c + ": ...and its overlay page = the overlay PNG",
+          pageO.getProcessor().getPixels() as int[] == pngO.getProcessor().getPixels() as int[], true)
+}
+def rng2 = { File f -> readCfg(f).overview_display_range.split(" ") }
+check("ch1's ranges agree as recorded",            rng2(new File(out2, sid + "_config.txt"))[0], rng2(new File(out2, "tif1_config.txt"))[0])
+println "         (flat ch2: series ${rng2(new File(out2, sid + "_config.txt"))[1]}, PNG ${rng2(new File(out2, "tif1_config.txt"))[1]})"
+check("a flat channel's series range is the type's full range", rng2(new File(out2, sid + "_config.txt"))[1], "ch2:0.0-65535.0")
+
+// Run_Overview_Batch, the cheap look, through the same code: its TIFF must be
+// the nucleus batch's byte for byte, as its PNGs always have been.
+println "\n=== Run_Overview_Batch draws a Luxendo series ==="
+def ovScript = new File(LIBDIR, "Run_Overview_Batch.groovy")
+def sheetF = new File(tmp, "sheet_ov.tsv"); TSV.write(sheet, sheetF, sheet[0].keySet().toList())
+def srcF = new File(tmp, "sources_ov.tsv"); TSV.write(params.sources, srcF, params.sources[0].keySet().toList())
+def outB = new File(tmp, "overview_batch"); outB.mkdirs()
+def bind = new Binding([sheetFile: sheetF, outdir: outB, imageRoot: "", zSpec: "", channelsCsv: "1,2",
+                        method: "max", contrast: "auto", saturated: 0.35d, outWidth: 0, outHeight: 0,
+                        openMode: "auto", sourcesFile: srcF, frames: "1-3",
+                        "javax.script.filename": ovScript.getAbsolutePath()])
+new GroovyShell(this.class.classLoader, bind).evaluate(
+    ovScript.readLines().findAll { !it.startsWith("#@") }.join("\n"), "Run_Overview_Batch.groovy")
+[1, 2].each { int c ->
+    def a = new File(outB, sid + "_overview_ch" + c + ".tif"), b = new File(outO, sid + "_overview_ch" + c + ".tif")
+    check("ch" + c + ": the overview batch's TIFF = the nucleus batch's, byte for byte",
+          a.isFile() && java.util.Arrays.equals(a.bytes, b.bytes), true)
+}
+check("...a PNG for the single-frame row, = the nucleus batch's",
+      java.util.Arrays.equals(new File(outB, "tif1_overview_ch1.png").bytes, new File(outO, "tif1_overview_ch1.png").bytes), true)
+check("...and no overlay: it draws no outlines",   new File(outB, sid + "_overview_ch1_overlay.tif").exists(), false)
+def sumB = TSV.read(new File(outB, "batch_summary.tsv"))
+check("its summary has a row per frame",
+      sumB.findAll { it.series_id == sid }.collect { [it.t, it.status, it.channels] },
+      [["1", "ok", "1,2"], ["2", "ok", "1,2"], ["3", "ok", "1,2"]])
+check("...and nothing left staged",                new File(outB, ".staging").exists(), false)
+
 tmp.deleteDir()
 println "\n=== ${passed} passed, ${failed} FAILED ==="
 if (failed > 0) throw new AssertionError("${failed} series-source check(s) failed")

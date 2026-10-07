@@ -224,15 +224,17 @@ test_that("count is per frame, and its plot is drawn over t", {
   expect_identical(geom(.count_plot_build(counts[counts$t == 1, ], character(0))), "GeomCol")
 })
 
-test_that("the QC montage refuses a time course rather than overlaying its frames", {
+test_that("the QC montage never overlays a time course's frames on one picture", {
   skip_if_no_sf()
   skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
   source_cli("montage_qc_cli.r")
   feat <- annotated_time_course()
+  # Since time_axis PR 3b each frame is a page; a single PNG cannot hold two,
+  # so it is refused rather than drawn with both frames on top of each other.
   expect_error(suppressMessages(montage_qc_cli(c(
     "--features", file.path(feat, "tc_features.rds"),
     "--output", file.path(withr::local_tempdir(), "m.png")))),
-    "holds 2 frames")
+    "2 frames make a multi-page montage")
 })
 
 test_that("a series table may not carry a column called t", {

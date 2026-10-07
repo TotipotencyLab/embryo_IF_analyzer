@@ -410,8 +410,10 @@ id` field or, left blank, from the image title (see below).
 <series_id>_<feature>_res.txt            measurements
 <series_id>_config.txt                   every parameter used
 <series_id>_threshold_stats.tsv          what the nucleus threshold did, per frame
-<series_id>_overview_ch<c>.png           quick-look projection      (optional)
-<series_id>_overview_ch<c>_overlay.png   the same, outlines drawn   (optional)
+<series_id>_overview_ch<c>.png           quick-look projection      (optional; one frame)
+<series_id>_overview_ch<c>_overlay.png   the same, outlines drawn   (optional; one frame)
+<series_id>_overview_ch<c>.tif           the same, a page per frame (optional; several frames)
+<series_id>_overview_ch<c>_overlay.tif   the same, outlines drawn   (optional; several frames)
 ```
 
 ⚠️ **The file stem and the outline tables' `name` column are the same string,
@@ -428,9 +430,8 @@ prefix in the file names but not in `name` would hide both files from R — no
 its own threshold, its own ROIs — and the results of every frame go into the
 same files, told apart by `t` (from 1) and by the ROI id's `TTTT-` field
 (§5). Every file carries `t`, one frame being `t = 1`, so a single-frame
-image's tables have the same shape as a time course's. A multi-frame image
-writes no overview PNG yet; that is a 16-bit TIFF still to come
-(`note/time_series_plan.md`, `time_axis` PR 3).
+image's tables have the same shape as a time course's. Its overview is a TIFF
+per channel rather than a PNG, a page per frame (below).
 
 ### Where the R side gets the series id and the feature
 
@@ -537,6 +538,46 @@ display range each PNG settled on is logged for exactly this reason. Use
 projection**, so two objects overlapping in x-y share one outline however far
 apart they are in z. It is a picture, not a count — that is the whole reason
 the montage puts it beside R's z-aware union.
+
+#### A multi-frame series: one TIFF per channel, a page per frame
+
+**Since v0.8.0.** An image of several frames gets, per channel,
+
+```
+<series_id>_overview_ch<c>.tif           8-bit grey, one page per frame
+<series_id>_overview_ch<c>_overlay.tif   RGB, the same with that frame's outlines burned in
+```
+
+— the PNG's name with the extension saying it holds frames. The pages are the
+frames `_config.txt`'s `frames_analysed` names, **in that order**, and that is
+the only record of which page is which: a page is labelled `t=<t>` inside the
+TIFF, but only ImageJ reads that label. ImageJ opens the file as a time series,
+calibrated to the reduced pixel and carrying the frame interval.
+
+**One display range per channel, across every frame**, recorded in
+`overview_display_range`. `auto` fitted per frame would make a cell appear to
+brighten because the stretch moved — over a time course that artifact looks like
+biology. The range is ImageJ's own `auto` applied to all the frames at once: for
+8- and 16-bit data ContrastEnhancer works on exact pixel values, so summing the
+frames' histograms gives exactly its answer, and for a single frame exactly the
+range its PNG would get (`Test_Overview` holds ContrastEnhancer to both, and
+`Test_SeriesSource` holds one streamed frame's page to the TIFF route's PNG,
+pixel for pixel).
+
+Nothing holds the frames. Each one leaves its projection, reduced to the
+overview size but not yet rendered, and its full-resolution histogram in its
+staging directory, and the series is rendered from those once the last frame is
+done — so a frame is on a page exactly when its results are in the tables.
+
+⚠️ `overview_method` must be `max` or `min` for a multi-frame series, and other
+methods are **refused before the first frame**: `mean`, `sum`, `sd` and `median`
+give a 32-bit projection, which ImageJ bins over its own min–max — unknown until
+the last frame, so the range cannot be accumulated. Switch `save_overview` off
+to analyse such a series with that setting.
+
+⚠️ A perfectly constant channel takes the **type's full range** here (0–65535
+for 16-bit). The PNG path keeps whatever range the projection plane carried,
+which can be another channel's.
 
 ⚠️ Contrast is `auto`, which stretches whatever is present. **A channel holding
 only noise gets that noise stretched to full brightness and saves a convincing
@@ -658,7 +699,8 @@ Fields that other code depends on:
 | `source_file`, `series_index`, `series_name` | which series of which file produced this directory. Written by the batch, **blank in the interactive runner** where the image was already open and nothing told it. Identity comes from content, not from the filename, so the series id should not have to be parsed apart to answer this |
 | `series_id` | the id this run's files are named after — the `name` column's value. **Provenance, not a parameter**: a config setting it would give every image of a batch one name. Replaced `output_basename` in v0.7.0, which an older config still carries and a reader ignores |
 | `open_method` | which reader opened the image: `importer` (Bio-Formats' own) or `reader` (one held open across the file). **Blank when the image was already open**, i.e. the interactive runner, where the operator opened it however they liked. The two are asserted to produce byte-identical output, but two runs that used different ones must not be indistinguishable afterwards |
-| `overview_channels`, `overview_overlay_suffix` | which overview PNGs exist, so a results folder can be read later without guessing. Blank when none were written |
+| `overview_channels`, `overview_overlay_suffix` | which overview files exist, so a results folder can be read later without guessing: PNGs for one frame, TIFFs for several (`image_frames` says which). Blank when none were written |
+| `overview_display_range` | the display range each overview channel was rendered at, `ch<c>:lo-hi`, space-separated — one per channel for a whole multi-frame series. `auto` stretches whatever is there, so a narrow range beside a wide one is how a channel of pure noise shows itself. Blank when none were written. **Since v0.8.0** |
 | `nucleus_threshold_used` | the pixel range the threshold **selected**, as `lo-hi`; `per-slice <lo>..<hi>` (note the `..`) when `nucleus_stack_histogram` is off, since there were as many thresholds as slices and none of them is the answer. Not the algorithm's bare number: for bright objects that number is the *bottom* of the range and the top is the type's maximum, so the pair is what can be copied into a manual threshold without working out which end it was. The literal **`none`** when the frame had nothing to separate (see below) — a word, not a range, so it cannot be pasted anywhere by mistake |
 | `nucleus_threshold_used`, `nucleus_mask_pct` with several frames | the literal **`per-frame`** — there is one of each per frame, in `_threshold_stats.tsv`. A word, not a number, like `none`; `nucleus_count`, `nucleolus_count` and `nucleus_circ_rejected` are then totals |
 | `nucleus_mask_pct` | percent of pixels the threshold selected, **before** fill holes and watershed, because the question it answers is what the threshold chose. The cheap signal that one went wrong in either direction: `0.00` selected nothing (a blank field), a number in the tens selected the frame rather than the objects in it. Neither shows up in an ROI count — the size filter turns both into "no nuclei" |
@@ -748,7 +790,8 @@ Projections and nothing else: no threshold, no particles, no measurement, no
 ROI files. It writes
 
 ```
-<series_id>_overview_ch<N>.png
+<series_id>_overview_ch<N>.png      a series of one frame
+<series_id>_overview_ch<N>.tif      a series of several, a page per frame (§2)
 ```
 
 — the **same names** the nucleus path writes for its raw overview, and that is
@@ -756,9 +799,14 @@ load-bearing rather than a coincidence. Both go through
 `Overview.overviewPath()`, and for the same projection, size and contrast
 settings the two produce byte-identical PNGs (verified on the fixture, both
 channels). A file from either runner is interchangeable to anything downstream,
-so a montage or a QC panel need not know which one made it. No suffix parameter
+so a montage or a QC panel need not know which one made it. The same holds for
+the multi-frame TIFF, byte for byte (`Test_SeriesSource`). No suffix parameter
 is offered: the suffix exists to mark that outlines were drawn, and nothing here
 draws any.
+
+It takes the nucleus batch's `sourcesFile` and `frames` (since v0.8.0), so a
+Luxendo position can be looked at frame by frame without converting it; a
+series of one frame is drawn whatever `frames` says.
 
 **`batch_summary.tsv` has a fixed frame and a variable middle.** Every batch
 writes `series_id`, `t`, `path`, `series_index`, `status`, `open_method` first and
@@ -773,8 +821,12 @@ For this runner the middle is:
 | Column | Meaning |
 |---|---|
 | `channels` | the channels projected, comma separated, in the order written |
-| `png_size` | `<width>x<height>` of the PNG actually written, after any resize |
-| `display_range` | per channel, `ch<N>:lo-hi` — the display window the contrast setting chose |
+| `png_size` | `<width>x<height>` of the PNG actually written, after any resize — of each page, for a TIFF |
+| `display_range` | per channel, `ch<N>:lo-hi` — the display window the contrast setting chose; for a multi-frame series the series' one range, repeated on each frame's row |
+
+A multi-frame series has **a row per frame**, as in the nucleus batch: a frame
+that could not be read is `failed` on its own row and is absent from the TIFF,
+and the rest are still drawn.
 
 `display_range` is there because `auto` contrast stretches whatever it is given:
 a channel holding only noise has that noise stretched to full range and saves a
@@ -921,7 +973,7 @@ both runners give identical per-feature statistics and identical channel signals
 ```
 <outdir>/<series_id>_features.rds     sf, one row per ROI      <- canonical
 <outdir>/<series_id>_features_qc.png  only with --qc_plot, one frame
-<outdir>/<series_id>_features_qc_t<TTTT>.png  only with --qc_plot, one per frame of several
+<outdir>/<series_id>_features_qc.tif  only with --qc_plot, several frames: a page each
 <outdir>/<output_prefix>features.tsv  the same, geometry dropped
 ```
 
@@ -950,11 +1002,11 @@ cannot read R. Columns, in both:
 `define_feature_group()` returns is **not** — see the `sf` primer note.
 
 The QC plot draws one image, so a series of several frames gets **one per
-frame**, all over the same extent and in the same colours, so that flicking
-through them shows the objects moving rather than the axes. The frame goes after
-the plot name: `<id>_t0001_features_qc.png` would equally be the plot of a
-per-frame TIFF's series `<id>_t0001`. A frame with no valid feature still gets
-its plot. `--within` relates each frame on its own: the same nucleus one time
+frame**, as the pages of one 8-bit TIFF in `t` order (since time_axis PR 3b;
+PR 2 wrote a PNG each, `<id>_features_qc_t<TTTT>.png` — 96 per series was
+clutter). Every page is drawn over the same extent and in the same colours, so
+that flicking through them shows the objects moving rather than the axes. A
+frame with no valid feature still gets its page. `--within` relates each frame on its own: the same nucleus one time
 point later sits in nearly the same place, so it would score, and could win.
 
 ### `count_features_cli.r`
@@ -1227,9 +1279,18 @@ different settings can be compared with `--facet source_file`.
 
 ### `montage_qc_cli.r`
 
-Three renderings of one image, so a features file holding **several frames is
-refused**: they would be drawn on top of each other, beside an overview a
-multi-frame image does not have.
+Three renderings of one image. A features file holding **several frames** gets
+one montage per frame, as the pages of one 8-bit TIFF — `--output` must then end
+`.tif`, and naming a `.png` is refused rather than drawing the frames on top of
+each other. `--t` chooses frames (`2,11,21`, `1-4`, from 1, as `t` counts); one
+chosen frame may be written as a PNG.
+
+The Fiji panels are then the multi-frame overview TIFFs (§2), and a page is
+matched to a `t` through `_config.txt`'s `frames_analysed` — so the config is
+required, an overview whose page count differs from it is refused (a PNG beside
+a time course is one page), and so is a `--t` the run did not analyse. Panel
+(iii) holds that frame's features alone. The extent and the class colours are
+the series', the same on every page; each page's title adds `t = <t>`.
 
 Panel (iii) takes the same `--feature_table` / `--feature_class_by` /
 `--class_sep` as `count_features_cli.r`, so an outline can be coloured by
@@ -1274,9 +1335,10 @@ before ggplot sees it; one naming a class that is not present warns.
 
 
 
-One PNG, panels left to right: raw z-projection, Fiji overlay, R union. The
-first two are the Fiji overview pair described in §2 — `--projection` takes the
-unsuffixed PNG and `--overlay` the `_overlay` one, both for the same channel.
+One PNG (one TIFF page per frame for a time course), panels left to right: raw
+z-projection, Fiji overlay, R union. The first two are the Fiji overview pair
+described in §2 — `--projection` takes the unsuffixed file and `--overlay` the
+`_overlay` one, both for the same channel.
 
 ---
 

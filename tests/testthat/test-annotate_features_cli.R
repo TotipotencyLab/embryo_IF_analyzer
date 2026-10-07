@@ -264,11 +264,15 @@ test_that("several frames are grouped one frame at a time, and numbered on", {
   expect_identical(unname(unique(res$feature_id[res$t == 2])), "nucleus_0002")
   expect_identical(colnames(res)[1:3], c("roi", "t", "z"))
   expect_true(any(grepl("2 feature(s) over 2 frames", msgs, fixed = TRUE)))
-  # One QC plot per frame, the frame after the plot name -- and no plot of
-  # both frames drawn on top of each other.
-  expect_identical(sort(list.files(out, pattern = "_qc.*\\.png$")),
-                   c("tl_features_qc_t0001.png", "tl_features_qc_t0002.png"))
-  expect_true(any(grepl("2 QC plots, one per frame", msgs, fixed = TRUE)))
+  # One QC plot per frame, as the pages of one TIFF -- no PNGs, and no plot
+  # of both frames drawn on top of each other.
+  expect_identical(list.files(out, pattern = "_qc"), "tl_features_qc.tif")
+  skip_if_no_pkg("magick")
+  qc <- magick::image_read(file.path(out, "tl_features_qc.tif"))
+  expect_identical(length(qc), 2L)
+  info <- magick::image_info(qc)
+  expect_identical(unique(info$width), 900L)           # 6 in x 150 dpi, every page
+  expect_true(any(grepl("tl_features_qc.tif (2 pages, one per frame)", msgs, fixed = TRUE)))
 })
 
 test_that("a frame with no valid feature still gets its QC plot", {
@@ -288,9 +292,16 @@ test_that("a frame with no valid feature still gets its QC plot", {
   suppressWarnings(suppressMessages(annotate_features_cli(c(
     "--input", d, "--feature", "nucleus", "--outdir", out,
     "--min_z_span", "default=2", "--qc_plot"))))
-  png <- file.path(out, c("gap_features_qc_t0001.png", "gap_features_qc_t0002.png"))
-  expect_true(all(file.exists(png)))
-  expect_gt(file.size(png[2]), 5000)      # a drawing, not an empty canvas
+  skip_if_no_pkg("magick")
+  qc <- magick::image_read(file.path(out, "gap_features_qc.tif"))
+  expect_identical(length(qc), 2L)
+  # Page 2 shows its rejected ROIs, drawn in the grey per-ROI layer. Counted as
+  # light-grey pixels: measured 5100 on this page against 326 on a page holding
+  # only a title and 792 on page 1, whose ROIs are mostly under a coloured union.
+  px <- as.integer(magick::image_data(qc[2], channels = "rgb"))
+  light_grey <- sum(px[, , 1] == px[, , 2] & px[, , 2] == px[, , 3] &
+                    px[, , 1] >= 180 & px[, , 1] <= 225)
+  expect_gt(light_grey, 2000)
 })
 
 test_that("a one-frame v0.8.0 outline keeps its t on every feature row", {

@@ -416,12 +416,12 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     message("    -> ", basename(rds_path))
     
     # One picture per image, so one per FRAME of a time course: drawn together,
-    # the same nucleus at 96 time points reads as one blot.
+    # the same nucleus at 96 time points reads as one blot. The frames are the
+    # pages of one TIFF -- 96 PNGs per series is clutter.
     n_frames <- length(unique(series_sf$t))
     if (argv$qc_plot && n_frames > 1) {
-      paths <- .qc_plot_frames(series_sf, sid, outdir)
-      message("    -> ", length(paths), " QC plots, one per frame: ",
-              basename(paths[1]), " .. ", basename(paths[length(paths)]))
+      path <- .qc_plot_frames(series_sf, sid, outdir)
+      message("    -> ", basename(path), " (", n_frames, " pages, one per frame)")
     } else if (argv$qc_plot) {
       png_path <- file.path(outdir, paste0(sid, "_features_qc.png"))
       .qc_plot(series_sf, sid, png_path)
@@ -548,12 +548,8 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   invisible(path)
 }
 
-#' One QC plot per frame of a time course: <sid>_features_qc_t<TTTT>.png
-#'
-#' The frame goes AFTER the plot name, not after the series id: the per-frame
-#' TIFFs Make_LuxendoTiff writes are series named <id>_t<TTTT>, so
-#' <id>_t0001_features_qc.png would be that series' plot as much as frame 1 of
-#' <id>'s.
+#' The QC plot of a time course: <sid>_features_qc.tif, one page per frame in
+#' t order, 8-bit (mg_write()).
 #'
 #' Every frame is drawn over the SAME extent, taken from the whole series, and
 #' with the same colour for each feature type -- flicking between frames must
@@ -561,8 +557,9 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 #' feature still gets its plot, showing the ROIs that were rejected: a frame
 #' missing from a run of 96 is not something anyone notices.
 #'
-#' @return The paths written, in t order.
+#' @return The path written.
 .qc_plot_frames <- function(series_sf, sid, outdir) {
+  .cli_need("magick")
   bb  <- sf::st_bbox(series_sf)
   pad <- 0.02 * max(bb["xmax"] - bb["xmin"], bb["ymax"] - bb["ymin"])
   xlim <- unname(c(bb["xmin"] - pad, bb["xmax"] + pad))
@@ -576,7 +573,9 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   palette <- stats::setNames(scales::hue_pal()(length(types)), types)
 
   frames <- sort(unique(series_sf$t))
-  paths <- character(0)
+  pages <- vector("list", length(frames))
+  tmp <- tempfile(fileext = ".png")
+  on.exit(unlink(tmp), add = TRUE)
   for (t in frames) {
     fr <- series_sf[series_sf$t == t, ]
     valid <- .cli_valid_rows(fr)
@@ -588,11 +587,14 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
         subtitle = paste0("t = ", t, " (frame ", match(t, frames), " of ", length(frames), "): ",
                           nrow(fr), " ROIs -> ", if (is.null(unioned)) 0 else nrow(unioned),
                           " features"))
-    path <- file.path(outdir, sprintf("%s_features_qc_t%04d.png", sid, as.integer(t)))
-    ggplot2::ggsave(path, p, width = 6, height = 6, dpi = 150)
-    paths <- c(paths, path)
+    # Rendered as the single-frame plot is, to a PNG, then read back as a page:
+    # every page the same size, and the same pixels a PNG would have held.
+    ggplot2::ggsave(tmp, p, width = 6, height = 6, dpi = 150)
+    pages[[match(t, frames)]] <- magick::image_read(tmp)
   }
-  return(paths)
+  path <- file.path(outdir, paste0(sid, "_features_qc.tif"))
+  mg_write(do.call(c, pages), path)
+  return(path)
 }
 
 if (!interactive() && sys.nframe() == 0L) annotate_features_cli()

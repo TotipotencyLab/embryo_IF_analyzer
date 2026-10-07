@@ -98,7 +98,7 @@ reference and comparison but are no longer the primary path.
 | `RoiExport.groovy` | outline `.txt`, ROI `.zip`, measurement `.txt` |
 | `RoiDetect.groovy` | mask building (blur, threshold, fill holes, watershed) and particle detection |
 | `Run_Overview.groovy` | quick-look PNG: z-projection with detected outlines drawn on |
-| `Run_Overview_Batch.groovy` | overview PNGs for every included row of a series table, and nothing else — see a dataset without segmenting it |
+| `Run_Overview_Batch.groovy` | overview PNGs (a TIFF per channel for a time-lapse) for every included row of a series table, and nothing else — see a dataset without segmenting it |
 | `Overview.groovy` | projection, contrast, resize, outline drawing, PNG export |
 | `Inspect_ImageFile.groovy` | list the series in a file and their dimensions, without loading pixels |
 | `Inspect_Session.groovy` | report open images, the active image, ROI Manager and measurement settings |
@@ -149,6 +149,13 @@ the outlines come from DNA and drawing them over the other channels is how you
 check a signal against the compartment it should be in. Both are wanted at once
 by `montage_qc_cli.r`, which is why they are separate files.
 
+A **time-lapse** gets a TIFF per channel instead — `_overview_ch1.tif` and
+`_overview_ch1_overlay.tif`, a page per frame analysed — drawn at **one display
+range per channel across all the frames**, so a cell does not seem to brighten
+just because each frame was stretched on its own. `montage_qc_cli.r` then writes
+a page per frame too (`--output ….tif`; `--t` to choose frames), and
+`annotate_features_cli.r --qc_plot` writes `<series_id>_features_qc.tif`.
+
 The QC montage is **titled with the series id** by default (`--title` to
 override, `--no_title` to omit) — three panels and their captions say what each
 panel is, but nothing in the picture says which series it belongs to once it is
@@ -177,7 +184,9 @@ detection settings: a tile-merged slide costs minutes per series to segment and
 needs a config you cannot write until you have seen the images. The PNGs carry
 the same `<series_id>_overview_ch<N>.png` names the nucleus path writes, and for
 the same settings are byte-identical to them, so nothing reading one has to
-know which runner produced it.
+know which runner produced it. It takes `sourcesFile` and `frames` as the
+nucleus batch does, so a Luxendo position can be looked at a few time points at
+a time.
 
 ```bash
 ImageJ-macosx --headless --console \
