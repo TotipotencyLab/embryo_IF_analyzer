@@ -901,7 +901,7 @@ change to how a series is read can be reviewed apart from what is drawn.
       96 loses all 90. It is also what makes PR 4 cheap: a frame is done
       exactly when its staged files exist. *3a:* `<outdir>/.staging/<series_id>/
       t<TTTT>.part` renamed to `t<TTTT>`, joined as text (ROI zips entry by
-      entry), deleted after; a leftover is discarded until PR 4 resumes from it.
+      entry), deleted after; a leftover is resumed from (PR 4).
       Every image is staged, one frame too — one path, not two.
 - [x] 🔒 **The overview of a multi-frame series is written by the batch,
       rendered** — revised 2026-10-07 (§6.21 reversed): once 3a staged every
@@ -938,14 +938,28 @@ could not hold it whole — the proof that nothing loads the series.
 
 Decided 2026-10-02: record the frames that succeeded, and resume from them.
 
-- [ ] A rerun skips frames whose staged files exist and deletes leftover
-      temporary files; `batch_summary.tsv` marks them as done earlier.
-- [ ] ⚠️ **Refuse to resume under different settings**: a fingerprint of the
+- [x] A rerun skips frames whose staged files exist and deletes leftover
+      temporary files; `batch_summary.tsv` marks them as done earlier. *4:* the
+      batch resumes by default; a skipped frame is read back from its staged
+      ROI zip — now staged whatever `save_roi_zips` says, and joined only when
+      it is on — and its `threshold_stats.tsv` row, checked against each
+      other; `status` stays `ok`, `message` says `staged by an earlier run`,
+      `seconds` is blank. A multi-frame series only: a single frame and the
+      interactive runner start afresh. A failure outside a frame keeps the
+      staging, so a series that died at the join resumes straight to the join.
+- [x] ⚠️ **Refuse to resume under different settings**: a fingerprint of the
       run's parameters is kept with the staging, and a rerun whose parameters
       differ stops — otherwise one series' results mix frames analysed two ways.
-      A `restart` option discards the staging instead.
-- [ ] **The test**: stop a synthesised run deliberately at frame k, resume,
+      A `restart` option discards the staging instead. *4:* `settings.txt`,
+      readable rather than a hash so the refusal names each difference: every
+      `PARAM_TYPES` key, `VERSION` and ImageJ's, and the image's identity and geometry. Not
+      the frame selection, nor `open_method` (held to identical bytes). Staged
+      frames without it are refused too.
+- [x] **The test**: stop a synthesised run deliberately at frame k, resume,
       and assert the final files are byte-identical to an uninterrupted run.
+      *4:* `Test_NucleusPipeline` (stopped after frame 2 of 4, a half-written
+      frame 3 planted; zips compared by entry, configs without the timestamp);
+      `Test_SeriesSource` through the batch, on a run that died at the join.
 
 #### PR 5 — `time_axis-threshold_scope`
 

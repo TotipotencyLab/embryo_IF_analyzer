@@ -6,6 +6,7 @@
 #@ String  (persist=false, label="Image opening method", value="auto", choices={"auto","importer","reader"}) openMode
 #@ File    (persist=false, label="Sources table (sources.tsv; Luxendo only, blank = none)", style="file", required=false) sourcesFile
 #@ String  (persist=false, label="Time points (blank = all)", description="Which frames of a multi-frame series to analyse: 1, or 2,11,21, or 1-4 -- counted from 1, and reported as themselves (t = 11 is time point 11). A series of one frame is analysed whatever this says.", value="") frames
+#@ Boolean (persist=false, label="Restart unfinished series", description="A series an interrupted run left unfinished normally carries on from the frames it finished, and is refused if it was run with other settings. Tick to discard those frames and analyse every frame again.", value=false) restart
 
 // Run_NucleusSelector_Batch.groovy
 //
@@ -101,6 +102,9 @@ if (sourcesFile != null && sourcesFile.isFile()) {
 // like include, not about how an image is analysed. _config.txt records the
 // frames each series' results hold (frames_analysed).
 params.frames = frames
+// Also a choice about this batch, not a run parameter: what to do with the
+// frames an interrupted run of a series staged (NucleusPipeline.runSource).
+params.restart = restart
 
 def res = BR.load(LIBDIR).run(rows, root, params, outdir) { IJ.log(it) }
 

@@ -766,8 +766,8 @@ a frame (excluded, or it failed to open) is one row with `t` blank.
 | `threshold` | the pixel range the nucleus threshold **selected**, `lo-hi`, same syntax the manual threshold takes; `none` when the frame had nothing to separate. Blank when the row did not run |
 | `mask_pct` | percent of pixels inside that range, measured **before** fill holes and watershed. Blank when the row did not run |
 | `n_nucleus`, `n_nucleolus` | counts, blank when the row did not run |
-| `seconds` | wall time for that frame (for a single frame, the image, opening included) |
-| `message` | for `failed`, the exception, flattened to one line |
+| `seconds` | wall time for that frame (for a single frame, the image, opening included); blank for a frame an earlier run staged and this one resumed from |
+| `message` | for `failed`, the exception, flattened to one line; `staged by an earlier run` for an `ok` frame this run did not redo (below) |
 
 A row or a frame failing does not stop the batch. On a long run this file, not
 the log, is what says which images need attention.
@@ -775,8 +775,22 @@ the log, is what says which images need attention.
 **Frames are staged while a series runs.** Each finished frame's tables go to
 `<outdir>/.staging/<series_id>/t<TTTT>/` at once, and the series' files are
 those frames joined in `t` order when it finishes — byte for byte what one pass
-would have written. The staging is deleted after the join; one left behind is a
-run that died, and is discarded by the next run of that series.
+would have written. The staging is deleted after the join.
+
+**A rerun resumes a multi-frame series a run left unfinished** (since v0.8.0).
+A staging left behind is a run that died — killed, or failed at the join — and
+the next batch run of that series keeps its finished frames, reads only the
+others, and discards half-written ones (`t<TTTT>.part`). Its files are the same
+bytes an uninterrupted run writes. Beside the frames, `settings.txt` records
+what decides their contents: every run parameter, the code version (`VERSION`)
+and ImageJ's, and the image (source, series, dimensions, pixel size). A rerun under any other
+value is **refused** before it reads a frame — the row fails, naming each
+difference — because one series' files would otherwise hold frames analysed two
+ways. Staged frames with no `settings.txt` are refused the same way. The batch's
+**`restart`** discards the staging and analyses every frame again. Which frames
+is not a setting: a resume may ask for others, and staged frames it does not ask
+for are not joined. A frame that failed is not staged, so a rerun tries it again.
+A single-frame series, and the interactive runner, always start afresh.
 
 The batch's **`frames`** chooses time points of a multi-frame series (`1`,
 `2,11,21`, `1-4`, from 1; blank = all), as `Make_LuxendoTiff`'s does — but here

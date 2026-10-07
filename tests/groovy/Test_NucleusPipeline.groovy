@@ -615,6 +615,158 @@ try { RX.saveRoiZip([oneRoi, oneRoi], ["dup", "dup"], zipPath) } catch (Throwabl
 check("a repeated name throws",                 zipErr != null, true)
 check("...and leaves no zip and no part file",  zipDir.list().toList(), [])
 
+println ""
+println "=== resume: an interrupted series carries on from the frames it staged ==="
+// The time-lapse again, with a dim spot in each disc so nucleoli are found too:
+// a resumed frame has to give back BOTH features' ROIs, and the overlay TIFF
+// draws them.
+def makeSpotImp = { String title ->
+    def imp = makeTimeImp(title)
+    (1..4).each { int t ->
+        (1..3).each { int z ->
+            def ip = imp.getStack().getProcessor(imp.getStackIndex(1, z, t))
+            ip.setColor(60)
+            ip.fill(new OvalRoi(30 + 5 * t + 18, 48, 12, 12))
+            ip.fill(new OvalRoi(138, 110 + 5 * t + 18, 12, 12))
+        }
+    }
+    return imp
+}
+def rsParams = mParams + [series_id: "rs", save_overview: true, nucleoli_enabled: true]
+def SS = pipe.SS
+def rsImp = makeSpotImp("rs")
+// The source, watched: which frames were read, and -- for the interrupted run --
+// the run dying after frame `stopAfter`. It dies from release(), outside the
+// per-frame catch, which is the path a killed run's staging is left by.
+def watched = { int stopAfter ->
+    def inner = SS.ofImage(rsImp, "", false)
+    def read = []
+    def w = new Expando()
+    ["title", "whole", "nFrames", "nSlices", "nChannels", "width", "height", "calibration",
+     "frameList", "frameInterval", "frameUnit"].each { w[it] = inner[it] }
+    w.choose  = { List wanted -> inner.choose(wanted) }
+    w.frame   = { int t -> read << t; inner.frame(t) }
+    w.release = { ImagePlus f ->
+        inner.release(f)
+        if (stopAfter > 0 && read && read[-1] == stopAfter)
+            throw new IllegalStateException("simulated: the run dies after frame " + stopAfter)
+    }
+    w.read = read
+    return w
+}
+def interrupt = { File out, Map params, int k ->
+    String err = null
+    try { pipe.runSource(watched(k), out, params, null, true) } catch (Throwable e) { err = e.getMessage() }
+    return err
+}
+// Zip entries, not zip bytes: ZipOutputStream stamps each entry with the time it
+// was written, so two uninterrupted runs differ there too.
+def zipEntries = { File f ->
+    def zis = new java.util.zip.ZipInputStream(new FileInputStream(f)), m = [:]
+    try {
+        def e
+        while ((e = zis.getNextEntry()) != null) {
+            def buf = new ByteArrayOutputStream(); byte[] b = new byte[8192]; int n
+            while ((n = zis.read(b)) > 0) buf.write(b, 0, n)
+            m[e.getName()] = buf.toByteArray().encodeHex().toString()
+        }
+    } finally { zis.close() }
+    return m
+}
+// Every file the series wrote, as comparable values: bytes, zip entries, and
+// the config without its timestamp.
+def written = { File out ->
+    out.listFiles().findAll { it.isFile() }.sort { it.getName() }.collectEntries { File f ->
+        def v = f.getName().endsWith(".zip") ? zipEntries(f)
+              : f.getName().endsWith("_config.txt") ? f.readLines().findAll { !it.startsWith("timestamp\t") }
+              : f.getBytes().encodeHex().toString()
+        [(f.getName()): v]
+    }
+}
+def stageOf = { File out -> new File(new File(out, NP.STAGING_DIR), "rs") }
+
+// The reference: one uninterrupted run.
+def rsRef = new File(tmp, "rs_ref"); rsRef.mkdirs()
+def wRef = watched(-1)
+def resRef = pipe.runSource(wRef, rsRef, rsParams, null, false)
+def ref = written(rsRef)
+check("reference read every frame",             wRef.read, [1, 2, 3, 4])
+check("reference found nucleoli (so they are tested)", resRef.nuclRois.size() > 0, true)
+println "    reference: " + resRef.nucRois.size() + " nuclei, " + resRef.nuclRois.size() + " nucleoli, " +
+        ref.size() + " files"
+
+// Interrupted after frame 2, then a half-written frame 3 planted, as a kill
+// mid-write leaves one.
+def rsOut = new File(tmp, "rs_resumed"); rsOut.mkdirs()
+def errI = interrupt(rsOut, rsParams, 2)
+check("the interrupted run died",               errI?.startsWith("simulated"), true)
+check("...leaving frames 1 and 2 staged, and its settings",
+      stageOf(rsOut).list().sort().toList(), ["settings.txt", "t0001", "t0002"])
+check("...and no series file written",          rsOut.listFiles().findAll { it.isFile() }.size(), 0)
+def junk = new File(stageOf(rsOut), "t0003.part"); junk.mkdirs()
+new File(junk, "nucleus_res.txt").setText("half a table")
+
+def wRes = watched(-1)
+def resRes = pipe.runSource(wRes, rsOut, rsParams, null, true)
+check("the resumed run read only frames 3 and 4", wRes.read, [3, 4])
+check("...every file the same as the uninterrupted run's", written(rsOut), ref)
+check("...including the ROIs it returns",       [resRes.nucNames, resRes.nuclNames], [resRef.nucNames, resRef.nuclNames])
+check("...frames 1-2 marked as an earlier run's, with no time",
+      resRes.frames.collect { [it.t, it.status, it.message, it.seconds] }.take(2),
+      [[1, "ok", NP.RESUMED_MESSAGE, null], [2, "ok", NP.RESUMED_MESSAGE, null]])
+check("...frames 3-4 as this run's",            resRes.frames.drop(2).collect { [it.t, it.status, it.message] },
+      [[3, "ok", ""], [4, "ok", ""]])
+check("...and the staging gone",                new File(rsOut, NP.STAGING_DIR).exists(), false)
+// The joined ROI zip and the overlay are compared above; this says the
+// comparison had something in it.
+check("...the overlay TIFFs among what was compared",
+      ref.keySet().findAll { it.endsWith("_overlay.tif") }.size(), 2)
+
+// Other settings: refused before a frame is read, the staging untouched. Then
+// restart discards it.
+def rsOther = new File(tmp, "rs_other"); rsOther.mkdirs()
+interrupt(rsOther, rsParams, 2)
+def wOther = watched(-1)
+String errO = null
+try { pipe.runSource(wOther, rsOther, rsParams + [nucleus_blur_sigma: 1.0d], null, true) }
+catch (IllegalStateException e) { errO = e.getMessage() }
+println "    refusal: " + errO
+check("other settings are refused",             errO?.contains("nucleus_blur_sigma '0.0' then, '1.0' now"), true)
+check("...naming only what differs",            errO?.count(" then, "), 1)
+check("...before a frame is read",              wOther.read, [])
+check("...leaving the staged frames alone",     stageOf(rsOther).list().sort().toList(), ["settings.txt", "t0001", "t0002"])
+def wRestart = watched(-1)
+pipe.runSource(wRestart, rsOther, rsParams + [nucleus_blur_sigma: 1.0d], null, false)
+check("restart reads every frame",              wRestart.read, [1, 2, 3, 4])
+check("...and its config has the new setting",  readCfg(new File(rsOther, "rs_config.txt")).nucleus_blur_sigma, "1.0")
+
+// Frames staged with no record of their settings -- as 0.8.0-dev before this
+// wrote one -- are refused too: nobody can vouch for them.
+def rsBare = new File(tmp, "rs_bare"); rsBare.mkdirs()
+interrupt(rsBare, rsParams, 2)
+new File(stageOf(rsBare), NP.STAGING_SETTINGS).delete()
+String errB = null
+try { pipe.runSource(watched(-1), rsBare, rsParams, null, true) } catch (IllegalStateException e) { errB = e.getMessage() }
+check("staged frames without settings are refused", errB?.contains("without recording its settings"), true)
+
+// A resume may ask for other frames than the run it continues: 2 is reused,
+// 3 analysed, and 1 -- staged but not asked for -- is not joined.
+def rsSome = new File(tmp, "rs_some"); rsSome.mkdirs()
+interrupt(rsSome, rsParams, 2)
+def wSome = watched(-1)
+pipe.runSource(wSome, rsSome, rsParams, [2, 3], true)
+check("a resume over frames 2-3 reads only 3",  wSome.read, [3])
+check("...and its results hold 2 and 3",        readCfg(new File(rsSome, "rs_config.txt")).frames_analysed, "2 3")
+check("...outline t is 2 and 3",
+      readTsv(new File(rsSome, "rs_nucleus_outline.txt")).rows.collect { it.t }.unique(), ["2", "3"])
+
+// The zip is staged for every frame now, for the resume to read; it must still
+// not be WRITTEN when save_roi_zips is off.
+def rsNoZip = new File(tmp, "rs_nozip"); rsNoZip.mkdirs()
+pipe.runSource(watched(-1), rsNoZip, rsParams + [save_roi_zips: false], null, true)
+check("save_roi_zips off writes no zip",        rsNoZip.list().findAll { it.endsWith(".zip") }.toList(), [])
+check("...but the outlines",                    new File(rsNoZip, "rs_nucleus_outline.txt").isFile(), true)
+
 def unpaired = []
 ["scripts/groovy/NucleusPipeline.groovy",
  "scripts/groovy/Overview.groovy",

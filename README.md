@@ -122,7 +122,11 @@ keep two runs apart, type the id you want or use another output directory.
 ```
 
 A time-lapse is analysed frame by frame into the same files, told apart by `t`.
-Channel, z and t all count from 1, as Fiji shows them.
+Channel, z and t all count from 1, as Fiji shows them. If a batch run of one is
+interrupted, running the batch again carries on from the frames it finished —
+provided the settings are the same; under other settings it stops and says
+which differ. `restart` starts that series over instead
+([`note/data_formats.md`](note/data_formats.md), *Frames are staged*).
 
 The `name` column holds the same id, and the R side relies on that to find the
 `_res.txt` and `_config.txt` beside an outline table.

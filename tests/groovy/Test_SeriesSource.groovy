@@ -231,6 +231,61 @@ check("...and so does the outline table",
 check("nothing left staged after a partial series", new File(outF, ".staging").exists(), false)
 bad.delete(); keep.renameTo(bad)
 
+println "\n=== a rerun resumes a series an earlier batch left unfinished ==="
+// The earlier batch dies at the JOIN, after every frame is staged -- the way a
+// heap too small for the overview TIFFs ends one. Provoked by a directory where
+// the join writes its temporary file.
+def lxRows = sheet.findAll { it.series_id == sid }
+def outR = new File(tmp, "batch_ref")
+runner.run(lxRows, null, params, outR) { }
+def dieAtJoin = { File o, Map ps ->
+    def block = new File(o, sid + "_nucleus_outline.txt.part"); block.mkdirs()
+    new File(block, "x").setText("x")
+    def r = runner.run(lxRows, null, ps, o) { }
+    block.deleteDir()
+    return r
+}
+def outJ = new File(tmp, "batch_resume")
+def resJ = dieAtJoin(outJ, params)
+def sumJ = TSV.read(new File(outJ, "batch_summary.tsv"))
+check("the first batch's row failed at the join",  [resJ.failed, sumJ[0].status], [1, "failed"])
+check("...leaving all three frames staged",
+      new File(outJ, ".staging/" + sid).list().findAll { it ==~ /t\d{4}/ }.sort(), ["t0001", "t0002", "t0003"])
+def resJ2 = runner.run(lxRows, null, params, outJ) { }
+def sumJ2 = TSV.read(new File(outJ, "batch_summary.tsv"))
+check("the rerun resumed them: ok, no time, and why",
+      sumJ2.collect { [it.t, it.status, it.seconds, it.message] },
+      (1..3).collect { [it.toString(), "ok", "", NP.RESUMED_MESSAGE] })
+check("...with the counts the frames recorded",    sumJ2.collect { it.n_nucleus }, ["6", "6", "6"])
+def tables = { File o -> ["_nucleus_outline.txt", "_nucleus_res.txt", "_threshold_stats.tsv"]
+                         .collect { new File(o, sid + it).getText("UTF-8") } }
+check("...and wrote the uninterrupted batch's tables", tables(outJ) == tables(outR), true)
+check("...nothing left staged",                    new File(outJ, ".staging").exists(), false)
+
+// restart: the same leftover, analysed again.
+def outK = new File(tmp, "batch_restart")
+dieAtJoin(outK, params)
+runner.run(lxRows, null, params + [restart: true], outK) { }
+def sumK = TSV.read(new File(outK, "batch_summary.tsv"))
+check("restart analyses every frame again",
+      sumK.collect { [it.status, it.message, it.seconds != ""] }, (1..3).collect { ["ok", "", true] })
+check("...to the same tables",                     tables(outK) == tables(outR), true)
+
+// Other settings: the row is refused, the batch goes on, the staging is kept.
+def outL = new File(tmp, "batch_other")
+dieAtJoin(outL, params)
+def resL = runner.run(lxRows, null, params + [nucleus_particle_size: "6-Infinity"], outL) { }
+def sumL = TSV.read(new File(outL, "batch_summary.tsv"))
+println "  message: " + sumL[0].message
+check("other settings fail the row",               [resL.failed, sumL[0].status, sumL[0].t], [1, "failed", ""])
+check("...saying what differs",
+      sumL[0].message.contains("nucleus_particle_size '5-Infinity' then, '6-Infinity' now"), true)
+check("...and keep the staged frames",
+      new File(outL, ".staging/" + sid).list().findAll { it ==~ /t\d{4}/ }.size(), 3)
+// The string "false" is truthy in Groovy; it must not discard anything.
+def resL2 = runner.run(lxRows, null, params + [nucleus_particle_size: "6-Infinity", restart: "false"], outL) { }
+check("restart='false' (a string) does not restart", resL2.failed, 1)
+
 println "\n=== membership decides, never the look of a path ==="
 // The Luxendo row WITHOUT the sources table: its path is a directory, which is
 // not an image file -- and the message says so, rather than trying to open it.

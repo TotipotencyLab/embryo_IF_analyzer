@@ -485,6 +485,13 @@ class BatchRunner {
         // Which time points of a multi-frame series to analyse; parsed ONCE,
         // so a typo costs one message rather than one per row.
         def wanted = TA.parseFrames(params.frames)
+        // A series an interrupted run left unfinished carries on from the
+        // frames it staged, unless `restart` says to discard them. Not a run
+        // parameter: like `frames`, a choice about this batch.
+        // `== true`, not `as boolean`: the string "false" is truthy in Groovy, and
+        // the mistake would discard work rather than keep it.
+        boolean resume = !(params.restart == true)
+        if (!resume) log?.call("restart: what an interrupted run staged is discarded, not resumed")
         def res = runEach(rows, imageRoot,
                           params + [pixel_size_note: PIXEL_SIZE_NOTE_NUCLEUS],
                           outdir, cols, log) {
@@ -500,7 +507,7 @@ class BatchRunner {
                                                  source_file : row.path,
                                                  series_index: si,
                                                  series_name : (row.series_name ?: "")],
-                                       wanted)
+                                       wanted, resume)
             // What the threshold chose, per FRAME. Every _config.txt and
             // _threshold_stats.tsv carries it too, but finding the handful of
             // frames where it went wrong should not mean opening a thousand
@@ -509,7 +516,8 @@ class BatchRunner {
             return [frames: r.frames.collect { fr ->
                 def st = fr.stats ?: [:]
                 [t: fr.t, status: fr.status, message: fr.message ?: "",
-                 seconds: fmtSeconds(fr.seconds as long),
+                 // Blank for a frame an earlier run analysed: not redone.
+                 seconds: (fr.seconds == null ? "" : fmtSeconds(fr.seconds as long)),
                  threshold: st.nucleus_threshold_used ?: "", mask_pct: st.nucleus_mask_pct ?: "",
                  n_nucleus: (st.nucleus_count == null ? "" : st.nucleus_count),
                  n_nucleolus: (st.nucleolus_count == null ? "" : st.nucleolus_count)]
