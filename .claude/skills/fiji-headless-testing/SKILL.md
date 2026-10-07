@@ -390,15 +390,20 @@ Things worth knowing about what comes back:
   actual for every check. A test in this repo once printed `HEADLESS OVERLAY OK`
   directly above `size=0` and a `NullPointerException`.
 - State the expected value inline: `println "got=$n (want 6)"`.
-- **Kill stray headless processes afterwards.** They persist and hold GBs:
+- **Kill your headless process afterwards, by the PID you launched.** They
+  persist and hold GBs:
 
 ```bash
-ps -eo pid,command | grep "[I]mageJ-macosx --headless" \
-  | awk '{print $1}' | while read p; do kill "$p" 2>/dev/null; done
+<launcher> --headless --console --run t.groovy > t.log 2>&1 &
+pid=$!
+# ... wait on the log ...
+kill "$pid" 2>/dev/null
 ```
 
-  Match on `--headless`: **the user's interactive Fiji has no such flag and must
-  not be killed.** Check what survived before moving on:
+  Not by matching `--headless`: **another session may be running its own
+  headless Fiji** — observed, two agents on one machine at once — and the
+  user's interactive Fiji, which has no such flag, must never be killed either.
+  A match-all is only for clearing up strays you know are yours. Check what survived before moving on:
   `ps -eo pid,etime,command | grep "[I]mageJ-macosx" | grep -v headless`
 
 ## Memory on large images
