@@ -238,7 +238,18 @@ def outM = new File(tmp, "batch_nosrc")
 def resM = runner.run(sheet.findAll { it.series_id == sid }, null, params.findAll { k, v -> k != "sources" }, outM) { }
 def sumM = TSV.read(new File(outM, "batch_summary.tsv"))
 check("without its sources, the row fails",        [sumM[0].status, sumM[0].t], ["failed", ""])
-check("...naming the missing file",                sumM[0].message.contains("no such image file"), true)
+check("...naming the missing sources table",       sumM[0].message.contains("is a directory, not an image file; a Luxendo series is read through the sources table -- give sourcesFile"), true)
+// With a sources table that has no rows for it (they belong to another,
+// excluded, row of the sheet), the message says the table was read and did not
+// match, not that none was given.
+def outN = new File(tmp, "batch_othersrc")
+def otherSrc = params.sources.collect { it + [alias: "elsewhere"] }
+def mine = sheet.find { it.series_id == sid }
+def otherRow = mine + [series_id: "elsewhere_row", alias: "elsewhere", include: "false"]
+runner.run([mine, otherRow], null, params + [sources: otherSrc], outN) { }
+def sumN = TSV.read(new File(outN, "batch_summary.tsv"))
+println "  message: " + sumN[0].message
+check("...or that the table has no rows for it",  sumN[0].message.contains("its (alias, series_index) has none"), true)
 throwsWith("a sources table from before v0.7.0 is named",
            "before v0.7.0", { runner.loadSources([[source_path: "x", series_id: "s", channel: "1", t: "1"]], sheet) })
 

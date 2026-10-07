@@ -421,6 +421,14 @@ class BatchRunner {
             return SS.ofLuxendo(sources[seriesId], dir, seriesId, LFC)
         }
         def image = resolve(row.path.toString(), imageRoot)
+        if (image.isDirectory()) {
+            // Membership still decides -- a directory is never opened as an
+            // acquisition on its look -- but "no such image file" about a
+            // directory that plainly exists sends a person checking the mount.
+            throw new IllegalArgumentException(image.getAbsolutePath() + " is a directory, not an image file; " +
+                (sources ? "a Luxendo series needs rows in the sources table, and its (alias, series_index) has none"
+                         : "a Luxendo series is read through the sources table -- give sourcesFile"))
+        }
         if (!image.isFile()) {
             throw new IllegalArgumentException("no such image file: " + image.getAbsolutePath() +
                                                (sources ? " (and no rows in the sources table)" : ""))
