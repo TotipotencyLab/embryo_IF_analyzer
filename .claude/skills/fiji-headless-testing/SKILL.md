@@ -219,15 +219,34 @@ A single launch costs roughly 30 s to several minutes, dominated by startup.
 **Put every assertion for one question into one script.** Do not iterate one
 assertion per launch.
 
-Run in the background and poll the output file rather than blocking:
+Run in the background and poll the output file rather than blocking — and the
+process, because a JVM that died writes nothing to wait for:
 
 ```bash
-<launcher> ... > "$SP/out.txt" 2>&1        # run_in_background: true
-until grep -qE "DONE|Exception" "$SP/out.txt"; do sleep 8; done
+<launcher> ... > "$SP/out.txt" 2>&1 &
+pid=$!
+until grep -qE "DONE|\[ERROR\]|startup failed" "$SP/out.txt" \
+      || ! kill -0 "$pid" 2>/dev/null; do sleep 8; done
+kill "$pid" 2>/dev/null
 ```
 
 Always end the script with a sentinel line (`println "DONE"`) so the poll has
-something to wait for, including on the failure path.
+something to wait for, including on the failure path. For a test file, the
+sentinel is its summary line (`=== N passed, M FAILED ===` or
+`passed: N   FAILED: M` — both shapes exist here).
+
+⚠️ **Do not stop on the bare word `Exception`.** Tests log exceptions they
+provoke on purpose (`Test_SeriesSource`'s corrupted frame prints
+`HDF5FileNotFoundException`), and a batch logs a failed row or frame —
+`FAILED <id>: IllegalArgumentException: …`, a worker thread's
+`OutOfMemoryError` trace — and carries on. A poll that stops there kills a run
+mid-way and reads as a hang or a failure that was neither: it cut a test off
+three times in a row here before the pattern was found. An error that really
+stops a script reaches Fiji's console as `[ERROR]`.
+
+The runbooks' `fiji_wait` helper (`scripts/shell/fiji_wait.sh`, local until the
+`QoL` milestone commits it) is this loop for shell scripts: sentinel, `[ERROR]`,
+process gone, timeout, and it kills only the PID it waited on.
 
 Whether the JVM exits after the script finishes is not consistent: a small probe
 that opens no images may exit cleanly while a full pipeline run sits there
@@ -390,15 +409,20 @@ Things worth knowing about what comes back:
   actual for every check. A test in this repo once printed `HEADLESS OVERLAY OK`
   directly above `size=0` and a `NullPointerException`.
 - State the expected value inline: `println "got=$n (want 6)"`.
-- **Kill stray headless processes afterwards.** They persist and hold GBs:
+- **Kill your headless process afterwards, by the PID you launched.** They
+  persist and hold GBs:
 
 ```bash
-ps -eo pid,command | grep "[I]mageJ-macosx --headless" \
-  | awk '{print $1}' | while read p; do kill "$p" 2>/dev/null; done
+<launcher> --headless --console --run t.groovy > t.log 2>&1 &
+pid=$!
+# ... wait on the log ...
+kill "$pid" 2>/dev/null
 ```
 
-  Match on `--headless`: **the user's interactive Fiji has no such flag and must
-  not be killed.** Check what survived before moving on:
+  Not by matching `--headless`: **another session may be running its own
+  headless Fiji** — observed, two agents on one machine at once — and the
+  user's interactive Fiji, which has no such flag, must never be killed either.
+  A match-all is only for clearing up strays you know are yours. Check what survived before moving on:
   `ps -eo pid,etime,command | grep "[I]mageJ-macosx" | grep -v headless`
 
 ## Memory on large images

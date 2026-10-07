@@ -281,12 +281,17 @@ loop, including how to diff.
   the pixel count is rounded. `note/luxendo_file_format.md` is what the format
   is; `note/data_formats.md` §1 is the two tables.
 - **`Run_Overview_Batch.groovy` is the cheap look at a dataset**: overview PNGs
-  for every included sheet row and nothing else. It exists because deciding what
+  for every included sheet row and nothing else — a TIFF per channel, a page
+  per frame, for a multi-frame series, with `sourcesFile`/`frames` as the
+  nucleus batch takes them. It exists because deciding what
   a slide contains should not cost a segmentation run — detection needs a tuned
   config you cannot write until you have seen the images. Its PNGs carry the
   same `<series_id>_overview_ch<N>.png` names the nucleus path writes, and are
   byte-identical for the same settings, so nothing downstream needs to know
-  which runner made one.
+  which runner made one. The multi-frame TIFF is drawn at **one display range
+  per channel across every frame** (`overview_display_range`), decided at the
+  join from staged per-frame histograms — per-frame `auto` would make a cell
+  appear to brighten because the stretch moved.
 - **`BatchRunner.runEach()` is the loop; `run()` is one caller of it.** Include,
   the duplicate-`series_id` refusal, resolving and opening the image, the pixel-size
   warning, closing the stack on both paths, one row's failure not costing the

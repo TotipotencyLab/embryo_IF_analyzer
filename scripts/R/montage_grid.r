@@ -305,11 +305,21 @@ mg_scale_bar <- function(img, um_per_px, frac = 0.18, color = "black",
 #' depth the inputs already had. Stated rather than left to the library, so the
 #' output does not depend on whether a band happened to be added.
 #'
-#' @param img a magick image
+#' A path ending `.tif`/`.tiff` is written as a TIFF, every frame of `img` a
+#' page -- how a time course's montages and QC plots are kept as one file per
+#' series -- LZW-compressed, which is lossless: these pages are mostly flat
+#' panels and white space, and uncompressed they are several MB each.
+#'
+#' @param img a magick image, one frame or several
 #' @param path file to write
 #' @param depth bits per channel
 #' @return path, invisibly
 mg_write <- function(img, path, depth = 8L) {
-  magick::image_write(magick::image_convert(img, depth = depth), path)
+  img <- magick::image_convert(img, depth = depth)
+  if (grepl("\\.tiff?$", path, ignore.case = TRUE)) {
+    magick::image_write(img, path, format = "tiff", compression = "LZW")
+  } else {
+    magick::image_write(img, path)
+  }
   return(invisible(path))
 }

@@ -903,18 +903,29 @@ change to how a series is read can be reviewed apart from what is drawn.
       t<TTTT>.part` renamed to `t<TTTT>`, joined as text (ROI zips entry by
       entry), deleted after; a leftover is discarded until PR 4 resumes from it.
       Every image is staged, one frame too — one path, not two.
-- [ ] 🔒 **The overview of a multi-frame series is DATA, written by the batch**:
-      one 16-bit, z-projected, downscaled TIFF per series, channels and frames
-      inside, appended frame by frame, no contrast decided. Single-frame series
-      keep the PNG unchanged. Rendering is `QoL`'s `Make_OverviewStack` (H8).
-- [ ] **The multi-frame QC montage, moved here from `QoL`** (decided 2026-10-04:
+- [x] 🔒 **The overview of a multi-frame series is written by the batch,
+      rendered** — revised 2026-10-07 (§6.21 reversed): once 3a staged every
+      frame and joined at the end, the batch sees all of a series' frames
+      before it writes anything, which was the reason it could not decide the
+      range. *3b:* each frame stages its projection, reduced but unrendered, and
+      its full-resolution histogram; at the join `Overview.writeSeries()` writes
+      `<series_id>_overview_ch<N>.tif` (8-bit) and `_overlay.tif` (RGB, that
+      frame's outlines), a page per frame of `frames_analysed`, at ONE range per
+      channel — ImageJ's `auto` on the summed histogram, which is exactly its
+      answer for all the frames at once (H8) — recorded as
+      `overview_display_range`. `max`/`min` only; a 32-bit projection's range
+      cannot be accumulated and is refused before the first frame. Single-frame
+      series keep the PNG, byte-identical. `Run_Overview_Batch` gains
+      `sourcesFile`/`frames` and writes the same TIFF byte for byte.
+- [x] **The multi-frame QC montage, moved here from `QoL`** (decided 2026-10-04:
       the absence was felt reviewing PR 2 on real data, so it lands with the
       Fiji side it draws from). `montage_qc_cli.r` gains `--t` — which frames,
       and the filter that keeps the feature rows to the same frame — and writes
-      a multi-frame 8-bit TIFF; it then stops refusing several frames. What it
-      draws the Fiji panels from needs settling here, since the rendering step
-      (`Make_OverviewStack`) stays in `QoL`.
-- [ ] **`annotate --qc_plot` writes one multi-frame TIFF per series**
+      a multi-frame 8-bit TIFF; it then stops refusing several frames. *3b:* the
+      Fiji panels are the batch's overview TIFFs, a page matched to a t through
+      `frames_analysed` (a page count that differs is refused); extent and class
+      colours are the series'; a `.png` output for several frames is refused.
+- [x] **`annotate --qc_plot` writes one multi-frame TIFF per series**
       (`<series_id>_features_qc.tif`), replacing PR 2's one PNG per frame —
       decided 2026-10-04: 96 PNGs per series is clutter, and the montage TIFF
       above needs the same stacking. A single frame keeps its PNG, the rule the
@@ -1006,6 +1017,12 @@ range recorded. R never makes a contrast decision, which keeps §6.14's point;
 `magick` reads a PNG as one frame and a TIFF as many, so `img[t + 1]` serves
 both. The earlier plan of a frame selection on the batch's PNG overview
 (`0,47,95`) is subsumed: the selection moves to the render step.
+
+**Revised again 2026-10-07:** the batch renders it itself (`time_axis` PR 3b,
+§6.21), at the join, with the range decided over every frame — so the 8-bit
+TIFF above exists without this milestone, and R still makes no contrast
+decision. What remains here for `Make_OverviewStack` is the **vector** overlay
+and a re-render at another range or size, read from the sources.
 
 - [x] ~~`montage_qc_cli.r --t` and the multi-frame QC montage~~ — moved to
       `time_axis` PR 3 (2026-10-04). The panel extent stays the series'
@@ -1659,10 +1676,20 @@ splits one field of view across rows.
 
 ### 6.21 An 8-bit overview TIFF rendered by the batch
 
-**Rejected: the batch streams frames, so it would stretch each one on its own**
+~~**Rejected: the batch streams frames, so it would stretch each one on its own**
 — H8, a cell brightening because the range moved. The series-wide range is not
 known until every frame has been seen. Hence data (16-bit projection) from the
-batch and pictures from a render step (§4 `QoL`).
+batch and pictures from a render step (§4 `QoL`).~~
+
+**Reversed 2026-10-07, built in PR 3b.** The objection was about *when* the
+batch writes, and 3a changed that: frames are staged and the series is joined
+after the last one, so the range is decided with every frame seen. What a frame
+stages is small — its reduced projection and a histogram of exact pixel values —
+so nothing is held in memory, and summing histograms reproduces ImageJ's `auto`
+for the whole series exactly. It also needs no group, unlike §6.15's gathering:
+a series is one row. What is lost is the 16-bit projection as data; `QoL`'s
+`Make_OverviewStack` would re-read it from the sources if a vector overlay or a
+different range is ever wanted.
 
 ### 6.22 Skipping the per-file stat on the index route (option B)
 

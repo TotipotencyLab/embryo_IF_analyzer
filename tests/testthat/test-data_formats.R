@@ -238,6 +238,26 @@ test_that("open_method is written, readable back, and documented", {
   expect_true(any(grepl("reader", rows, fixed = TRUE)))
 })
 
+test_that("the overview display range is written, readable back, and documented", {
+  # A multi-frame series' overview is drawn at ONE range per channel across its
+  # frames; the config is where a results folder says what that range was.
+  np <- file.path(repo_root(), "scripts", "groovy", "NucleusPipeline.groovy")
+  rc <- file.path(repo_root(), "scripts", "groovy", "RunConfig.groovy")
+  skip_if_not(all(file.exists(np, rc)), "Groovy library not found")
+  expect_match(paste(readLines(np, warn = FALSE), collapse = "\n"),
+               "overview_display_range\\s*:", perl = TRUE)
+  # Registered as provenance, or the run's own _config.txt is refused as the
+  # config of the next run.
+  expect_match(paste(readLines(rc, warn = FALSE), collapse = "\n"),
+               '"overview_display_range"', fixed = TRUE)
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  row <- grep("^\\|\\s*`overview_display_range`\\s*\\|", doc, value = TRUE)
+  expect_length(row, 1L)
+  expect_match(row, "one per channel for a whole multi-frame series", fixed = TRUE)
+  # And the files it describes are in the output list.
+  expect_true(any(grepl("<series_id>_overview_ch<c>.tif", doc, fixed = TRUE)))
+})
+
 test_that("the Fiji circularity filter records what it deleted, and is documented", {
   # This filter runs inside Analyze Particles, so a rejected ROI never reaches
   # _outline.txt -- there is no row for --bridge_roi to promote and no record

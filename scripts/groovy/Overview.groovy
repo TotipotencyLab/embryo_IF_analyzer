@@ -216,19 +216,9 @@ class Overview {
             lo = 0; hi = (ip.getBitDepth() == 16) ? 65535 : 255
         }
 
-        // Output size.
-        Integer w = sizeOpt(opts.width, "width"), h = sizeOpt(opts.height, "height")
-        if (w == null && h == null) { w = W; h = H }
-        else if (h == null)         { h = Math.max(1, Math.round(H * w / (double) W) as int) }
-        else if (w == null)         { w = Math.max(1, Math.round(W * h / (double) H) as int) }
-
-        ImageProcessor out = ip
-        if (w != W || h != H) {
-            ip.setInterpolationMethod(ImageProcessor.BILINEAR)
-            // Averaging when shrinking: without it, a 4152 px section reduced to
-            // 500 px just picks every 8th pixel and small objects flicker in and out.
-            out = ip.resize(w, h, true)
-        }
+        def reduced = reduce(ip, opts)
+        ImageProcessor out = reduced.ip
+        int w = reduced.w, h = reduced.h
         // Force greyscale. A Bio-Formats import carries a per-channel colour LUT
         // (green, red, blue...), savePng() calls flatten(), and flatten renders
         // the image THROUGH its LUT -- so the quick-look PNG came out tinted by
@@ -255,6 +245,276 @@ class Overview {
         img.setCalibration(cal)
 
         return new View(image: img, sx: sx, sy: sy, channel: channel, lo: lo, hi: hi)
+    }
+
+    /**
+     * Resize to the overview size: width/height as prepare() documents them.
+     * Pixel VALUES only -- no display range is decided here -- so a multi-frame
+     * series can be reduced frame by frame and rendered once its range is known.
+     *
+     * @return [ip: the resized processor (the given one when no resize was
+     *          needed), w:, h:]
+     */
+    private static Map reduce(ImageProcessor ip, Map opts) {
+        int W = ip.getWidth(), H = ip.getHeight()
+        Integer w = sizeOpt(opts.width, "width"), h = sizeOpt(opts.height, "height")
+        if (w == null && h == null) { w = W; h = H }
+        else if (h == null)         { h = Math.max(1, Math.round(H * w / (double) W) as int) }
+        else if (w == null)         { w = Math.max(1, Math.round(W * h / (double) H) as int) }
+
+        ImageProcessor out = ip
+        if (w != W || h != H) {
+            ip.setInterpolationMethod(ImageProcessor.BILINEAR)
+            // Averaging when shrinking: without it, a 4152 px section reduced to
+            // 500 px just picks every 8th pixel and small objects flicker in and out.
+            out = ip.resize(w, h, true)
+        }
+        return [ip: out, w: w, h: h]
+    }
+
+    // =========================================================================
+    // A MULTI-FRAME SERIES: one TIFF per channel, one page per frame
+    // =========================================================================
+    //
+    // A single frame keeps its PNG. A time course gets
+    //
+    //   <series_id>_overview_ch<c>.tif           8-bit grey, one page per frame
+    //   <series_id>_overview_ch<c>_overlay.tif   the same, outlines burned in (RGB)
+    //
+    // with ONE display range per channel across every frame. "auto" fitted per
+    // frame would make a cell appear to brighten because the stretch moved,
+    // and over a time course that artifact looks like biology.
+    //
+    // The frames are not held. A Luxendo position is streamed one frame at a
+    // time, so each frame leaves two small things in its staging directory --
+    // the projection reduced to the overview size, at its own bit depth with
+    // no range decided, and the FULL-RESOLUTION histogram of that projection
+    // -- and the series is rendered from them once every frame has been seen.
+    //
+    // The range is ImageJ's own "auto", on the summed histogram. For 8- and
+    // 16-bit data ContrastEnhancer works on the exact pixel values (the
+    // 65536-bin histogram16 for 16-bit), clipping `saturated`/2 percent of the
+    // pixel count from each end -- so the sum of the frames' histograms gives
+    // exactly the range "auto" would choose for all the frames as one image,
+    // and for a single frame exactly the range its PNG gets. Test_Overview
+    // holds ContrastEnhancer to both.
+    //
+    // 32-bit projections (mean, sum, sd, median) are refused for a series of
+    // several frames: ImageJ bins 32-bit data over its own min-max, which is not
+    // known until the last frame, so the range cannot be accumulated.
+
+    static final String STAGED_PLANE = "overview_ch%d.tif"
+    static final String STAGED_HIST  = "overview_ch%d_hist.tsv"
+    /** The methods whose projection keeps the image's own bit depth. */
+    static final List<String> SERIES_METHODS = ["max", "min"]
+
+    /**
+     * Refuse, before any frame is read, settings a multi-frame overview cannot
+     * honour. The per-image checks are validateSettings().
+     */
+    static void validateSeriesSettings(String method) {
+        projectionMethod(method)
+        if (!(method?.toLowerCase() in SERIES_METHODS)) {
+            throw new IllegalArgumentException(
+                "overview_method '" + method + "' gives a 32-bit projection, whose display range cannot be " +
+                "decided frame by frame; a series of several frames takes " + SERIES_METHODS.join(" or ") +
+                " (or switch save_overview off)")
+        }
+    }
+
+    /**
+     * Stage one frame of a multi-frame series' overview into `dir`: per
+     * channel, the projection reduced to the overview size (STAGED_PLANE) and
+     * its full-resolution histogram (STAGED_HIST, non-zero bins only).
+     *
+     * @param frame    ONE frame, every channel and slice (SeriesSource.frame)
+     * @return the channels staged, in order
+     */
+    static List<Integer> stageFrame(ImagePlus frame, Set<Integer> zSlices, String method,
+                                    List<Integer> channels, Map opts, File dir) {
+        validateSeriesSettings(method)
+        dir.mkdirs()
+        def proj = project(frame, zSlices, method, channels)
+        try {
+            def chans = projectedChannels(proj)
+            chans.eachWithIndex { int c, int i ->
+                ImageProcessor ip = proj.getStack().getProcessor(i + 1)
+                int[] hist = ip.getHistogram()
+                if (hist == null) {
+                    throw new IllegalStateException("no histogram for a " + ip.getBitDepth() + "-bit projection")
+                }
+                def sb = new StringBuilder("value\tcount\n")
+                hist.eachWithIndex { int n, int v -> if (n > 0) sb.append(v).append('\t').append(n).append('\n') }
+                new File(dir, String.format(STAGED_HIST, c)).setText(sb.toString(), "UTF-8")
+
+                def red = reduce(ip.duplicate(), opts)
+                def plane = new ImagePlus("ch" + c, red.ip)
+                def cal = proj.getCalibration().copy()
+                cal.pixelWidth  = cal.pixelWidth  * ip.getWidth()  / (double) red.w
+                cal.pixelHeight = cal.pixelHeight * ip.getHeight() / (double) red.h
+                plane.setCalibration(cal)
+                def f = new File(dir, String.format(STAGED_PLANE, c))
+                if (!new FileSaver(plane).saveAsTiff(f.getPath())) throw new IOException("could not write " + f)
+                plane.close(); plane.flush()
+            }
+            return chans
+        } finally {
+            proj.close(); proj.flush()   // close() alone frees nothing headless
+        }
+    }
+
+    /**
+     * The display range for one channel over the staged frames: ImageJ's
+     * "auto" on their summed histogram, or the type's full range for "none".
+     *
+     * @return [lo, hi]
+     */
+    static List<Double> seriesRange(List<File> frameDirs, int channel, Map opts, int bitDepth) {
+        String contrast = contrastMode(opts.contrast)
+        if (contrast == "none") return [0d, (bitDepth == 16 ? 65535d : 255d)]
+        def hist = new TreeMap<Integer, Long>()
+        frameDirs.each { File d ->
+            new File(d, String.format(STAGED_HIST, channel)).readLines().drop(1).each { String l ->
+                def p = l.split("\t")
+                int v = p[0] as int
+                hist[v] = (hist[v] ?: 0L) + (p[1] as long)
+            }
+        }
+        return rangeFromHistogram(hist, saturatedPercent(opts.saturated), bitDepth)
+    }
+
+    /**
+     * ContrastEnhancer.getMinAndMax() on an exact-valued histogram, as
+     * value -> count.
+     *
+     * When nothing is left between the cut-offs -- a perfectly constant
+     * channel -- ImageJ sets no range and the processor keeps whatever it had,
+     * which for a projection plane can be a range left on its stack by another
+     * channel (measured: a flat channel's PNG drawn at ch1's 100-2000). Here it
+     * is the type's full range instead, the documented fallback: a channel of
+     * zeros renders black rather than as someone else's stretch.
+     */
+    static List<Double> rangeFromHistogram(SortedMap<Integer, Long> hist, double saturated, int bitDepth) {
+        long n = hist.values().sum(0L) as long
+        long threshold = (saturated > 0d) ? (long) (n * saturated / 200.0d) : 0L
+        int top = (bitDepth == 16) ? 65535 : 255
+        // Walk the occupied values only: an empty bin never moves the count,
+        // so the first value whose running total passes the threshold is the
+        // same here as in ImageJ's walk over every bin -- except when none
+        // does, where ImageJ stops at the last bin.
+        Integer hmin = null, hmax = null
+        long count = 0
+        for (e in hist.entrySet()) { count += e.value; if (count > threshold) { hmin = e.key; break } }
+        count = 0
+        for (e in hist.descendingMap().entrySet()) { count += e.value; if (count > threshold) { hmax = e.key; break } }
+        if (hmin == null) hmin = top
+        if (hmax == null) hmax = 0
+        if (hmax > hmin) return [hmin as double, hmax as double]
+        return [0d, top as double]
+    }
+
+    /**
+     * Render a multi-frame series' overview from its staged frames:
+     * <series_id>_overview_ch<c>.tif and, when `layers` are given,
+     * <series_id>_overview_ch<c>_overlay.tif -- one page per frame, in the
+     * order given, labelled t=<t>.
+     *
+     * @param frameDirs  each frame's staging directory, in t order
+     * @param ts         the frames' t, matching frameDirs
+     * @param layers     outlines to draw, each [rois:, ts:, color:] with ts the
+     *                   t of each ROI; drawn "merged", per frame, as the PNG
+     *                   path draws them. null or empty = no overlay file.
+     * @param srcW, srcH  the ORIGINAL image's size in pixels, which the ROIs
+     *                   are in; the outlines are scaled from it to the plane
+     * @param frameInterval  written into the TIFF's calibration, or null
+     * @return channel -> [lo:, hi:, files: [...], size: "WxH"]
+     */
+    static Map<Integer, Map> writeSeries(List<File> frameDirs, List<Integer> ts, String outDir, String seriesId,
+                                         List<Integer> channels, Map opts, int srcW, int srcH,
+                                         List<Map> layers = null, Double frameInterval = null) {
+        if (frameDirs.size() != ts.size() || frameDirs.isEmpty()) {
+            throw new IllegalArgumentException("one staged directory per frame, and at least one: " +
+                                               frameDirs.size() + " for " + ts.size())
+        }
+        def out = new LinkedHashMap<Integer, Map>()
+        channels.each { int c ->
+            // One staged plane open at a time: at full size a 96-frame series'
+            // planes are most of a gigabyte, and the pages being built are
+            // already a copy of them.
+            def open = { File d ->
+                def f = new File(d, String.format(STAGED_PLANE, c))
+                def imp = IJ.openImage(f.getPath())
+                if (imp == null) throw new IOException("could not read staged overview " + f)
+                imp
+            }
+            def first = open(frameDirs[0])
+            int bits = first.getBitDepth(), W = first.getWidth(), H = first.getHeight()
+            def cal = first.getCalibration().copy()
+            first.close(); first.flush()
+            def range = seriesRange(frameDirs, c, opts, bits)
+            def grey = new ImageStack(W, H)
+            def rgb  = layers ? new ImageStack(W, H) : null
+            frameDirs.eachWithIndex { File d, int i ->
+                int t = ts[i]
+                def plane = open(d)
+                try {
+                    if (plane.getBitDepth() != bits || plane.getWidth() != W || plane.getHeight() != H) {
+                        throw new IllegalStateException("staged overview frames of channel " + c +
+                                                        " differ in size or type (t=" + t + ")")
+                    }
+                    // The view is the staged plane with the series' range: the
+                    // same object prepare() hands savePng(), so a frame here
+                    // and a single frame's PNG are rendered by the same code.
+                    // sx/sy map original pixels onto the reduced plane, for
+                    // the outlines.
+                    ImageProcessor ip = plane.getProcessor()
+                    ip.setColorModel(ip.getDefaultColorModel())
+                    ip.setMinAndMax(range[0], range[1])
+                    def view = new View(image: plane, sx: W / (double) srcW, sy: H / (double) srcH,
+                                        channel: c, lo: range[0], hi: range[1])
+                    ImagePlus flat = plane.flatten()
+                    try {
+                        grey.addSlice("t=" + t, ((ij.process.ColorProcessor) flat.getProcessor()).getChannel(1, null))
+                    } finally { flat.close(); flat.flush() }
+                    if (rgb != null) {
+                        layers.each { Map L ->
+                            def mine = []
+                            L.rois.eachWithIndex { r, int k -> if ((L.ts[k] as int) == t) mine << r }
+                            addOutlines(view, mine as List<Roi>, [mode: "merged", color: L.color, lineWidth: 1])
+                        }
+                        ImagePlus ov = plane.flatten()
+                        try { rgb.addSlice("t=" + t, ov.getProcessor()) } finally { ov.close(); ov.flush() }
+                    }
+                } finally {
+                    plane.close(); plane.flush()
+                }
+            }
+            if (frameInterval != null) { cal.frameInterval = frameInterval }
+            def files = [saveFrames(grey, cal, new File(overviewTiffPath(outDir, seriesId, c, "")))]
+            if (rgb != null) files << saveFrames(rgb, cal, new File(overviewTiffPath(outDir, seriesId, c, OVERLAY_SUFFIX)))
+            out[c] = [lo: range[0], hi: range[1], files: files, size: W + "x" + H]
+        }
+        return out
+    }
+
+    private static File saveFrames(ImageStack stack, ij.measure.Calibration cal, File f) {
+        f.getAbsoluteFile().getParentFile()?.mkdirs()
+        def imp = new ImagePlus(f.getName(), stack)
+        imp.setDimensions(1, 1, stack.getSize())
+        imp.setCalibration(cal)
+        try {
+            boolean ok = (stack.getSize() > 1) ? new FileSaver(imp).saveAsTiffStack(f.getPath())
+                                               : new FileSaver(imp).saveAsTiff(f.getPath())
+            if (!ok) throw new IOException("could not write " + f)
+        } finally {
+            imp.close(); imp.flush()
+        }
+        return f
+    }
+
+    /** <series_id>_overview_ch<c><suffix>.tif -- overviewPath()'s rule, for a multi-frame series. */
+    static String overviewTiffPath(String dir, String seriesId, int channel, String suffix = "") {
+        overviewPath(dir, seriesId, channel, suffix).replaceFirst(/\.png$/, ".tif")
     }
 
     // An option's value, or `dflt` when it was not given.
@@ -391,7 +651,13 @@ class Overview {
     }
 
     // Union of all ROIs, split back into one Roi per connected piece.
+    //
+    // NB: a lone ROI is returned as itself. ShapeRoi.getRois() on a ShapeRoi
+    //     that was never combined with another hands its ROI back at (0,0)
+    //     (ImageJ 1.54p; measured), so an image -- or now a frame -- with one
+    //     ROI of a feature had that outline drawn in the top-left corner.
     private static List<Roi> union(List<Roi> rois) {
+        if (rois.size() == 1) return [(Roi) rois[0].clone()]
         ShapeRoi u = null
         rois.each { Roi r ->
             def s = new ShapeRoi(r)
