@@ -1185,7 +1185,7 @@ index, so its wobble is well under one 5 µm step. Brought back, as a third
 value, only if real data shows both fail. A default is chosen when a properly
 segmented time-lapse exists (`note/wishlist.md`).
 
-- [ ] **PR 1 — `tracking-centroids` (R).** `annotate` writes
+- [x] **PR 1 — `tracking-centroids` (R).** ✅ done. `annotate` writes
       `<series_id>_feature_centroids.tsv`: `series_id`, `feature_id`, `t`,
       `feature_type`, `run_id`, centroid `x`, `y`, `z` in calibrated µm
       (area-weighted over the feature's ROIs), a size, and the edit
@@ -1208,6 +1208,23 @@ segmented time-lapse exists (`note/wishlist.md`).
       so this is mostly wiring. A fixed default palette, plus named
       RColorBrewer/viridis ones; colours cycle for 100 objects, in shuffled
       order so neighbouring ids differ, and the label settles a clash.
+      **As built** (2026-10-08): `scripts/R/feature_centroids.r`
+      (`feature_centroids()`, `feature_fingerprint()`); `.cli_z_step_for()` in
+      `cli_helpers.r`, `feature_stat`'s `.z_step_for()` now a wrapper keeping
+      its warning. Bridge ROIs are set aside, as `feature_stat` does. The
+      single-plane rule (`z = 0`) is in the library but **unreachable through
+      `annotate` today**: a lone ROI per object overlaps nothing in z, so
+      `define_feature_group()` makes no feature from a single plane
+      (`failed_<type>_overlap`) — the 2-D features of the N-feature wishlist
+      entry. `montage_qc_cli.r` takes the QC options without the `qc_` prefix
+      (`--color_by class|feature_id`, `--label`, `--palette`), refuses
+      `--color_by feature_id` beside `--color_map`/`--feature_class_by`, and
+      refuses an ambiguous type rather than defaulting to one. Palettes are
+      base R (`palette.pals()`, `hcl.pals()`), no new package. Verified:
+      default outputs unchanged against `tracking` bd3cd67 on the fixture
+      (`features.tsv`, `.rds`, QC PNG byte-identical; montage pixel-identical,
+      the PNG differing in its write-time chunk only) and on a synthetic
+      2-frame series (QC TIFF pixel-identical, both pages); R 4.6.1 1127/0.
 - [ ] **PR 2 — `tracking-trackmate` (Groovy).** `Make_FeatureTracks.groovy`:
       a series' centroid table → `SparseLAPTrackerFactory` (§5.2) →
       `_tracks.tsv`, the settings used, and the seeded `_track_edits.tsv`.

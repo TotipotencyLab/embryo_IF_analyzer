@@ -139,6 +139,17 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                                  "Automatic colours when omitted"))
   p <- add_argument(p, "--force", short = "-U", flag = TRUE,
                     help = "join --feature_table even when its run_id disagrees")
+  p <- add_argument(p, "--color_by", short = "-C", type = "character", default = "class",
+                    help = paste("panel (iii) outline colour: class (--feature_class_by,",
+                                 "--color_map), or feature_id -- each feature of one type its own",
+                                 "colour, other types grey. The type is the first --feature,",
+                                 "or the only one present"))
+  p <- add_argument(p, "--label", short = "-L", type = "character", nargs = Inf, default = NULL,
+                    help = paste("label panel (iii) outlines of that type with their number:",
+                                 "'all', or some of them (7 0007 nucleus_0007)"))
+  p <- add_argument(p, "--palette", short = "-P", type = "character", default = NA,
+                    help = paste("palette for --color_by feature_id [default: Tableau 10]:",
+                                 "a grDevices::palette.pals() set (cycled) or an hcl.pals() ramp"))
   p <- add_argument(p, "--panel_height", short = "-H", type = "integer", default = 600,
                     help = "height in px each panel is scaled to")
   p <- add_argument(p, "--no_labels", short = "-N", flag = TRUE,
@@ -170,6 +181,10 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     feats <- feats[feats$feature_type %in% keep_features, , drop = FALSE]
     if (!nrow(feats)) stop("No rows left after --feature filtering", call. = FALSE)
   }
+
+  # --- colour and labels by feature ------------------------------------------------
+  # Decided before any panel is read, so a bad option costs one message.
+  qc <- .mqc_id_options(argv, feats, keep_features)
 
   # --- which frames --------------------------------------------------------------
   # Three renderings of ONE image per page. A time course's frames would be drawn
@@ -311,8 +326,17 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       message("Panel (iii): ", nrow(feats), " ROIs -> ", nrow(unioned), " unioned feature(s)")
     }
 
-    pal <- class_palette(unioned$feature_class, cmap)
-    unioned$feature_class <- pal$values
+    if (qc$color_by == "feature_id") {
+      # Over every frame at once, so a feature keeps its colour page to page.
+      keys <- qc_id_colours(unioned$feature_id, unioned$feature_type, qc$focus, qc$palette)
+      unioned$feature_class <- keys$values
+      pal <- list(palette = keys$palette, other_members = character(0), by_id = TRUE)
+    } else {
+      pal <- class_palette(unioned$feature_class, cmap)
+      unioned$feature_class <- pal$values
+    }
+    unioned$qc_label <- qc_label_select(unioned$feature_id, unioned$feature_type,
+                                        qc$focus, qc$label)
   }
 
   ttl <- .mqc_one(.cli_resolve_arg(argv$title, "--title"), sid)
@@ -334,7 +358,7 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
     r_png <- tempfile(fileext = ".png")
     .r_panel(f_feats, f_unioned, extent, sid, r_png, argv$panel_height,
-             palette = pal$palette)
+             palette = pal$palette, label_by = if (length(qc$label)) "qc_label" else NULL)
 
     # The panel is deliberately legend-free so it lines up with the Fiji PNGs
     # beside it, so the key goes in the caption instead. Naming what is inside
@@ -346,7 +370,13 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     } else {
       paste0("R union, z-aware (", nrow(f_unioned), ")")
     }
-    if (!is.null(pal$palette)) {
+    if (isTRUE(pal$by_id)) {
+      # A hundred id=colour pairs would be a caption longer than the montage;
+      # the labels, when asked for, name the outlines instead.
+      cap <- paste0(cap, " | by ", qc$focus, " id",
+                    if (length(setdiff(unique(as.character(f_unioned$feature_type)), qc$focus)))
+                      ", rest grey" else "")
+    } else if (!is.null(pal$palette)) {
       named <- setdiff(names(pal$palette), "other")
       cap <- paste0(cap, " | ",
                     paste(sprintf("%s=%s", named, pal$palette[named]), collapse = " "))
@@ -531,8 +561,47 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   return(list(xmax = w * pw, ymax = h * ph))
 }
 
+#' Resolve --color_by / --label / --palette; refuse what cannot be drawn
+#'
+#' The type they act on is the first --feature, or the only type in the file.
+#' Several types and no --feature is refused rather than guessed: colouring
+#' `nucleus` by default is the assumption the N-feature work removes.
+.mqc_id_options <- function(argv, feats, keep_features) {
+  color_by <- argv$color_by
+  if (!color_by %in% c("class", "feature_id")) {
+    stop("--color_by takes class or feature_id; got '", color_by, "'", call. = FALSE)
+  }
+  label <- .cli_resolve_arg(argv$label, "--label")
+  palette <- if (is.na(argv$palette)) QC_DEFAULT_PALETTE else argv$palette
+  qc_palette_colours(palette)                       # stops on an unknown name
+  if (color_by == "feature_id") {
+    clash <- c(if (length(.cli_resolve_arg(argv$color_map, "--color_map"))) "--color_map",
+               if (length(.cli_resolve_arg(argv$feature_class_by, "--feature_class_by")))
+                 "--feature_class_by")
+    if (length(clash)) {
+      stop("--color_by feature_id colours each feature by its id, so ",
+           paste(clash, collapse = " and "), " would be ignored; use one or the other",
+           call. = FALSE)
+    }
+  } else if (!is.na(argv$palette)) {
+    warning("--palette applies to --color_by feature_id only", call. = FALSE)
+  }
+  focus <- NA_character_
+  if (color_by == "feature_id" || length(label)) {
+    types <- sort(unique(feats$feature_type))
+    focus <- if (length(keep_features)) keep_features[1] else if (length(types) == 1L) types else NA
+    if (is.na(focus)) {
+      stop(if (color_by == "feature_id") "--color_by feature_id" else "--label",
+           " acts on one feature type, and this file holds ", paste(types, collapse = ", "),
+           ": name it first in --feature (e.g. --feature ", types[1], " ",
+           paste(types[-1], collapse = " "), ")", call. = FALSE)
+    }
+  }
+  return(list(color_by = color_by, label = label, palette = palette, focus = focus))
+}
+
 .r_panel <- function(feats, unioned, extent, sid, path, panel_height,
-                     palette = NULL) {
+                     palette = NULL, label_by = NULL) {
   # Nothing to draw is still something to show, but only at a known scale: an
   # empty panel whose extent came from the data would be an empty panel of
   # unknowable size, sitting beside two Fiji PNGs it does not match.
@@ -568,11 +637,11 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     p <- plot_features_topView(feats, unioned, color_by = "feature_class",
                                y_ref = extent$ymax,
                                xlim = c(0, extent$xmax), ylim = c(0, extent$ymax),
-                               bare = TRUE, palette = palette)
+                               bare = TRUE, palette = palette, label_by = label_by)
     aspect <- extent$xmax / extent$ymax
   } else {
     p <- plot_features_topView(feats, unioned, color_by = "feature_class",
-                               bare = TRUE, palette = palette)
+                               bare = TRUE, palette = palette, label_by = label_by)
     bb <- sf::st_bbox(feats)
     aspect <- unname((bb["xmax"] - bb["xmin"]) / (bb["ymax"] - bb["ymin"]))
   }

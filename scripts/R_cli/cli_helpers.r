@@ -816,6 +816,47 @@
   return(v)
 }
 
+#' The z step of the series in a features table, from the `_config.txt` Fiji
+#' wrote beside them
+#'
+#' `pixel_depth` is written per image, so this is asked per series -- and a
+#' features .rds is written per series, so per file IS per series in anything
+#' the pipeline produced. A hand-built file holding several series that
+#' disagree gets no answer rather than an arbitrary one of them: pixel size
+#' varies 4x within a single .lif here, so "they are all about the same" is not
+#' a safe assumption to make quietly. The caller says what that costs it, so
+#' this does not warn; the clashing values come back as attr "conflict".
+#'
+#' Searched: `res_dirs` (where the outline tables were read from -- Fiji writes
+#' the config beside them), then beside the features file and its parent.
+#' Blank `pixel_depth` is a single plane, by design on the Fiji side, and gives
+#' NA like a missing config: no z axis, no step.
+#'
+#' @param feats         the annotation, with series_id
+#' @param features_path the features file, or where it will be written
+#' @param res_dirs      directories the inputs came from
+#' @return a positive number, or NA_real_ (with attr "conflict" on a clash)
+.cli_z_step_for <- function(feats, features_path, res_dirs) {
+  tab <- if (inherits(feats, "sf")) sf::st_drop_geometry(feats) else feats
+  here <- dirname(features_path)
+  dirs <- unique(c(res_dirs, here,
+                   file.path(here, ".."),
+                   file.path(here, "..", "segmentation")))
+  vals <- c()
+  for (sid in unique(tab$series_id)) {
+    cfg <- .cli_read_config(.cli_find_config(sid, dirs))
+    v <- .cli_config_num(cfg, "pixel_depth")
+    if (!is.na(v) && v > 0) vals[[sid]] <- v
+  }
+  if (!length(vals)) return(NA_real_)
+  if (length(unique(unlist(vals))) > 1L) {
+    out <- NA_real_
+    attr(out, "conflict") <- sort(unique(unlist(vals)))
+    return(out)
+  }
+  return(unname(unlist(vals))[1])
+}
+
 # Columns the CLIs write themselves. A series table column of the same name
 # would be silently renamed by bind_cols() to `area...7`, producing a file that
 # violates the documented schema -- and the next stage then cannot find the
@@ -887,7 +928,8 @@
 # so keep it in step with what the CLIs actually use.
 .RLIB_REQUIRED <- c("read_fiji_result", "polygonize_roi_df", "define_feature_group",
                     "find_ROI_z_intersect", "assign_feature_parent",
-                    "union_features", "plot_features_topView")
+                    "union_features", "plot_features_topView",
+                    "feature_centroids", "qc_id_colours")
 
 #' Source scripts/R/ into the global environment
 #'

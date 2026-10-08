@@ -168,6 +168,15 @@ override, `--no_title` to omit) — three panels and their captions say what eac
 panel is, but nothing in the picture says which series it belongs to once it is
 open in a viewer or pasted into a note.
 
+To **name a problem outline**, colour each feature of one type differently and
+write its number on it: `annotate_features_cli.r --qc_plot --qc_color_by
+feature_id --qc_label all`, or the same without the `qc_` prefix on
+`montage_qc_cli.r`. The type is the first `--feature`; others are drawn grey.
+`--qc_palette` picks the colours (`Tableau 10` by default; `Okabe-Ito`, `Set 1`,
+`Viridis`, …). `annotate_features_cli.r` also writes
+`<series_id>_feature_centroids.tsv`, one point per feature in calibrated units —
+the input to tracking. Details in `note/data_formats.md`.
+
 The **projection, output size and contrast** are settings: `max` and 500 px
 wide by default, and a width of `0` means the image's own size (give one of
 width/height and the other follows the aspect ratio). 500 px of a merged tile

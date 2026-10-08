@@ -613,6 +613,31 @@ test_that("annotate writes the documented columns", {
                     tsv$parent_match %in% c("direct", "gap_filled")))
 })
 
+test_that("annotate writes the documented feature centroid columns", {
+  skip_if_no_sf()
+  skip_if_no_pkg("argparser")
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  source_cli("annotate_features_cli.r")
+
+  out <- withr::local_tempdir()
+  suppressMessages(annotate_features_cli(c(
+    "--input", fixture_dir(), "--feature", "nucleus", "nucleolus", "--outdir", out,
+    "--min_z_span", "default=5", "nucleolus=2")))
+  tsv <- file.path(out, "GRV_Position010_feature_centroids.tsv")
+  written <- names(read.delim(tsv, nrows = 1))
+
+  # The doc's table, row by row: a cell may name two columns ("`x`, `y`").
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  start <- grep("^#### `<series_id>_feature_centroids.tsv`", doc)
+  expect_length(start, 1L)
+  body <- doc[(start + 1):length(doc)]
+  body <- body[seq_len(which(grepl("^#{2,4} ", body))[1] - 1)]
+  rows <- grep("^\\| `", body, value = TRUE)
+  first <- sub("^\\| ([^|]*)\\|.*$", "\\1", rows)
+  documented <- unlist(regmatches(first, gregexpr("(?<=`)[a-z_]+(?=`)", first, perl = TRUE)))
+  expect_identical(written, documented)
+})
+
 test_that("feature_id uses the documented vocabulary", {
   skip_if_no_sf()
   skip_if_no_pkg(c("argparser", "ggplot2"))
