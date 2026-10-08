@@ -192,3 +192,42 @@ This means the Groovy scripts may have to defined into different levels:
     the reporter does not, and the natural `--within 'nucleus=embryo'` parent.
   - Not measured: run time per frame (39 per-slice rank filters on 2048²),
     other acquisitions or magnifications, and the zona as a separate outline.
+- **Bridge features in time**, as a `--bridge_feature` option (raised
+  2026-10-08, planning `tracking`). The time version of `--bridge_roi`, and
+  named to match it: what bridges is a rejected feature, handed to TrackMate as
+  its centroid. In short: features that R-side filters reject
+  (`invalid_<feature>_NNNN`, e.g. below `min_z_span`) are still handed to
+  TrackMate, as spots that may keep a track continuous but are never counted
+  or reported as track members. The motivating case is mitosis: at nuclear
+  envelope breakdown the DNA stops looking like a nucleus, and a frame or two
+  of it rejected breaks the track between a mother and her daughters.
+  - It needs those features in the centroid table, flagged, which they can be:
+    R grouped them, so they have geometry and a centroid. After tracking, a
+    bridge spot is dropped and the links through it kept, as a gap-closed
+    link.
+  - ⚠️ **A bridge can steal a link** (raised by the user). TrackMate's LAP
+    tracker minimises the total cost of all links, so a bridge centroid
+    (debris, a fragment) that happens to sit nearer a moving nucleus's next
+    position than the nucleus itself takes the link — breaking the real
+    track, or, once the bridge spot is dropped, joining two unrelated objects.
+    A quality-difference penalty (`LINKING_FEATURE_PENALTIES` on `QUALITY`)
+    would make real→bridge links dearer, but leaves bridge→bridge ones cheap.
+    The safer design is **two passes**: track the real features alone, so
+    every real-to-real link is settled first; then offer a bridge only to
+    fill a gap between one track's end and another's start, near both. A
+    bridge then never competes with a real feature. Test with a decoy: a
+    bridge placed nearer than the real next feature must not take its link.
+  - It cannot recover what Fiji itself rejects. `nucleus_circularity` filters
+    inside `Analyze Particles`, so those ROIs never reach `_outline.txt`
+    (CLAUDE.md) and have no centroid to hand over.
+  - Not built until data shows TrackMate's own gap closing is not enough;
+    `tracking` PR 2's synthetic division-after-a-gap test is the first
+    evidence either way.
+- **A real time-lapse fixture for tracking** (2026-10-08). `tracking` can only
+  be verified on synthesised data: the FUCCI acquisition's nuclear channel is
+  sparse and dim at later time points, and its per-frame segmentation is
+  already poor, so it cannot say whether z should count in the linking
+  distance (`time_series_plan.md` §9, question 1), i.e. what `useZ` should
+  default to. Either a new acquisition with a stable nuclear marker, or this
+  one segmented from brightfield (the entry above), would do. The FUCCI series
+  is still worth one tracking run, to see whether it can stand in for now.
