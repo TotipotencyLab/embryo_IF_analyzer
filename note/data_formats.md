@@ -876,7 +876,8 @@ Links `annotate`'s features across time with TrackMate's LAP tracker, driven
 without an image (`note/time_series_plan.md` §4 `tracking`, §5.2). It reads
 every `<series_id>_feature_centroids.tsv` (§3) in `annotate`'s output
 directory — one series per file, each tracked on its own — and writes, beside
-each, for the **one feature type** the run names:
+each, for the **one feature type** the run names (macOS `._` files, which a Mac
+leaves beside files on a non-Mac volume, are skipped):
 
 ```
 <series_id>_<feature_type>_tracks.tsv        the links: one row per link, a start row per feature nothing leads to
@@ -919,13 +920,16 @@ which.
 #### `<series_id>_<feature_type>_track_edits.tsv`
 
 Corrections a person makes to the links, applied by R when it joins the tracks
-(the milestone's PR 4). **Make_FeatureTracks writes it only while it holds no
-edit rows**: absent, it is seeded; holding only comments, it is rewritten with
-the current fingerprint; holding edits, it is left exactly as it is, and any
-row made against another annotation is reported in the log. The seed is a
-header, comment lines explaining the actions, and one commented-out template
-row carrying the fingerprint — an edit is that line copied with its leading
-`# ` removed.
+(the milestone's PR 4). **Make_FeatureTracks writes it only while it holds
+nothing**: absent, it is seeded; holding nothing but comments, blank lines and
+exactly the header below, it is rewritten with the current fingerprint.
+Anything else is left exactly as it is — judged by what the file holds, not by
+whether it parses, so a file with a duplicated column or a deleted header line
+keeps its edits — and the log warns when the file cannot be read as an edits
+table, or holds rows made against another annotation. The seed is a header,
+comment lines explaining the actions, and one commented-out template row
+carrying the fingerprint — an edit is that line copied with its leading `# `
+removed.
 
 | Column | Type | Notes |
 |---|---|---|

@@ -209,9 +209,13 @@ def r7z = track(c7, XYZ)
 check("stacked, use_z=true: kept two tracks", r7z.links.sort(), ["H1<-", "H2<-H1", "H3<-H2", "L1<-", "L2<-L1", "L3<-L2"])
 def r7xy = track(c7, XY)
 println "    use_z=false recorded: " + r7xy.links.sort()
-check("stacked, use_z=false: still four links (cannot tell them apart)", r7xy.res.series[0].stats.n_links, 4)
-check("stacked, use_z=false: and swaps them every frame",
-      r7xy.links.count { it in ["L2<-H1", "H2<-L1", "L3<-H2", "H3<-L2"] }, 4)
+check("stacked, use_z=false: still four links", r7xy.res.series[0].stats.n_links, 4)
+// Which of two identical-in-x-y nuclei follows which is a tie TrackMate breaks
+// arbitrarily (printed above: here it crosses them). Pinning that tie-break
+// would fail on an upgrade that changed nothing that matters; what matters is
+// that each later feature still has exactly one predecessor.
+check("stacked, use_z=false: one predecessor each, whichever it is",
+      ["L2", "L3", "H2", "H3"].collect { n -> r7xy.links.count { it.startsWith(n + "<-") && it != n + "<-" } }, [1, 1, 1, 1])
 invariants("stacked use_z=false", c7, r7xy.rows)
 
 // -----------------------------------------------------------------------------
@@ -314,6 +318,56 @@ def res17d = FT.trackDirectory(c17.dir, [feature_type: "nucleus", use_z: "false"
 check("edits: made on another annotation, kept and flagged", res17d.series[0].edits, "kept-stale")
 check("edits: ...with a warning naming both fingerprints", logs17.any { it.contains("WARNING") && it.contains("fp00000002") && it.contains("fp00000003") }, true)
 check("edits: ...and still untouched", ef.text == before, true)
+
+// -----------------------------------------------------------------------------
+println "\n--- 12b. an edits file a person has damaged is never rewritten (code review, PR 2)"
+// Each of these was reseeded -- the edit deleted, the log saying "reseeded" --
+// before the fix: the old test was "does it parse into rows", and a damaged
+// file does not, though it still holds the edits.
+def damaged = { String label, String text, String want ->
+    def cs = writeCase("edits_" + label, [["A1",1,0,0,0],["A2",2,1,0,0]])
+    def e = FTC.editsFile(cs.file, "nucleus")
+    e.text = text
+    def lg = []
+    def res = FT.trackDirectory(cs.dir, [feature_type: "nucleus", use_z: "false"]) { lg << it }
+    check("damaged edits, " + label + ": status", res.series[0].edits, want)
+    if (want.startsWith("kept")) check("damaged edits, " + label + ": byte for byte", e.text, text)
+    return lg
+}
+def H = FTC.EDIT_COLUMNS.join("\t")
+def lgDup = damaged("duplicated column",
+    H + "\tnote\nlink\tnucleus_0001\tnucleus_0002\tfp00000001\tmine\tx\n", "kept-unreadable")
+check("damaged edits, duplicated column: warned", lgDup.any { it.contains("WARNING") && it.contains("cannot be read as an edits table") }, true)
+def lgHdr = damaged("header deleted",
+    "# my notes\nlink\tnucleus_0001\tnucleus_0002\tfp00000001\tmine\n", "kept-unreadable")
+check("damaged edits, header deleted: warned, naming the header", lgHdr.any { it.contains("no header naming") }, true)
+damaged("header with an extra column, no rows", H + "\twho\n", "kept")
+damaged("header alone, no comments", H + "\n", "reseeded")
+damaged("comments alone", "# nothing yet\n\n", "reseeded")
+
+println "\n--- 12c. what the directory listing takes for a centroid table (code review, PR 2)"
+// macOS writes ._<name> beside a file on a non-Mac volume once an app touches
+// it. Before the fix one was tracked as a series with no features, and three
+// hidden ._ output files were written beside the real ones.
+def c19 = writeCase("appledouble", [["A1",1,0,0,0],["A2",2,1,0,0]])
+def ad = new byte[4096]; ad[1] = 5; ad[2] = 22; ad[3] = 7; ad[100] = 10   // a newline, so it has "rows"
+new File(c19.dir, "._" + c19.file.getName()).bytes = ad
+def logs19 = []
+def r19 = FT.trackDirectory(c19.dir, [feature_type: "nucleus", use_z: "false"]) { logs19 << it }
+check("AppleDouble: one series tracked, not two", r19.series.size(), 1)
+check("AppleDouble: no ._ output written", c19.dir.list().findAll { it.startsWith("._") && it != "._" + c19.file.getName() }, [])
+def c20 = writeCase("wrong_header", [["A1",1,0,0,0],["A2",2,1,0,0]])
+new File(c20.dir, "Z_feature_centroids.tsv").text = "foo\tbar\n"
+check("a header-only table of the wrong shape is refused, not taken as empty",
+      errOf { FT.trackDirectory(c20.dir, [feature_type: "nucleus", use_z: "false"]) }?.contains("Z_feature_centroids.tsv lacks column(s)"), true)
+def c21 = writeCase("empty_series", [["A1",1,0,0,0],["A2",2,1,0,0]])
+new File(c21.dir, "E_feature_centroids.tsv").text = CEN_COLS.join("\t") + "\n"
+def logs21 = []
+FT.trackDirectory(c21.dir, [feature_type: "nucleus", use_z: "false"]) { logs21 << it }
+check("a real centroid table with no rows: an empty tracks table", new File(c21.dir, "E_nucleus_tracks.tsv").readLines(), [FTC.TRACK_COLUMNS.join("\t")])
+check("...logged under its file's name, not 'null'", [logs21.any { it.startsWith("  E: ") }, logs21.any { it.contains("null") }], [true, false])
+check("a setting passed blank is refused, not defaulted",
+      errOf { FT.trackDirectory(c1.dir, [feature_type: "nucleus", use_z: "false", linking_max_distance: null]) }?.contains("left blank: linking_max_distance"), true)
 
 // -----------------------------------------------------------------------------
 println "\n--- 13. the same input twice gives the same bytes; the parameters are recorded"

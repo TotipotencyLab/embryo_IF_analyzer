@@ -122,7 +122,12 @@ class FeatureTracks {
         }
         s.feature_type = type
         s.use_z = parseUseZ(raw.use_z)
-        DEFAULTS.each { k, d -> s[k] = raw.containsKey(k) && raw[k] != null ? raw[k] : d }
+        // Absent means "the default"; present but null is a field someone blanked,
+        // and turning that into 15 um without a word is the silent default this
+        // repo keeps getting bitten by.
+        def blank = DEFAULTS.keySet().findAll { raw.containsKey(it) && raw[it] == null }
+        if (blank) throw new IllegalArgumentException("Tracking setting(s) left blank: " + blank.join(", "))
+        DEFAULTS.each { k, d -> s[k] = raw.containsKey(k) ? raw[k] : d }
         ["linking_max_distance", "gap_closing_max_distance", "splitting_max_distance",
          "merging_max_distance"].each { k ->
             double v = s[k] as double
@@ -179,13 +184,16 @@ class FeatureTracks {
     Map readCentroids(File f, String type, boolean useZ) {
         def rows = TSV.read(f)
         def name = f.getName()
-        if (rows.isEmpty()) {
-            return [series_id: null, run_id: null, fingerprint: null, features: [], types: []]
-        }
-        def missing = CENTROID_NEED - rows[0].keySet().toList()
+        // From the header, not the first row: a table with no rows must still be
+        // a centroid table, or any file with the right suffix passes as "a
+        // series with no features".
+        def missing = CENTROID_NEED - headerOf(f)
         if (missing) {
             throw new IllegalArgumentException(name + " lacks column(s): " + missing.join(", ") +
                 " -- is it a centroid table from annotate_features_cli.r?")
+        }
+        if (rows.isEmpty()) {
+            return [series_id: null, run_id: null, fingerprint: null, features: [], types: []]
         }
         def sids = rows.collect { it.series_id }.unique()
         if (sids.size() != 1 || !sids[0]) {
@@ -246,6 +254,12 @@ class FeatureTracks {
         }
         out.features.sort { a, b -> a.t <=> b.t ?: a.feature_id <=> b.feature_id }
         return out
+    }
+
+    /** A table's header as Tsv.read() finds it: the first line not blank and not a comment. */
+    static List<String> headerOf(File f) {
+        def line = f.getText("UTF-8").readLines().find { it.trim() && !it.trim().startsWith("#") }
+        return line == null ? [] : line.split("\t", -1).collect { it.trim() }
     }
 
     // --- linking ----------------------------------------------------------------
@@ -345,7 +359,11 @@ class FeatureTracks {
     Map trackDirectory(File dir, Map raw, Closure log = { }) {
         def s = checkSettings(raw)
         if (!dir?.isDirectory()) throw new IllegalArgumentException("Not a directory: " + dir)
-        def files = (dir.listFiles({ File f -> f.isFile() && f.getName().endsWith(CENTROID_SUFFIX) } as FileFilter)
+        // `._<name>` is the AppleDouble file macOS writes beside a file on a
+        // non-Mac volume (the lab SSD) once an app has touched it: same suffix,
+        // binary content, not a table (as LuxendoScan skips them).
+        def files = (dir.listFiles({ File f -> f.isFile() && f.getName().endsWith(CENTROID_SUFFIX) &&
+                                               !f.getName().startsWith("._") } as FileFilter)
                      ?: []).toList().sort { it.getName() }
         if (files.isEmpty()) {
             throw new IllegalArgumentException("No *" + CENTROID_SUFFIX + " in " + dir +
@@ -363,12 +381,17 @@ class FeatureTracks {
             " over up to " + s.max_frame_gap + " frame(s), splitting < " + s.splitting_max_distance +
             ", merging " + (s.allow_merging ? "< " + s.merging_max_distance : "off"))
 
+        // Link every series before writing any: a TrackMate failure on the
+        // third series must not leave the first two rewritten under these
+        // settings and the rest under the last.
+        tables.each { tb -> tb.res = link(tb.cen.features as List<Map>, s) }
+
         def version = RX.repoVersion(libDir)
         def out = [settings: s, series: []]
         tables.each { tb ->
             File f = tb.file
             def cen = tb.cen
-            def res = link(cen.features as List<Map>, s)
+            def res = tb.res
             def rows = res.rows.collect { r ->
                 [series_id: cen.series_id, t: r.t, feature_id: r.feature_id,
                  prev_feature_id: r.prev_feature_id, run_id: cen.run_id]
@@ -389,7 +412,7 @@ class FeatureTracks {
                        st.n_links + " link(s): " + st.n_gap_closed + " gap-closed, " +
                        st.n_divisions + " division(s), " + st.n_merges + " merge(s)"
             }
-            log("  " + cen.series_id + ": " + what)
+            log("  " + (cen.series_id ?: stemOf(f)) + ": " + what)
             out.series << [series_id: cen.series_id, stem: stemOf(f), n_features: cen.features.size(),
                            frames: res.frames, stats: st, edits: edits]
         }
@@ -399,19 +422,36 @@ class FeatureTracks {
     /**
      * Seed the edits table, or leave a person's edits where they are.
      *
-     * Absent, or holding no edit rows: (re)written, with the current
-     * fingerprint on its template line. An edits file with nothing in it is
-     * never a reason to stop, or every re-annotation would be blocked by a file
-     * holding nothing. Holding edits: kept untouched, and any row made against
-     * another annotation is reported here -- join_tracks() refuses it.
+     * Rewritten, with the current fingerprint on its template line, ONLY when
+     * it is absent or holds nothing but comments, blank lines and exactly the
+     * header this method writes -- so an edits file left empty never blocks a
+     * re-annotation. Anything else is a person's, and is never rewritten:
+     * judged by what the file holds, not by whether it parses, because a file
+     * a person has damaged (a duplicated column, a deleted header line) still
+     * holds their edits. Held edits made against another annotation, or a file
+     * that cannot be read as an edits table, are reported here; join_tracks()
+     * refuses both.
      *
-     * @return "seeded", "reseeded", "kept" or "kept-stale"
+     * @return "seeded", "reseeded", "kept", "kept-stale" or "kept-unreadable"
      */
     String seedEdits(File dest, String fingerprint, String type, Closure log) {
         if (dest.isFile()) {
-            def rows
-            try { rows = TSV.read(dest) } catch (IllegalArgumentException e) { rows = [] }
-            if (!rows.isEmpty()) {
+            def content = dest.getText("UTF-8").readLines().findAll { it.trim() && !it.trim().startsWith("#") }
+            boolean onlyHeader = content.isEmpty() ||
+                (content.size() == 1 && content[0].split("\t", -1).collect { it.trim() } == EDIT_COLUMNS)
+            if (!onlyHeader) {
+                def missing = EDIT_COLUMNS - headerOf(dest)
+                def rows = null
+                def problem = missing ? "no header naming " + missing.join(", ") : null
+                if (!problem) {
+                    try { rows = TSV.read(dest) } catch (IllegalArgumentException e) { problem = e.getMessage() }
+                }
+                if (problem) {
+                    log("  WARNING " + dest.getName() + " cannot be read as an edits table (" + problem +
+                        "). Left exactly as it is; join_tracks() will refuse it until it is mended. " +
+                        "The header is: " + EDIT_COLUMNS.join(" "))
+                    return "kept-unreadable"
+                }
                 def stale = rows.findAll { it.fingerprint != fingerprint }
                 if (stale) {
                     log("  WARNING " + dest.getName() + ": " + stale.size() + " of " + rows.size() +
