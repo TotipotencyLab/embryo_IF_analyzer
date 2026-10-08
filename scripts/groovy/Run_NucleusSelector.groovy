@@ -11,6 +11,7 @@
 #@ String  (label="Threshold method", value="Huang2", description="Select the auto-thresholding method. If 'Manual' is selected, then the threshold range must be provided.", choices={"Huang2","Huang","Default","Otsu","Triangle","IsoData","Li","Yen","Mean","Moments","Percentile","MaxEntropy","RenyiEntropy","Shanbhag","Intermodes","Minimum","IJ_IsoData","MinError(I)","Manual"}) nucMethod
 #@ String  (persist=false, label="  ...if Manual: threshold range low-high", description="Provide the value range between [0-255]", value="") nucRange
 #@ Boolean (persist=false, label="One threshold from the whole stack (off = per slice)", value=true) nucStackHist
+#@ String  (label="Threshold over (time-lapse)", description="frame: each frame gets its own automatic threshold, which follows a signal that fades over time. series: one threshold for every frame, chosen from all of them at once, so frames are cut at the same intensity; it reads every frame twice. A single-frame image is the same either way.", value="frame", choices={"frame","series"}) nucThresholdScope
 #@ String  (label="Particle size (calibrated units^2)", value="80-Infinity") nucSize
 #@ String  (label="Circularity (0.00-1.00 = no filter)", value="0.00-1.00", description="values between 0 and 1. 1 means perfect circle") nucCircularity
 #@ Boolean (label="Split touching nuclei (watershed)", value=false) nucWatershed
@@ -93,6 +94,7 @@ def res = NP.load(LIBDIR).run(imp, outdir, [
     nucleus_threshold      : nucMethod,
     nucleus_threshold_range: nucRange,
     nucleus_stack_histogram: nucStackHist,
+    nucleus_threshold_scope: nucThresholdScope,
     nucleus_particle_size  : nucSize,
     nucleus_circularity    : nucCircularity,
     nucleus_watershed      : nucWatershed,

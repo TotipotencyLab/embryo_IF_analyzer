@@ -32,6 +32,12 @@ sharing a common library, not one program.
    failure showed up is what is worth reading in a year. Note explicitly what
    was *not* verified.
 6. **PR, squash merge**, tag if releasing (bump `VERSION` in the tagged commit).
+   A milestone that changes the contract over several PRs may have a **home
+   branch** instead (`time_axis`): its PRs are `<home>-<what>` branches
+   squash-merged into it, it carries `VERSION` `<next>-dev` so its output cannot
+   pass for the last release, and it is merged into `main` — a normal merge —
+   once all of them are in, with the release `VERSION` as its last commit and
+   the merge commit tagged. `main` then never holds a half-changed contract.
 7. **Doc-sync.** Two different things, and they are not handled the same way.
 
    **a. Format documentation travels with the change — write it, do not
@@ -62,11 +68,16 @@ Before deleting anything, confirm git actually holds it — `**/tmp/` and
 Fiji writes, per feature per image:
 
 ```
-<series_id>_<feature>_outline.txt        name, roi, z, x, y   (one row per polygon vertex)
+<series_id>_<feature>_outline.txt        name, roi, t, z, x, y   (one row per polygon vertex)
 <series_id>_<feature>_outline_ROIs.zip   ImageJ ROIs
-<series_id>_<feature>_res.txt            measurements, one row per ROI per channel
+<series_id>_<feature>_res.txt            measurements, one row per ROI per channel per frame
 <series_id>_config.txt                   every parameter used for that run
+<series_id>_threshold_stats.tsv          what the nucleus threshold did, one row per frame
 ```
+
+An image may have several frames; each is analysed as an image of its own, and
+**every image axis this repo writes counts from 1** — channel, z and t, as
+ImageJ shows them (`note/fiji_vocabulary.md`). A single frame is `t = 1`.
 
 ⚠️ **The file stem and the `name` column are one string.** The R side reads the
 series id out of `name` and finds `_config.txt` and `_res.txt` by it, so a
@@ -124,18 +135,24 @@ R side cannot read, and the template is a generated duplicate of it. That is why
 one needs tests where the other does not — and why making the sheet look more
 like the config would be a step backwards.
 
-- `scripts/R/read_fiji_result.r` identifies the roi column by matching
-  `\d{4}-\d{4}-\d{4}$` and joins measurements to outlines through the roi id
-  **embedded in the `Label` column**. The measurement numbers can be perfectly
-  correct while the join yields nothing.
+- Measurements join outlines on **`(roi, t)`**. Since v0.8.0 `_res.txt` carries
+  `roi`, `z`, `t` and `ch` written by Fiji; `read_fiji_result.r` takes them as
+  given and stops if the `Label` disagrees. For an older table it still digs
+  the roi id **out of the `Label` column** — the measurement numbers can be
+  perfectly correct while that join yields nothing.
 - The measurement columns come from `Set Measurements`, which is a *persistent
   Fiji user preference*. The Groovy scripts force it explicitly:
-  `area mean standard min centroid shape integrated median stack display`.
-  Never rely on the operator's Fiji settings.
+  `area mean standard min centroid shape integrated median display`.
+  Never rely on the operator's Fiji settings. ⚠️ **Not `stack`**: ImageJ's
+  `Ch`/`Slice`/`Frame` mean different things on different image shapes
+  (`Slice` is the *time* on a 1-channel, 1-slice time course), and beside our
+  own `ch` they collide once R lower-cases the names.
 
 ROI names are `<feature>_SSSS-NNNN-YYYY` — slice, per-slice index, y-centre of the
-ROI bounds. Reproduced in Groovy so output stays compatible after moving off the
-ROI Manager.
+ROI bounds — with a leading `TTTT-` (the frame) when the image has several
+frames: four frames of one object would otherwise share a name, which the ROI
+zip refuses. Every reader takes both shapes. Reproduced in Groovy so
+single-frame output stays compatible after moving off the ROI Manager.
 
 When changing anything that writes these files, verify against a reference run
 rather than by eye. See the `fiji-headless-testing` skill; it describes the whole
@@ -199,7 +216,16 @@ loop, including how to diff.
   removed `gatherFrames`; a time point is taken out at use, as
   `Make_LuxendoTiff`'s `frames`. The consequence to know before touching the batch: a 96-frame
   position is ~94 GB against a ~9 GB heap, so nothing may hold a Luxendo series
-  whole — it has to be streamed frame by frame, which is the `time_axis` work.
+  whole. `SeriesSource.groovy` hands the batch one frame at a time: each frame is
+  analysed, staged under `.staging/<series_id>/` and released before the next is
+  read, and the series' files are joined from the staged frames at the end.
+  **A rerun resumes from them**: finished frames are not read again, and
+  `settings.txt` beside them makes a rerun under other settings stop rather than
+  join frames analysed two ways. The skipped frames' ROIs come back from the
+  staged zip, which is why it is staged even with `save_roi_zips` off. What a
+  rerun does with output already there — resume, also skip finished series
+  without opening them, or redo — is the batch's `existingOutput`
+  (`note/data_formats.md`).
 
   **`Make_LuxendoSheets.groovy` writes `series.tsv` + `sources.tsv`.** Two
   tables because Luxendo breaks the assumption every other format here
@@ -219,14 +245,19 @@ loop, including how to diff.
   stack number. There is one join, `LuxendoScan.withSeriesId()` — use it.
 
   **`Make_LuxendoTiff.groovy` is for tuning and drag-and-drop, not a required
-  step.** The batch runner is meant to read the `.lux.h5` through the same two
-  tables and never touch what this writes — deliberately: the sources *are* the
-  pixels and TIFF does not compress them, so a mandatory conversion would mean
-  holding two copies of an 800 GB acquisition. ⚠️ **That route is not built
-  yet**: the resolver moved into `time_axis` because it has to hand over one
-  frame at a time, and today the batch opens files only. Set `include=false` on
-  all but a few series first, and choose time points with `frames` — each
-  becomes its own `<series_id>_t<TTTT>` file.
+  step.** The batch reads the `.lux.h5` through the same two tables
+  (`sourcesFile`) and never touches what this writes — deliberately: the sources
+  *are* the pixels and TIFF does not compress them, so a mandatory conversion
+  would mean holding two copies of an 800 GB acquisition. A row whose series is
+  in the sources table is read from the sources, any other is opened as a file,
+  so one sheet can hold both. For `Make_LuxendoTiff`, set `include=false` on all
+  but a few series first, and choose time points with `frames` — each becomes
+  its own `<series_id>_t<TTTT>` file unless `oneFile` gathers them into one.
+  ⚠️ The two routes do not give identical files for the same time points: the
+  batch's `t` is the acquisition's time point where a gathered TIFF's counts
+  from 1 again, and the TIFF stores the pixel size as float32, so calibrated
+  measurements (`Area`, `X`, `Y`, `IntDen`) differ by up to 1 part in 10^5.
+  Outlines and pixel statistics agree exactly.
 
   ⚠️ **The series id carries the alias**, built with the repo's own
   `composeSeriesId()` rather than a second copy of the rule. `s<NNNN>_<stack
@@ -257,12 +288,17 @@ loop, including how to diff.
   the pixel count is rounded. `note/luxendo_file_format.md` is what the format
   is; `note/data_formats.md` §1 is the two tables.
 - **`Run_Overview_Batch.groovy` is the cheap look at a dataset**: overview PNGs
-  for every included sheet row and nothing else. It exists because deciding what
+  for every included sheet row and nothing else — a TIFF per channel, a page
+  per frame, for a multi-frame series, with `sourcesFile`/`frames` as the
+  nucleus batch takes them. It exists because deciding what
   a slide contains should not cost a segmentation run — detection needs a tuned
   config you cannot write until you have seen the images. Its PNGs carry the
   same `<series_id>_overview_ch<N>.png` names the nucleus path writes, and are
   byte-identical for the same settings, so nothing downstream needs to know
-  which runner made one.
+  which runner made one. The multi-frame TIFF is drawn at **one display range
+  per channel across every frame** (`overview_display_range`), decided at the
+  join from staged per-frame histograms — per-frame `auto` would make a cell
+  appear to brighten because the stretch moved.
 - **`BatchRunner.runEach()` is the loop; `run()` is one caller of it.** Include,
   the duplicate-`series_id` refusal, resolving and opening the image, the pixel-size
   warning, closing the stack on both paths, one row's failure not costing the
@@ -518,9 +554,12 @@ fourth fork.** A new assay should be a new configuration of the shared library.
   unfilled hole and shatters one object into a ring of fragments.
 - **One threshold vocabulary, two histograms.** Both features take their
   algorithms from Fiji's Auto Threshold plugin (`fiji.threshold.Auto_Threshold`).
-  The nucleus calls its `exec()`, which is the same code the macro string ran
-  **and returns the threshold it chose**; the nucleolus calls the per-algorithm
-  statics on a histogram it builds itself. Before this the nucleolus used
+  The nucleus chooses its threshold in `RoiDetect.chooseThreshold()`: the
+  plugin's per-method statics, in `exec()`'s own sequence, on a `long`
+  histogram whose counts are divided only as far as the method's `int`
+  arithmetic needs (`nucleus_histogram_divisor`). `exec()` itself overflowed on
+  large stacks and is kept as `Test_BuildMask`'s oracle. The nucleolus calls the
+  same statics on a histogram it builds itself. Before this the nucleolus used
   ImageJ's own `ij.process.AutoThresholder` enum, which has no `Huang2` — the
   nucleus default — so the same word meant something in one field and threw in
   the other. The two implementations were measured as identical on every method

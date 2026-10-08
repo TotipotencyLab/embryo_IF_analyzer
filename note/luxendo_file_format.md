@@ -65,6 +65,14 @@ compression. Whole-dataset read of a 312 MiB stack: 465 ms. Plane-by-plane is
 ~5x slower (2.5 s for 39 planes), not the 39x the chunk shape suggests — HDF5
 serves partial chunks cheaply because the data are uncompressed.
 
+`LuxendoFile.volume()` reads the whole stack in strips one chunk tall across
+every slice, so each chunk is read once; the batch reads its frames that way.
+**Over the samba mount the method does not matter** (measured 2026-10-04 on
+2026-09-10_203030 position 1): one frame — three channels, 981 MB — took 84–88 s
+in strips and 89 s plane by plane, ~11.5 MB/s either way. The network is the
+cost there, ~85 s a frame or ~2.3 h of reading for a 96-frame position, so a
+position to be run more than once is worth copying to local disk first.
+
 ## 3. The JSON
 
 Four top-level keys: `processingInformation`, `metaData`, `cameraData`,

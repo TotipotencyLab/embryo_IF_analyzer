@@ -17,6 +17,19 @@
 #       --projection S_overview_ch1.png --overlay S_merged_ch1.png \
 #       --config data/S_config.txt --output S_montage.png
 #
+# A TIME COURSE gets one montage per frame, as the pages of one 8-bit TIFF:
+# the Fiji panels come from the batch's multi-frame overview TIFFs, page by
+# page, and panel (iii) from that frame's features alone. --t chooses frames.
+#
+#   ./montage_qc_cli.r --features out/S_features.rds \
+#       --projection S_overview_ch1.tif --overlay S_overview_ch1_overlay.tif \
+#       --config data/S_config.txt --output S_montage.tif --t 1-10
+#
+# The overview TIFF holds the frames _config.txt's frames_analysed names, in
+# that order -- which is how a page is matched to a t. The extent and the
+# outline colours are the series', shared by every page, so flicking through
+# shows the objects change and nothing else.
+#
 # ALIGNMENT: panel (iii) is drawn over the full image frame only when the image
 # dimensions are known. Those come from image_width/image_height in the Fiji
 # _config.txt. Without them the panel is cropped to the features' bounding box
@@ -101,6 +114,10 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = "PNG of the z-projection with Fiji outlines")
   p <- add_argument(p, "--config", short = "-c", type = "character",
                     help = "Fiji _config.txt, for the image extent [default: found beside --features]")
+  p <- add_argument(p, "--t", type = "character", nargs = Inf, default = NULL,
+                    help = paste("frames to draw, as 2,11,21 or 1-4 (counted from 1, as t is)",
+                                 "[default: every frame in --features]. Several frames",
+                                 "make a multi-page TIFF, so --output must end .tif"))
   p <- add_argument(p, "--feature", short = "-f", type = "character", nargs = Inf, default = NULL,
                     help = "restrict panel (iii) to these feature type(s)")
   p <- add_argument(p, "--feature_table", short = "-T", type = "character",
@@ -154,6 +171,33 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     if (!nrow(feats)) stop("No rows left after --feature filtering", call. = FALSE)
   }
 
+  # --- which frames --------------------------------------------------------------
+  # Three renderings of ONE image per page. A time course's frames would be drawn
+  # on top of each other, so each frame is a page of its own, drawn from its
+  # page of the overview TIFFs and its own features.
+  has_t <- "t" %in% colnames(feats)
+  all_t <- if (has_t) sort(unique(as.integer(feats$t))) else integer(0)
+  want_t <- .mqc_parse_t(.cli_resolve_arg(argv$t, "--t"))
+  if (length(want_t) && !has_t) {
+    stop("--t given, but ", basename(argv$features), " has no t column", call. = FALSE)
+  }
+  frames <- if (length(want_t)) want_t else all_t
+  absent_t <- setdiff(frames, all_t)
+  if (length(absent_t)) {
+    stop("--t names frame(s) with no features in ", basename(argv$features), ": ",
+         paste(absent_t, collapse = ", "), "\n  present: ", paste(all_t, collapse = ", "),
+         call. = FALSE)
+  }
+  # Per frame only when the file holds several or a frame was chosen: a single
+  # frame takes exactly the path it always has.
+  per_frame <- length(all_t) > 1L || length(want_t) > 0L
+  if (!per_frame) frames <- NA_integer_
+  if (length(frames) > 1L && !grepl("\\.tiff?$", argv$output, ignore.case = TRUE)) {
+    stop(length(frames), " frames make a multi-page montage, written as a TIFF: --output ",
+         "must end .tif (got ", basename(argv$output), "). Or choose one frame with --t.",
+         call. = FALSE)
+  }
+
   sid <- sub("_features\\.rds$", "", basename(argv$features))
 
   # --- image extent -----------------------------------------------------------
@@ -162,13 +206,15 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   extent <- .image_extent(cfg_path)
 
   # --- panels -----------------------------------------------------------------
-  panels <- list()
+  # Read whole: a TIFF's pages are frames, a PNG is one.
+  fiji <- list()
   if (!is.na(argv$projection)) {
-    panels[["raw z-projection"]] <- .read_panel(argv$projection, "--projection")
+    fiji[["raw z-projection"]] <- .read_panel(argv$projection, "--projection")
   }
   if (!is.na(argv$overlay)) {
-    panels[["z-projection + Fiji outline"]] <- .read_panel(argv$overlay, "--overlay")
+    fiji[["z-projection + Fiji outline"]] <- .read_panel(argv$overlay, "--overlay")
   }
+  page_of <- .mqc_pages(fiji, frames, per_frame, cfg_path)
 
   valid <- .cli_valid_rows(feats)
 
@@ -206,6 +252,8 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   # Skipped entirely when nothing was accepted: there is no feature to colour,
   # and composing a class for rejected geometry is what put it in the wrong
   # layer in the first place.
+  #
+  # Done once over EVERY frame, so a class keeps its colour from page to page.
   unioned <- NULL
   pal <- list(palette = NULL, other_members = character(0))
   if (!drew_rejected) {
@@ -254,78 +302,106 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     }
 
     # union AFTER the class is assigned, and carry it through the grouping or the
-    # summarise drops it.
+    # summarise drops it. t rides along for a time course, to split by; feature
+    # ids are numbered across a series' frames, so it splits nothing.
     unioned <- union_features(valid,
-                              group_cols = c("feature_id", "feature_type", "feature_class"))
-    message("Panel (iii): ", nrow(feats), " ROIs -> ", nrow(unioned), " unioned feature(s)")
+                              group_cols = c("feature_id", "feature_type", "feature_class",
+                                             if (per_frame) "t"))
+    if (!per_frame) {
+      message("Panel (iii): ", nrow(feats), " ROIs -> ", nrow(unioned), " unioned feature(s)")
+    }
 
     pal <- class_palette(unioned$feature_class, cmap)
     unioned$feature_class <- pal$values
   }
 
-  r_png <- tempfile(fileext = ".png")
-  .r_panel(feats, unioned, extent, sid, r_png, argv$panel_height,
-           palette = pal$palette)
-
-  # The panel is deliberately legend-free so it lines up with the Fiji PNGs
-  # beside it, so the key goes in the caption instead. Naming what is inside
-  # "other" is the point: a grey blob nobody can identify is how a QC panel
-  # quietly stops being a QC panel.
-  cap <- if (drew_rejected) {
-    paste0("per-ROI outlines only \u2014 ", nrow(feats),
-           " ROI(s), NONE became a feature")
-  } else {
-    paste0("R union, z-aware (", nrow(unioned), ")")
-  }
-  if (!is.null(pal$palette)) {
-    named <- setdiff(names(pal$palette), "other")
-    cap <- paste0(cap, " | ",
-                  paste(sprintf("%s=%s", named, pal$palette[named]), collapse = " "))
-    if (length(pal$other_members)) {
-      cap <- paste0(cap, " | other(", length(pal$other_members), "): ",
-                    paste(pal$other_members, collapse = ", "))
-    }
-  }
-  panels[[cap]] <- magick::image_read(r_png)
-
-  if (length(panels) < 2) {
-    warning("Only one panel available; a montage of one panel is just the panel.",
-            call. = FALSE)
-  }
-
-  # --- compose ----------------------------------------------------------------
-  # Layout and title come from scripts/R/montage_grid.r, shared with
-  # group_montage_cli.r. The panels are NOT padded to a common width here: they
-  # are three renderings of one image scaled to a common height, and padding
-  # them apart would put gaps into a strip meant to be read across. mg_grid()
-  # takes no full_width for that reason, and a single row of equal-height cells
-  # passes through it unchanged -- verified byte-identical to the
-  # image_append() this replaced.
-  h <- argv$panel_height
-  imgs <- lapply(names(panels), function(nm) {
-    im <- magick::image_scale(panels[[nm]], paste0("x", h))
-    if (!argv$no_labels) {
-      im <- magick::image_annotate(im, nm, size = max(12, round(h / 30)),
-                                   gravity = "northwest", boxcolor = "white",
-                                   color = "black", location = "+4+4")
-    }
-    im
-  })
-  montage <- mg_grid(imgs, ncol = length(imgs))
-
-  # A title, because a QC montage on its own says nothing about WHICH series it
-  # is: the panel captions name the panels, and the filename is only visible
-  # from outside the picture. Opened from a folder of them, or pasted into a
-  # note, an untitled montage is unattributable.
   ttl <- .mqc_one(.cli_resolve_arg(argv$title, "--title"), sid)
-  if (!argv$no_title && nzchar(ttl)) {
-    montage <- mg_title(montage, ttl)
-  }
+  pages <- lapply(seq_along(frames), function(i) {
+    t <- frames[i]
+    if (is.na(t)) {
+      f_feats <- feats; f_unioned <- unioned; f_rejected <- drew_rejected
+    } else {
+      f_feats <- feats[as.integer(feats$t) == t, , drop = FALSE]
+      f_unioned <- if (is.null(unioned)) NULL else unioned[as.integer(unioned$t) == t, , drop = FALSE]
+      # A frame with nothing valid is drawn as the whole file would be: its
+      # rejected ROIs grey, and a caption saying none became a feature.
+      f_rejected <- drew_rejected || (nrow(f_feats) > 0 && (is.null(f_unioned) || !nrow(f_unioned)))
+      if (f_rejected) f_unioned <- NULL
+      message("Panel (iii), t = ", t, ": ", nrow(f_feats), " ROIs -> ",
+              if (is.null(f_unioned)) 0 else nrow(f_unioned), " unioned feature(s)")
+    }
+    panels <- lapply(fiji, function(im) if (is.na(t)) im else im[page_of[[as.character(t)]]])
+
+    r_png <- tempfile(fileext = ".png")
+    .r_panel(f_feats, f_unioned, extent, sid, r_png, argv$panel_height,
+             palette = pal$palette)
+
+    # The panel is deliberately legend-free so it lines up with the Fiji PNGs
+    # beside it, so the key goes in the caption instead. Naming what is inside
+    # "other" is the point: a grey blob nobody can identify is how a QC panel
+    # quietly stops being a QC panel.
+    cap <- if (f_rejected) {
+      paste0("per-ROI outlines only \u2014 ", nrow(f_feats),
+             " ROI(s), NONE became a feature")
+    } else {
+      paste0("R union, z-aware (", nrow(f_unioned), ")")
+    }
+    if (!is.null(pal$palette)) {
+      named <- setdiff(names(pal$palette), "other")
+      cap <- paste0(cap, " | ",
+                    paste(sprintf("%s=%s", named, pal$palette[named]), collapse = " "))
+      if (length(pal$other_members)) {
+        cap <- paste0(cap, " | other(", length(pal$other_members), "): ",
+                      paste(pal$other_members, collapse = ", "))
+      }
+    }
+    panels[[cap]] <- magick::image_read(r_png)
+
+    if (length(panels) < 2 && i == 1L) {
+      warning("Only one panel available; a montage of one panel is just the panel.",
+              call. = FALSE)
+    }
+
+    # --- compose ----------------------------------------------------------------
+    # Layout and title come from scripts/R/montage_grid.r, shared with
+    # group_montage_cli.r. The panels are NOT padded to a common width here: they
+    # are three renderings of one image scaled to a common height, and padding
+    # them apart would put gaps into a strip meant to be read across. mg_grid()
+    # takes no full_width for that reason, and a single row of equal-height cells
+    # passes through it unchanged -- verified byte-identical to the
+    # image_append() this replaced.
+    h <- argv$panel_height
+    imgs <- lapply(names(panels), function(nm) {
+      im <- magick::image_scale(panels[[nm]], paste0("x", h))
+      if (!argv$no_labels) {
+        im <- magick::image_annotate(im, nm, size = max(12, round(h / 30)),
+                                     gravity = "northwest", boxcolor = "white",
+                                     color = "black", location = "+4+4")
+      }
+      im
+    })
+    montage <- mg_grid(imgs, ncol = length(imgs))
+
+    # A title, because a QC montage on its own says nothing about WHICH series it
+    # is: the panel captions name the panels, and the filename is only visible
+    # from outside the picture. Opened from a folder of them, or pasted into a
+    # note, an untitled montage is unattributable. A page also says its frame.
+    page_ttl <- if (is.na(t)) ttl else paste0(ttl, "   t = ", t)
+    if (!argv$no_title && nzchar(page_ttl)) {
+      montage <- mg_title(montage, page_ttl)
+    }
+    list(montage = montage, n_panels = length(panels))
+  })
+
+  montage <- do.call(c, lapply(pages, `[[`, "montage"))
   mg_write(montage, argv$output)
 
   info <- magick::image_info(montage)
-  message("Wrote ", argv$output, " (", info$width, "x", info$height, ", ",
-          length(panels), " panels)")
+  message("Wrote ", argv$output, " (", info$width[1], "x", info$height[1], ", ",
+          pages[[1]]$n_panels, " panels",
+          if (length(pages) > 1L) paste0(", ", length(pages), " pages: t = ",
+                                          paste(frames, collapse = ", ")) else "",
+          ")")
 
   return(invisible(argv$output))
 }
@@ -335,6 +411,67 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 .read_panel <- function(path, what) {
   if (!file.exists(path)) stop("No such file for ", what, ": ", path, call. = FALSE)
   return(magick::image_read(path))
+}
+
+#' Frames named on the command line: 2,11,21 or 1-4, and mixtures. Counted
+#' from 1, as t is. integer(0) when none were given.
+.mqc_parse_t <- function(v) {
+  if (is.null(v) || !length(v) || all(is.na(v))) return(integer(0))
+  parts <- trimws(unlist(strsplit(paste(v, collapse = ","), "[,[:space:]]+")))
+  parts <- parts[nzchar(parts)]
+  out <- unlist(lapply(parts, function(p) {
+    m <- regmatches(p, regexec("^([0-9]+)(?:-([0-9]+))?$", p, perl = TRUE))[[1]]
+    if (!length(m)) {
+      stop("--t takes frames like 2,11,21 or 1-4; got '", p, "'", call. = FALSE)
+    }
+    a <- as.integer(m[2]); b <- if (nzchar(m[3])) as.integer(m[3]) else a
+    if (b < a) stop("--t: range ", p, " runs backwards", call. = FALSE)
+    seq.int(a, b)
+  }))
+  if (any(out == 0L)) {
+    stop("--t: frames count from 1, as t does; got 0", call. = FALSE)
+  }
+  return(sort(unique(out)))
+}
+
+#' Which page of each Fiji panel holds frame t.
+#'
+#' A multi-frame overview TIFF holds the frames _config.txt's frames_analysed
+#' names, in that order -- that is the only record of which page is which, so a
+#' TIFF that does not have exactly that many pages is refused rather than
+#' matched by position. A single-page panel (a PNG) cannot serve a time course.
+#'
+#' @return a list t -> page index, or NULL when not per frame / no panels.
+.mqc_pages <- function(fiji, frames, per_frame, cfg_path) {
+  if (!per_frame || !length(fiji)) return(NULL)
+  cfg <- .cli_read_config(cfg_path)
+  fa <- if (is.null(cfg) || !"frames_analysed" %in% names(cfg)) NA_character_ else cfg[["frames_analysed"]]
+  if (is.na(fa) || !nzchar(trimws(fa))) {
+    stop("A per-frame montage needs frames_analysed from the run's _config.txt, to ",
+         "match the overview's pages to frames, and ",
+         if (is.na(cfg_path)) "no _config.txt was found (pass --config)" else
+           paste0(basename(cfg_path), " has none (written by the batch since v0.8.0)"),
+         call. = FALSE)
+  }
+  analysed <- as.integer(strsplit(trimws(fa), "[[:space:]]+")[[1]])
+  for (nm in names(fiji)) {
+    n <- length(fiji[[nm]])
+    if (n != length(analysed)) {
+      stop("The ", nm, " image has ", n, " page(s) but the run analysed ", length(analysed),
+           " frame(s) (frames_analysed: ", fa, "). ",
+           if (n == 1L) "A time course's overview is the multi-frame TIFF, <series_id>_overview_ch<N>.tif, not a PNG." else
+             "Is it from another run?",
+           call. = FALSE)
+    }
+  }
+  missing <- setdiff(frames, analysed)
+  if (length(missing)) {
+    stop("Frame(s) ", paste(missing, collapse = ", "), " are not in this run's overview ",
+         "(frames_analysed: ", fa, ")", call. = FALSE)
+  }
+  out <- as.list(match(frames, analysed))
+  names(out) <- as.character(frames)
+  return(out)
 }
 
 .find_config <- function(features_path, sid) {

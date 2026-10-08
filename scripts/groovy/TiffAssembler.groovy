@@ -47,6 +47,7 @@ class TiffAssembler {
     static final List<String> FORMATS = [TIFF, BIGTIFF]
 
     Object LFC          // LuxendoFile class
+    Object SS           // SeriesSource class: the one reader of a Luxendo series
     Object RX           // RoiExport, for repoVersion()
     String libDir
 
@@ -56,6 +57,7 @@ class TiffAssembler {
         def a = new TiffAssembler()
         a.libDir = libDir
         a.LFC = gcl.parseClass(new File(dir, "LuxendoFile.groovy"))
+        a.SS  = gcl.parseClass(new File(dir, "SeriesSource.groovy"))
         a.RX  = gcl.parseClass(new File(dir, "RoiExport.groovy"))
         return a
     }
@@ -133,7 +135,8 @@ class TiffAssembler {
 
     /**
      * A time-point selection: blank or "all" = every frame (null), otherwise
-     * a comma list of time points and ranges -- "0", "0,47,95", "0-3,10".
+     * a comma list of time points and ranges -- "1", "1,48,96", "1-4,11".
+     * Counted from 1, as sources.tsv's `t` is.
      * Validated in code, like the format and scale.
      */
     static List<Integer> parseFrames(Object v) {
@@ -144,12 +147,18 @@ class TiffAssembler {
             def m = (part =~ /^(\d+)(?:\s*-\s*(\d+))?$/)
             if (!m) {
                 throw new IllegalArgumentException(
-                    "frames must be blank, 'all', or time points like 0,47,95 or 0-3; got >>>" + v + "<<<")
+                    "frames must be blank, 'all', or time points like 1,48,96 or 1-4; got >>>" + v + "<<<")
             }
             int a = Integer.parseInt(m[0][1] as String)
             int b = m[0][2] ? Integer.parseInt(m[0][2] as String) : a
             if (b < a) throw new IllegalArgumentException("frames: range " + part + " runs backwards")
             (a..b).each { out << it }
+        }
+        if (out.contains(0)) {
+            // Not "no source has time point 0": that is true, and sends a person
+            // looking for a missing file rather than at the count.
+            throw new IllegalArgumentException(
+                "frames: time points count from 1 since v0.8.0, as ImageJ shows them; got 0 in >>>" + v + "<<<")
         }
         return out.toList()
     }
@@ -157,6 +166,30 @@ class TiffAssembler {
     /** The output base for one frame taken out of a multi-frame series. */
     static String frameBase(String seriesId, Object t) {
         return seriesId + "_" + String.format("t%04d", t as int)
+    }
+
+    /**
+     * The output base for chosen frames gathered into one file.
+     *
+     * Names the SELECTION, runs compressed: [2, 11, 21] is _t0002_t0011_t0021,
+     * [1, 2, 3, 4] is _t0001-0004. Never the bare series id, which is what a
+     * blank `frames` writes: skipExisting decides by name alone, so a file
+     * holding frames 1-4 under that name would later be skipped as "already
+     * assembled" when every frame was asked for. One frame is frameBase().
+     * No commas: a comma in a filename is split in half by the R CLIs.
+     */
+    static String framesBase(String seriesId, Collection ts) {
+        def sorted = ts.collect { it as int }.unique().sort()
+        def parts = []
+        int i = 0
+        while (i < sorted.size()) {
+            int j = i
+            while (j + 1 < sorted.size() && sorted[j + 1] == sorted[j] + 1) j++
+            parts << (j == i ? String.format("t%04d", sorted[i])
+                             : String.format("t%04d-%04d", sorted[i], sorted[j]))
+            i = j + 1
+        }
+        return seriesId + "_" + parts.join("_")
     }
 
     /** Validate a format name in code: a `#@ String` with choices is NOT validated. */
@@ -283,32 +316,26 @@ class TiffAssembler {
             return summary
         }
 
-        // Channels in sources-table order, which is the source metadata's own channel
-        // index -- never directory order, which the .ims files show can differ.
-        // Frames in time order, for the same reason.
-        def ordered = []
-        frames.each { tp -> ordered.addAll(byFrame[tp].sort(false) { a, b -> (a.channel as int) <=> (b.channel as int) }) }
-        def open  = []
-        def crc   = new CRC32()
+        // Read through SeriesSource, the one reader of a Luxendo series -- the
+        // batch reads the same way, so the two cannot drift apart. Channels in
+        // sources-table order, which is the source metadata's own channel index
+        // -- never directory order, which the .ims files show can differ --
+        // and frames in time order. A frame's files are open only while its
+        // planes are read.
+        def src = null
+        def crc = new CRC32()
         try {
-            ordered.each { open << LFC.open(new File(srcRoot, it.source_path as String)) }
-            open.eachWithIndex { lf, i ->
-                if (lf.sizeZ != nz) {
-                    throw new IllegalStateException(
-                        name + ": " + ordered[i].source_path + " has " + lf.sizeZ +
-                        " slices, expected " + nz +
-                        " -- a gathered position must hold one volume shape, not several")
-                }
-            }
+            src = SS.ofLuxendo(rows, srcRoot, name.replaceAll(/\.(ome\.)?tiff?$/, ""), LFC)
             // XYCZT: channel fastest, then z, then t -- matching
             // setDimensions(c, z, t) below. Getting this order wrong produces a
             // perfectly well-formed stack of the wrong planes.
             def stack = new ImageStack(outX, outY)
             for (int t = 0; t < nt; t++) {
+                int tp = frames[t] as int
                 for (int z = 0; z < nz; z++) {
                     for (int c = 0; c < nc; c++) {
-                        def row = ordered[t * nc + c]
-                        short[] px = open[t * nc + c].plane(z)
+                        def row = src.sourceRow(tp, c + 1)
+                        short[] px = src.plane(tp, c + 1, z + 1)
                         def sp = new ShortProcessor(first.size_x as int, first.size_y as int, px, null)
                         if (pct < FULL) sp = (ShortProcessor) sp.resize(outX, outY, true)
                         // Checksum what is WRITTEN, not what was read. At 100%
@@ -336,7 +363,7 @@ class TiffAssembler {
             summary.status = "failed"
             summary.reason = e.getClass().getSimpleName() + ": " + e.getMessage()
         } finally {
-            open.each { try { it.close() } catch (ignored) { } }
+            if (src != null) src.dispose()
         }
         return summary
     }
@@ -353,10 +380,12 @@ class TiffAssembler {
         int pct        = checkScalePercent(opts.scalePercent)
         boolean verify = (opts.verify ?: false) as boolean
         def frameSel   = parseFrames(opts.frames)
+        boolean oneFile = (opts.oneFile ?: false) as boolean
 
-        def groups = groupByOutput(rows, frameSel)
+        def groups = groupByOutput(rows, frameSel, oneFile)
         log?.call("  " + groups.size() + " output(s), format=" + format +
-                  (frameSel != null ? (", time points " + frameSel + " each in its own file") : "") +
+                  (frameSel != null ? (", time points " + frameSel +
+                                       (oneFile ? " in one file per series" : " each in its own file")) : "") +
                   (pct < FULL ? (", downscaled to " + pct + "%") : "") +
                   (opts.skipExisting ? ", skipping ones already assembled" : "") +
                   (verify ? ", verifying" : ""))
@@ -425,12 +454,20 @@ class TiffAssembler {
      * With no frame selection, one output per series -- every frame it holds.
      * With one, only the chosen time points, and each in its OWN file: a frame
      * taken out of a multi-frame series is named series_id + _t<TTTT>, so
-     * frame 0 and frame 47 of one position cannot overwrite each other. A
-     * series that holds a single frame keeps its own name either way.
+     * frame 1 and frame 48 of one position cannot overwrite each other. With
+     * `oneFile`, the chosen time points of a series go into one file instead,
+     * named after the selection (framesBase). A series that holds a single
+     * frame keeps its own name either way.
      */
-    static Map<String, List<Map>> groupByOutput(List<Map> rows, List<Integer> frames = null) {
+    static Map<String, List<Map>> groupByOutput(List<Map> rows, List<Integer> frames = null,
+                                                boolean oneFile = false) {
         def framesPerSeries = rows.groupBy { it.series_id }
                                   .collectEntries { k, v -> [k, v.collect { it.t as int }.unique().size()] }
+        // The time points each series actually holds out of those chosen: the
+        // name says what is IN the file, not what was asked for.
+        def chosenPerSeries = frames == null ? [:] :
+            rows.findAll { frames.contains(it.t as int) }.groupBy { it.series_id }
+                .collectEntries { k, v -> [k, v.collect { it.t as int }.unique()] }
         def m = new LinkedHashMap()
         rows.sort(false) { a, b ->
             (a.series_id <=> b.series_id) ?:
@@ -438,8 +475,9 @@ class TiffAssembler {
             ((a.channel as int) <=> (b.channel as int))
         }.each { r ->
             if (frames != null && !frames.contains(r.t as int)) return
-            def key = (frames != null && framesPerSeries[r.series_id] > 1)
-                      ? frameBase(r.series_id as String, r.t) : (r.series_id as String)
+            def key = (frames == null || framesPerSeries[r.series_id] <= 1) ? (r.series_id as String)
+                    : oneFile ? framesBase(r.series_id as String, chosenPerSeries[r.series_id])
+                    : frameBase(r.series_id as String, r.t)
             m.computeIfAbsent(key, { [] }) << r
         }
         return m
@@ -470,6 +508,12 @@ class TiffAssembler {
         // line per (timepoint, channel) rather than per channel, or three of a
         // position's twelve sources would be the only ones recorded.
         boolean gathered = (summary.frames as int) > 1
+        // Frame k of a gathered file is the k-th time point here. The analysis
+        // counts frames inside the file from 1, so for frames 2, 11, 21 its
+        // t = 2 is time point 11 -- this line is the way back.
+        if (gathered) {
+            put("time_points", rows.collect { it.t as int }.unique().sort().join(" "))
+        }
         rows.sort(false) { a, b -> (a.t <=> b.t) ?: ((a.channel as int) <=> (b.channel as int)) }.each { r ->
             def key = gathered ? ("t" + r.t + "_channel_" + r.channel) : ("channel_" + r.channel)
             put(key + "_name",   r.channel_name)

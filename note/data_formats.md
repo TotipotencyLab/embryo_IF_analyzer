@@ -145,7 +145,7 @@ which were dropped. A CLI copied out of the repo finds no schema, keeps
 everything, and still runs.
 
 ⚠️ A metadata column may not be named after one the CLIs write themselves —
-`roi`, `z`, `area`, `is_bridge`, `geometry`, `series_id`, `run_id`, `feature_id`,
+`roi`, `t`, `z`, `area`, `is_bridge`, `geometry`, `series_id`, `run_id`, `feature_id`,
 `feature_type`, `parent_*`, `feature_class`, `n_detected`, `n_invalid`,
 `n_failed`, `n_roi`. The sheet is rejected with the offending name rather than
 the column being silently renamed to `area...7`. (The `--id_column` itself is
@@ -252,9 +252,17 @@ directory.
 | `source_path` | **yes** | the `.lux.h5`, relative to the acquisition directory in the series row's `path` |
 | `alias` | **yes** | the acquisition this source belongs to |
 | `series_index` | **yes** | the stack. With `alias`, the join to `series.tsv` — rows sharing the pair are one series: its channels and its time points |
-| `channel` | **yes** | 0-based channel index **in the output** |
+| `channel` | **yes** | channel index **in the output**, **from 1** — `ch1` in the results is channel 1 here. Luxendo's own channel 0 is channel 1 |
 | `channel_name` | no | `channel_description`; blank when unnamed. Here and not on the series table because it is per channel |
-| `t` | **yes** | 0-based time point within the series |
+| `t` | **yes** | time point within the series, **from 1** — Luxendo's `time_point` 0 is `t` 1 |
+
+⚠️ **Counted from 1 since v0.8.0**, like every image axis this repo writes
+(`note/fiji_vocabulary.md`); a sources table written before counted `t` and
+`channel` from 0. Read by today's code it would be off by one with no error, so
+it is **refused**, naming v0.8.0: every such table has `t = 0` and
+`channel = 0` rows and a new one cannot (`LuxendoScan.requireOneBased()`, inside
+the one join). Re-run `Make_LuxendoSheets` into another directory and take only
+its `sources.tsv` — the series table does not change, so yours keeps its edits.
 | `size_x`, `size_y`, `size_z` | **yes** | pixels |
 | `pixel_width`, `pixel_height`, `pixel_depth` | no | physical sizes; `pixel_depth` **blank for a single plane** |
 | `pixel_unit` | no | unit of those three |
@@ -341,11 +349,24 @@ scale_percent, status, reason, bytes, checksum, verified`. A `status` of
 `written` / `skipped` / `failed` with a `reason`, so a half-completed run is
 legible. `frames` is the number of time points in that output.
 
-**`frames` on `Make_LuxendoTiff` chooses time points** — `0`, `0,47,95`, `0-3`.
+**`frames` on `Make_LuxendoTiff` chooses time points** — `1`, `1,48,96`, `1-4`,
+counted from 1 as `sources.tsv`'s `t` is; a `0` is refused, naming the count.
 Each chosen time point of a multi-frame series becomes **its own file**, named
 `<series_id>_t<TTTT>`, which is the same name and the same pixels the
 per-time-point layout gives that frame. A series holding one frame keeps its own
-name. Blank writes every frame of a series into one file, as before — which for
+name.
+
+**`oneFile`** (off by default) writes the chosen time points of a series into
+**one** file instead, named after the selection with runs compressed —
+`<series_id>_t0002_t0011_t0021`, `<series_id>_t0001-0004` — never the bare
+series id, which is the blank-`frames` file: `skipExisting` decides by name
+alone, so a selection under that name would later pass for every frame. ⚠️
+Inside the file frames count from 1 like any image's, so the analysis's `t = 2`
+of that file is **time point 11**; `_gather.txt`'s `time_points` line is the way
+back. The pixels are the per-time-point files' own, frame by frame (verified on
+the 2026-09-10_203030 acquisition).
+
+Blank writes every frame of a series into one file, as before — which for
 a 96-frame position is ~94 GB, so it fails as a row: over the classic TIFF limit
 for `tiff`, and over 75% of the heap for either format, both decided from the
 tables before anything is read.
@@ -358,13 +379,20 @@ same read, so a plane fetched wrongly would match itself. What it catches is the
 round trip: a truncated write, or channels, slices and frames transposed.
 
 `_gather.txt` names **every** source: one `channel_<c>_source` line per channel,
-or `t<N>_channel_<c>_source` when the output gathered several frames.
+or `t<N>_channel_<c>_source` when the output gathered several frames — `c` and
+`N` from 1, as in `sources.tsv`. A file of several frames also has
+`time_points`, space-separated in frame order: frame *k* of the file is the
+*k*-th.
 
-⚠️ **The TIFFs are not a required step.** The batch runner is to read the
-`.lux.h5` through the same two tables and assemble channels in memory, so it
-never reads them. (That route — one resolver shared by the batch,
-`Make_LuxendoTiff` and the overview — is planned, not built: today the batch
-opens files only.) Converting is for tuning a threshold interactively and for drag-and-drop.
+⚠️ **The TIFFs are not a required step.** Since v0.8.0 the batch reads the
+`.lux.h5` through the same two tables — `Run_NucleusSelector_Batch`'s
+`sourcesFile` — **one frame at a time**, assembling its channels in memory and
+releasing them before the next, so a 94 GB position runs in a few GB of heap
+and nothing is converted. Which rows are Luxendo is decided by **membership**:
+a row whose `series_id` has rows in the sources table is read from them, any
+other from its `path`, so one sheet can mix both. `Make_LuxendoTiff` reads
+through the same code (`SeriesSource`). Converting is for tuning a threshold
+interactively and for drag-and-drop.
 The sources *are* the pixels and TIFF does not compress them, so a mandatory
 conversion would mean holding two copies of the acquisition.
 
@@ -381,8 +409,11 @@ id` field or, left blank, from the image title (see below).
 <series_id>_<feature>_outline_ROIs.zip   ImageJ ROIs
 <series_id>_<feature>_res.txt            measurements
 <series_id>_config.txt                   every parameter used
-<series_id>_overview_ch<c>.png           quick-look projection      (optional)
-<series_id>_overview_ch<c>_overlay.png   the same, outlines drawn   (optional)
+<series_id>_threshold_stats.tsv          what the nucleus threshold did, per frame
+<series_id>_overview_ch<c>.png           quick-look projection      (optional; one frame)
+<series_id>_overview_ch<c>_overlay.png   the same, outlines drawn   (optional; one frame)
+<series_id>_overview_ch<c>.tif           the same, a page per frame (optional; several frames)
+<series_id>_overview_ch<c>_overlay.tif   the same, outlines drawn   (optional; several frames)
 ```
 
 ⚠️ **The file stem and the outline tables' `name` column are the same string,
@@ -394,6 +425,13 @@ prefix in the file names but not in `name` would hide both files from R — no
 `volume`, no signal columns, a warning and not an error.
 
 `<feature>` is `nucleus` or `nucleolus` today.
+
+**An image may have several frames.** Each is analysed as an image of its own —
+its own threshold, its own ROIs — and the results of every frame go into the
+same files, told apart by `t` (from 1) and by the ROI id's `TTTT-` field
+(§5). Every file carries `t`, one frame being `t = 1`, so a single-frame
+image's tables have the same shape as a time course's. Its overview is a TIFF
+per channel rather than a PNG, a page per frame (below).
 
 ### Where the R side gets the series id and the feature
 
@@ -501,6 +539,46 @@ projection**, so two objects overlapping in x-y share one outline however far
 apart they are in z. It is a picture, not a count — that is the whole reason
 the montage puts it beside R's z-aware union.
 
+#### A multi-frame series: one TIFF per channel, a page per frame
+
+**Since v0.8.0.** An image of several frames gets, per channel,
+
+```
+<series_id>_overview_ch<c>.tif           8-bit grey, one page per frame
+<series_id>_overview_ch<c>_overlay.tif   RGB, the same with that frame's outlines burned in
+```
+
+— the PNG's name with the extension saying it holds frames. The pages are the
+frames `_config.txt`'s `frames_analysed` names, **in that order**, and that is
+the only record of which page is which: a page is labelled `t=<t>` inside the
+TIFF, but only ImageJ reads that label. ImageJ opens the file as a time series,
+calibrated to the reduced pixel and carrying the frame interval.
+
+**One display range per channel, across every frame**, recorded in
+`overview_display_range`. `auto` fitted per frame would make a cell appear to
+brighten because the stretch moved — over a time course that artifact looks like
+biology. The range is ImageJ's own `auto` applied to all the frames at once: for
+8- and 16-bit data ContrastEnhancer works on exact pixel values, so summing the
+frames' histograms gives exactly its answer, and for a single frame exactly the
+range its PNG would get (`Test_Overview` holds ContrastEnhancer to both, and
+`Test_SeriesSource` holds one streamed frame's page to the TIFF route's PNG,
+pixel for pixel).
+
+Nothing holds the frames. Each one leaves its projection, reduced to the
+overview size but not yet rendered, and its full-resolution histogram in its
+staging directory, and the series is rendered from those once the last frame is
+done — so a frame is on a page exactly when its results are in the tables.
+
+⚠️ `overview_method` must be `max` or `min` for a multi-frame series, and other
+methods are **refused before the first frame**: `mean`, `sum`, `sd` and `median`
+give a 32-bit projection, which ImageJ bins over its own min–max — unknown until
+the last frame, so the range cannot be accumulated. Switch `save_overview` off
+to analyse such a series with that setting.
+
+⚠️ A perfectly constant channel takes the **type's full range** here (0–65535
+for 16-bit). The PNG path keeps whatever range the projection plane carried,
+which can be another channel's.
+
 ⚠️ Contrast is `auto`, which stretches whatever is present. **A channel holding
 only noise gets that noise stretched to full brightness and saves a convincing
 picture of nothing.** Both runners log the display range per channel for this
@@ -514,40 +592,78 @@ degenerate and ImageJ falls back to the type's full range — pinned in
 | Column | Type | Notes |
 |---|---|---|
 | `name` | chr | the series id, the same string as the file stem — **never contains whitespace**, see §2 |
-| `roi` | chr | ROI id, `SSSS-NNNN-YYYY` |
+| `roi` | chr | ROI id, `<feature>_SSSS-NNNN-YYYY`, or `<feature>_TTTT-SSSS-NNNN-YYYY` when the image has several frames (§5) |
+| `t` | int | frame, from 1. **Since v0.8.0**; a table without it is one frame |
 | `z` | int | 1-based slice |
 | `x`, `y` | dbl | **calibrated units (µm), not pixels** |
 
 Vertices are in ring order and the ring is *not* closed — R repeats the first
 point when building the polygon.
 
-### `_res.txt` — Fiji's Results table, one row per ROI per channel
+### `_res.txt` — Fiji's Results table, one row per ROI per channel per frame
 
 Written with an unnamed first column (Fiji's row numbers), which
 `read_fiji_result()` drops. Columns come from `Set Measurements`, which the
 Groovy scripts force explicitly to:
 
 ```
-area mean standard min centroid shape integrated median stack display
+area mean standard min centroid shape integrated median display
 ```
 
-giving `Label, Area, Mean, StdDev, Min, Max, X, Y, Circ., IntDen, Median,
-RawIntDen, Ch, Slice, AR, Round, Solidity`.
+giving `Area, Mean, StdDev, Min, Max, X, Y, Circ., IntDen, Median, RawIntDen,
+AR, Round, Solidity` plus `Label` — and **four columns we write ourselves**. The
+file leads with the identity: the row number, then
+`Label, roi, z, t, ch`, then ImageJ's measurements in the order above
+(`RoiExport.saveMeasurements()`; ImageJ itself always puts its standard columns
+first, so the table is saved by ImageJ and its columns reordered — every cell
+keeps ImageJ's formatting). Readers find columns by name, never by position.
 
-**`Label` is the join key.** It packs image, ROI id, channel and slice into one
-string, e.g.
+| Column | Notes |
+|---|---|
+| `roi` | the ROI id, as in the outline table |
+| `z` | the slice measured, from 1 |
+| `t` | the frame, from 1 |
+| `ch` | the channel measured, from 1 |
+
+⚠️ **Since v0.8.0.** Before, `stack` was in the list and ImageJ wrote its own
+`Ch` and `Slice` — which mean different things on different image shapes
+(`Slice` is the *time* on a one-channel, one-slice time course;
+`note/time_series_plan.md` §5.3). They are gone, and these four are the only
+position columns. `read_fiji_result()` takes them as given and **checks the
+`Label` against them** — a disagreement stops the read rather than attaching
+measurements to the wrong object.
+
+**`Label` still carries the same facts** in ImageJ's words, e.g.
 
 ```
 20241216_dkD.lif-Position010-1.tif:nucleus_0001-0001-0433:c:1/4 z:1/50 - .../Position010
 ```
 
-`read_fiji_result()` parses it and returns the columns lower-cased and
-de-punctuated, plus four derived ones:
+and for a table written before v0.8.0 it is the only place they are:
+`read_fiji_result()` then parses it, as it always has, and returns the columns
+lower-cased and de-punctuated plus the derived ones, with `t = 1`:
 
 ```
 label area mean stddev min max x y circ intden median rawintden ch slice
-ar round solidity filename roi pos z
+ar round solidity filename roi pos z t
 ```
+
+⚠️ The measurement table's `z` never reaches a join: the **outline table is
+authoritative for `z`**. `summarise_feature_stats()` checks the two agree on
+every `(roi, t)` both hold, stops if not, and joins on `(roi, t)` only.
+
+### `_threshold_stats.tsv` — what the nucleus threshold did, one row per frame
+
+| Column | Notes |
+|---|---|
+| `t` | frame, from 1 |
+| then `nucleus_threshold_used`, `nucleus_histogram_divisor`, `nucleus_mask_pct`, `nucleus_circ_rejected`, `nucleus_count`, `nucleolus_count` | for that frame, each meaning exactly what the `_config.txt` field of the same name means (below). `nucleus_histogram_divisor` **since v0.8.0** |
+
+**Written for every image** when `save_config` is on — one row for a single
+frame — so every results folder holds the same files; `_config.txt` keeps the
+per-image record, and for several frames writes `per-frame` where a single
+value would not be true. The nucleolus threshold is not here: it is chosen per
+nucleus per slice.
 
 ### `_config.txt` — two columns, `parameter` and `value`
 
@@ -575,13 +691,19 @@ Fields that other code depends on:
 |---|---|
 | `image_width`, `image_height` | **pixels.** `montage_qc_cli.r`, to draw its panel over the same frame as the Fiji PNG |
 | `pixel_width`, `pixel_height`, `pixel_unit` | the same, to convert that frame to µm |
+| `image_frames` | how many frames the image had. **Since v0.8.0**; absent means one |
+| `frames_analysed` | which of them these results hold, space-separated: the frames asked for (the batch's `frames`), less any that failed — `batch_summary.tsv` says why. `1` for a single frame. **Since v0.8.0** |
+| `frame_interval`, `frame_unit` | the time step and its unit, as `pixel_depth` is the z step — measured off the image, so provenance. **Blank for one frame, and when the file did not record one**: ImageJ's 0 means unknown, and a written 1 would be a plausible second nobody measured |
 | `pixel_depth` | the z step, in `pixel_unit`. **Blank when the image is a single plane** — ImageJ defaults the calibration to 1.0 with no z axis and Bio-Formats reports no physical size, so a written 1.0 would be a plausible number for a distance that does not exist. Written since 0.2.0, and `feature_stat_cli.r` now **defaults `--z_step` to it**, per series, from the config beside the inputs |
 | `script` | records the repo `VERSION` that produced the directory |
 | `source_file`, `series_index`, `series_name` | which series of which file produced this directory. Written by the batch, **blank in the interactive runner** where the image was already open and nothing told it. Identity comes from content, not from the filename, so the series id should not have to be parsed apart to answer this |
 | `series_id` | the id this run's files are named after — the `name` column's value. **Provenance, not a parameter**: a config setting it would give every image of a batch one name. Replaced `output_basename` in v0.7.0, which an older config still carries and a reader ignores |
 | `open_method` | which reader opened the image: `importer` (Bio-Formats' own) or `reader` (one held open across the file). **Blank when the image was already open**, i.e. the interactive runner, where the operator opened it however they liked. The two are asserted to produce byte-identical output, but two runs that used different ones must not be indistinguishable afterwards |
-| `overview_channels`, `overview_overlay_suffix` | which overview PNGs exist, so a results folder can be read later without guessing. Blank when none were written |
+| `overview_channels`, `overview_overlay_suffix` | which overview files exist, so a results folder can be read later without guessing: PNGs for one frame, TIFFs for several (`image_frames` says which). Blank when none were written |
+| `overview_display_range` | the display range each overview channel was rendered at, `ch<c>:lo-hi`, space-separated — one per channel for a whole multi-frame series. `auto` stretches whatever is there, so a narrow range beside a wide one is how a channel of pure noise shows itself. Blank when none were written. **Since v0.8.0** |
 | `nucleus_threshold_used` | the pixel range the threshold **selected**, as `lo-hi`; `per-slice <lo>..<hi>` (note the `..`) when `nucleus_stack_histogram` is off, since there were as many thresholds as slices and none of them is the answer. Not the algorithm's bare number: for bright objects that number is the *bottom* of the range and the top is the type's maximum, so the pair is what can be copied into a manual threshold without working out which end it was. The literal **`none`** when the frame had nothing to separate (see below) — a word, not a range, so it cannot be pasted anywhere by mistake |
+| `nucleus_threshold_used`, `nucleus_histogram_divisor`, `nucleus_mask_pct` with several frames | the literal **`per-frame`** — there is one of each per frame, in `_threshold_stats.tsv`. A word, not a number, like `none`; `nucleus_count`, `nucleolus_count` and `nucleus_circ_rejected` are then totals. **Except** with `nucleus_threshold_scope = series`, where the threshold and its divisor are one value for every frame and are written as that value |
+| `nucleus_histogram_divisor` | what the threshold histogram's counts were divided by before the method ran, so that its `int` arithmetic could not overflow: **`1` means exact counts**. A larger power of two means the threshold is not bit-for-bit what exact arithmetic would give (usually the same, sometimes a level or two off), so it is said. Blank for `Manual` and when there was nothing to separate. The largest of the slices' with `nucleus_stack_histogram` off. **Since v0.8.0** (below) |
 | `nucleus_mask_pct` | percent of pixels the threshold selected, **before** fill holes and watershed, because the question it answers is what the threshold chose. The cheap signal that one went wrong in either direction: `0.00` selected nothing (a blank field), a number in the tens selected the frame rather than the objects in it. Neither shows up in an ROI count — the size filter turns both into "no nuclei" |
 | `nucleus_circ_rejected` | how many ROIs `nucleus_circularity` deleted. **Blank when the filter was off** — a `0` would claim a filter ran and found nothing to remove. Unlike the R side's `--min_circularity`, which marks a row and leaves it in the table, this filter drops ROIs before anything is written, so this number is the only surviving evidence that they existed |
 
@@ -630,23 +752,73 @@ Per image it writes exactly what the interactive runner writes; the outline,
 `_res.txt`, ROI zip and `_config.txt` are the same contract. Two extra files
 describe the batch as a whole.
 
-`batch_summary.tsv` — one row per **sheet row**, excluded ones included, so it
-is a complete record of what the run did rather than of what succeeded:
+`batch_summary.tsv` — one row per **frame** of every sheet row, excluded rows
+included, so it is a complete record of what the run did rather than of what
+succeeded. A single-frame series is one row, `t = 1`; a row that never reached
+a frame (excluded, or it failed to open) is one row with `t` blank.
 
 | Column | Meaning |
 |---|---|
 | `series_id` | the series, as the sheet named it (`prefix` before v0.7.0) |
+| `t` | the frame, from 1 — for Luxendo the time point itself. **Since v0.8.0** |
 | `path`, `series_index` | which image it came from |
-| `status` | `ok`, `failed`, or `excluded` |
-| `open_method` | `importer` or `reader`, whichever actually opened it; blank for `excluded` rows |
+| `status` | `ok`, `failed`, or `excluded`. A **failed frame** does not stop its series: the series' files hold the frames that worked (`frames_analysed` in its `_config.txt`) |
+| `open_method` | `importer` or `reader`, whichever actually opened it, or `luxendo` for a series read from the sources table; blank for `excluded` rows |
 | `threshold` | the pixel range the nucleus threshold **selected**, `lo-hi`, same syntax the manual threshold takes; `none` when the frame had nothing to separate. Blank when the row did not run |
 | `mask_pct` | percent of pixels inside that range, measured **before** fill holes and watershed. Blank when the row did not run |
 | `n_nucleus`, `n_nucleolus` | counts, blank when the row did not run |
-| `seconds` | wall time for that image |
-| `message` | for `failed`, the exception, flattened to one line |
+| `seconds` | wall time for that frame (for a single frame, the image, opening included); blank for a frame this run did not analyse (below) |
+| `message` | for `failed`, the exception, flattened to one line. For an `ok` frame this run did not analyse (below): `staged by an earlier run` (resumed) or `finished by an earlier run` (skipped) |
 
-A row failing does not stop the batch. On a long run this file, not the log, is
-what says which images need attention.
+A row or a frame failing does not stop the batch. On a long run this file, not
+the log, is what says which images need attention.
+
+**Frames are staged while a series runs.** Each finished frame's tables go to
+`<outdir>/.staging/<series_id>/t<TTTT>/` at once, and the series' files are
+those frames joined in `t` order when it finishes — byte for byte what one pass
+would have written. The staging is deleted after the join.
+
+**What a rerun does with output already there** is the batch's
+**`existingOutput`** (since v0.8.0), in order of how much it reuses:
+
+| value | a finished series | a series a run left unfinished |
+|---|---|---|
+| `resume_unfinished` (default) | analysed again | carries on from its finished frames |
+| `skip_finished` | **not opened**, if its settings match; analysed again otherwise | carries on from its finished frames |
+| `redo_all` | analysed again | its staged frames discarded; analysed again |
+
+*Resuming.* A staging left behind is a run that died — killed, or failed at the
+join. A multi-frame series keeps its finished frames, reads only the others,
+and discards half-written ones (`t<TTTT>.part`); its files are the same bytes an
+uninterrupted run writes. Beside the frames, `settings.txt` records what decides
+their contents: every run parameter, the code version (`VERSION`) and ImageJ's,
+and the image (source, series, dimensions, pixel size). A rerun under any other
+value is **refused** before it reads a frame — the row fails, naming each
+difference — because one series' files would otherwise hold frames analysed two
+ways; `redo_all` is the way past it. Staged frames with no `settings.txt` are
+refused the same way. Which frames is not a setting: a resume may ask for
+others, and staged frames it does not ask for are not joined. A frame that
+failed is not staged, so a rerun tries it again. A single-frame series, and the
+interactive runner, always start afresh.
+
+*Skipping.* A series is finished when its `_config.txt` and
+`_threshold_stats.tsv` are there and nothing of it is staged. It is skipped
+when that `_config.txt` matches this run: every run parameter, `VERSION` and
+ImageJ's version, `path`/`series_index`/`series_name` as the sheet gives them,
+and `frames_analysed` equal to the frames this run would analyse — so a series
+with a failed frame, or analysed over other frames, is done again. Unlike a
+resume, other settings are not refused: the series is analysed again and its
+files replaced, as any rerun replaces them; the log says which settings
+differed. The image's dimensions and pixel size are not compared — that would
+mean opening it, which is what skipping avoids. Without `save_config` nothing is
+recognised as finished. A skipped series' rows in `batch_summary.tsv` come from
+its `_threshold_stats.tsv`, with `open_method` from its `_config.txt`.
+
+The batch's **`frames`** chooses time points of a multi-frame series (`1`,
+`2,11,21`, `1-4`, from 1; blank = all), as `Make_LuxendoTiff`'s does — but here
+`t` stays the time point: frames 2, 11 and 21 are reported as t = 2, 11, 21,
+and their ROI ids carry `0002-`, `0011-`, `0021-`. A single-frame series is
+analysed whatever it says.
 
 ### Overview-only batch — `Run_Overview_Batch.groovy`
 
@@ -654,7 +826,8 @@ Projections and nothing else: no threshold, no particles, no measurement, no
 ROI files. It writes
 
 ```
-<series_id>_overview_ch<N>.png
+<series_id>_overview_ch<N>.png      a series of one frame
+<series_id>_overview_ch<N>.tif      a series of several, a page per frame (§2)
 ```
 
 — the **same names** the nucleus path writes for its raw overview, and that is
@@ -662,12 +835,17 @@ load-bearing rather than a coincidence. Both go through
 `Overview.overviewPath()`, and for the same projection, size and contrast
 settings the two produce byte-identical PNGs (verified on the fixture, both
 channels). A file from either runner is interchangeable to anything downstream,
-so a montage or a QC panel need not know which one made it. No suffix parameter
+so a montage or a QC panel need not know which one made it. The same holds for
+the multi-frame TIFF, byte for byte (`Test_SeriesSource`). No suffix parameter
 is offered: the suffix exists to mark that outlines were drawn, and nothing here
 draws any.
 
+It takes the nucleus batch's `sourcesFile` and `frames` (since v0.8.0), so a
+Luxendo position can be looked at frame by frame without converting it; a
+series of one frame is drawn whatever `frames` says.
+
 **`batch_summary.tsv` has a fixed frame and a variable middle.** Every batch
-writes `series_id`, `path`, `series_index`, `status`, `open_method` first and
+writes `series_id`, `t`, `path`, `series_index`, `status`, `open_method` first and
 `seconds`, `message` last, with the same meanings as the table above; between
 them sit the columns that *that* batch's work reports. Blank in those columns
 means the row did not run, and every row carries every column — an `excluded`
@@ -679,8 +857,12 @@ For this runner the middle is:
 | Column | Meaning |
 |---|---|
 | `channels` | the channels projected, comma separated, in the order written |
-| `png_size` | `<width>x<height>` of the PNG actually written, after any resize |
-| `display_range` | per channel, `ch<N>:lo-hi` — the display window the contrast setting chose |
+| `png_size` | `<width>x<height>` of the PNG actually written, after any resize — of each page, for a TIFF |
+| `display_range` | per channel, `ch<N>:lo-hi` — the display window the contrast setting chose; for a multi-frame series the series' one range, repeated on each frame's row |
+
+A multi-frame series has **a row per frame**, as in the nucleus batch: a frame
+that could not be read is `failed` on its own row and is absent from the TIFF,
+and the rest are still drawn.
 
 `display_range` is there because `auto` contrast stretches whatever it is given:
 a channel holding only noise has that noise stretched to full range and saves a
@@ -751,6 +933,37 @@ list, `Huang2` (the default) through `Yen` — **or the literal `Manual`**.
 | `nucleus_threshold` | the method, or `Manual` |
 | `nucleus_threshold_range` | `lo-hi` in **raw pixel values**, read *only* when the method is `Manual`, exactly as `nucleolus_rel_fraction` is read only for `Relative`. `Infinity` as the top end means the type's maximum |
 | `nucleus_stack_histogram` | `true` (default): one threshold from the pooled histogram of every slice. `false`: one per slice |
+| `nucleus_threshold_scope` | for a multi-frame series: `frame` (default) chooses an automatic threshold per frame; `series` chooses **one for every frame**, from all of their histograms at once. A single frame is the same either way, and `Manual` has no histogram to pool. **Since v0.8.0** |
+
+**An automatic threshold is chosen from a histogram the pipeline builds**
+(since v0.8.0), by the Auto Threshold plugin's per-method functions, in the
+plugin's own sequence — the end bins zeroed (ignore black and white), the
+histogram trimmed to its occupied range, the method run, the trim added back.
+Before, the plugin's `exec()` did this, and on a large stack it was silently
+wrong: it sums the histogram in a 32-bit integer and Huang, IsoData, Li and
+MinError(I) do their arithmetic in one, so they overflowed (Huang chose 1 where
+7 was right). The counts are now held in 64 bits and divided by a power of two
+only as far as the chosen method needs, recorded as
+`nucleus_histogram_divisor`. Wherever nothing overflows the result is exactly
+`exec()`'s, which `Test_BuildMask` keeps as its reference. MinError(I) squares
+the grey level per bin, so on 16-bit data it is divided even on small images —
+and it was wrong there before. `IJDefault` and `MinErrorI`, the plugin's own
+spellings of `Default` and `MinError(I)`, now mean those methods; `exec()` did
+not recognise them and returned a meaningless threshold.
+
+**`series` reads every frame twice.** A first pass reads each frame, blurs its
+DNA channel exactly as detection will, adds its histogram to the series' and
+releases it; then every frame is analysed at the one threshold. Nothing but the
+histogram is held, so it costs reading time, not memory. A frame that cannot be
+read in the first pass is not part of the threshold, and is reported `failed`
+rather than analysed at a threshold its pixels did not help choose. A resumed
+series takes the threshold its earlier run chose and recorded in the staging,
+and which frames it was chosen over is part of the settings a resume must
+match. ⚠️ Per series is not simply better: bleaching or a fading reporter dims
+the late frames of a live time course, and one fixed threshold then
+under-segments them, where a per-frame threshold follows the drift. Per series
+is right when intensity is comparable across frames and the point is to cut
+every frame at the same level.
 
 Both ends of the manual range are applied: a pixel is object when
 `lo ≤ v ≤ hi`, so an upper bound excludes saturated pixels. An auto method
@@ -812,6 +1025,17 @@ guard against silent drift when Bio-Formats is next upgraded.
 (no `script_name`, no results). It can be passed straight back as the config of
 another run.
 
+**`runTag` names both files apart** — `batch_summary_<tag>.tsv`,
+`batch_params_<tag>.txt` — for several runs sharing one output directory; blank
+(the default) names them as above. The tasks of a SLURM array, say, can then
+all write into one directory, so a series' files and its `.staging/` are where the next run looks for them
+whichever task it lands in, which is what resuming and `skip_finished` need. A
+series is in one task, so its own files cannot collide; these two would. The
+tag is letters, digits, `_` and `-`, and anything else is refused before a row
+runs. `Run_Overview_Batch` takes it too (it writes no `batch_params`). The
+tagged summaries have the same columns, so one `batch_summary.tsv` for the
+whole run is their concatenation.
+
 ⚠️ The `Label` column of `_res.txt` differs between the two runners, and
 harmlessly. `IJ.openImage()` and Bio-Formats build the slice label differently,
 so the text after the roi id is not the same — but the **roi id itself is**, and
@@ -826,7 +1050,8 @@ both runners give identical per-feature statistics and identical channel signals
 
 ```
 <outdir>/<series_id>_features.rds     sf, one row per ROI      <- canonical
-<outdir>/<series_id>_features_qc.png  only with --qc_plot
+<outdir>/<series_id>_features_qc.png  only with --qc_plot, one frame
+<outdir>/<series_id>_features_qc.tif  only with --qc_plot, several frames: a page each
 <outdir>/<output_prefix>features.tsv  the same, geometry dropped
 ```
 
@@ -836,6 +1061,7 @@ cannot read R. Columns, in both:
 | Column | Type | Notes |
 |---|---|---|
 | `roi` | chr | ROI id from Fiji |
+| `t` | int | frame, from 1 — from the outline table; `1` for one written before v0.8.0. **Each frame is grouped on its own**, so a feature never spans two (§5) |
 | `z` | int | slice |
 | `area` | dbl | µm², from the polygon |
 | `is_bridge` | lgl | `TRUE` if this ROI only forms graph edges, see §5 |
@@ -853,17 +1079,31 @@ cannot read R. Columns, in both:
 ⚠️ The `.rds` is a registered `sf` object, but the tibble that
 `define_feature_group()` returns is **not** — see the `sf` primer note.
 
+The QC plot draws one image, so a series of several frames gets **one per
+frame**, as the pages of one 8-bit TIFF in `t` order (since time_axis PR 3b;
+PR 2 wrote a PNG each, `<id>_features_qc_t<TTTT>.png` — 96 per series was
+clutter). Every page is drawn over the same extent and in the same colours, so
+that flicking through them shows the objects moving rather than the axes. A
+frame with no valid feature still gets its page. `--within` relates each frame on its own: the same nucleus one time
+point later sits in nearly the same place, so it would score, and could win.
+
 ### `count_features_cli.r`
 
 ```
-<outdir>/<output_prefix>feature_counts.tsv          one row per series per feature type
+<outdir>/<output_prefix>feature_counts.tsv          one row per series per frame per feature type
 <outdir>/<output_prefix>feature_counts_summary.tsv  only with --group_by
 <outdir>/<output_prefix>feature_counts.png          only with --plot
 ```
 
-`feature_counts.tsv`: `series_id`, `feature_class`, the `--feature_class_by`
+`feature_counts.tsv`: `series_id`, `t`, `feature_class`, the `--feature_class_by`
 component columns (`feature_type` by default), `n_detected`, `n_invalid`,
 `n_failed`, `n_roi`, plus metadata columns.
+
+**Counted per frame.** A time course's nuclei added up over its frames are not
+a count of anything; `t = 1` for one frame, and for an annotation from before
+v0.8.0. The plot follows: one bar per series for a single frame, one line per
+series over `t` once there are several — never a bar, because bars sharing an
+x stack, and the bar would silently show the sum.
 
 #### `--feature_class_by` — what is being counted
 
@@ -902,7 +1142,7 @@ different annotate run would otherwise match at ~100% and be wrong.
 whose objects mostly failed the z-span filter must not look like a series that
 genuinely has few objects.
 
-`feature_counts_summary.tsv`: the `--group_by` columns, `feature_type`,
+`feature_counts_summary.tsv`: the `--group_by` columns, `t`, `feature_type`,
 `n_series` (`n_sample` before v0.7.0), `mean_detected`, `sd_detected`,
 `total_detected`.
 
@@ -922,6 +1162,7 @@ rejects table instead of being folded in.
 | Column | Notes |
 |---|---|
 | `series_id`, `feature_type`, `feature_id` | the key |
+| `t` | the feature's frame, from 1 — one, because a feature is one object at one time point. A feature whose ROIs span two frames **stops the run** rather than averaging over time. `1` for a feature table from before v0.8.0 |
 | `n_roi`, `n_z` | **seed** ROIs in the feature, and distinct slices — bridges excluded |
 | `z_min`, `z_max`, `z_span` | extent; `z_span` = max − min + 1 |
 | `z_gaps` | `z_span − n_z` — slices inside the object's range where it was not detected |
@@ -1116,6 +1357,19 @@ different settings can be compared with `--facet source_file`.
 
 ### `montage_qc_cli.r`
 
+Three renderings of one image. A features file holding **several frames** gets
+one montage per frame, as the pages of one 8-bit TIFF — `--output` must then end
+`.tif`, and naming a `.png` is refused rather than drawing the frames on top of
+each other. `--t` chooses frames (`2,11,21`, `1-4`, from 1, as `t` counts); one
+chosen frame may be written as a PNG.
+
+The Fiji panels are then the multi-frame overview TIFFs (§2), and a page is
+matched to a `t` through `_config.txt`'s `frames_analysed` — so the config is
+required, an overview whose page count differs from it is refused (a PNG beside
+a time course is one page), and so is a `--t` the run did not analyse. Panel
+(iii) holds that frame's features alone. The extent and the class colours are
+the series', the same on every page; each page's title adds `t = <t>`.
+
 Panel (iii) takes the same `--feature_table` / `--feature_class_by` /
 `--class_sep` as `count_features_cli.r`, so an outline can be coloured by
 `class` rather than by `feature_type`.
@@ -1159,9 +1413,10 @@ before ggplot sees it; one naming a class that is not present warns.
 
 
 
-One PNG, panels left to right: raw z-projection, Fiji overlay, R union. The
-first two are the Fiji overview pair described in §2 — `--projection` takes the
-unsuffixed PNG and `--overlay` the `_overlay` one, both for the same channel.
+One PNG (one TIFF page per frame for a time course), panels left to right: raw
+z-projection, Fiji overlay, R union. The first two are the Fiji overview pair
+described in §2 — `--projection` takes the unsuffixed file and `--overlay` the
+`_overlay` one, both for the same channel.
 
 ---
 
@@ -1191,33 +1446,48 @@ unsuffixed PNG and `--overlay` the `_overlay` one, both for the same channel.
 ### ROI ids — Fiji assigns these
 
 ```
-<feature>_SSSS-NNNN-YYYY
-          │    │    └── y-centre of the ROI bounds, zero-padded
-          │    └─────── index within that slice
-          └──────────── slice number
+<feature>_SSSS-NNNN-YYYY              one frame
+<feature>_TTTT-SSSS-NNNN-YYYY         several frames
+          │    │    │    └── y-centre of the ROI bounds, zero-padded
+          │    │    └─────── index within that slice
+          │    └──────────── slice number, from 1
+          └───────────────── frame number, from 1
 ```
 
-e.g. `nucleus_0001-0001-0433`. Reproduced in Groovy so output stays compatible
-with the older macros. `read_fiji_result()` finds the id by matching
-`\d{4}-\d{4}-\d{4}$` inside `Label`.
+e.g. `nucleus_0001-0001-0433`, or `nucleus_0002-0001-0001-0433` for frame 2.
+Reproduced in Groovy so single-frame output stays compatible with the older
+macros. **`TTTT-` only when there are several frames**: the measurements join
+on `(roi, t)`, so a single frame's id needs no frame field, and four frames of
+one object would otherwise share one id — which the ROI zip refuses as a
+repeated entry. Every reader takes both shapes:
+`^(.+)_(\d{4}-)?\d{4}-\d{4}-\d{4}$`, where the greedy prefix is the feature
+name.
 
-### `feature_id` — R assigns these, per image
+### `feature_id` — R assigns these, per series
 
 | Pattern | Meaning |
 |---|---|
-| `<feature>_N` | a real detected feature — **this is what gets counted** |
-| `invalid_<feature>_N` | a group that failed `min_z_span` or `min_avg_area` |
+| `<feature>_NNNN` | a real detected feature — **this is what gets counted** |
+| `invalid_<feature>_NNNN` | a group that failed `min_z_span` or `min_avg_area` |
 | `failed_<feature>_<reason>` | an ROI that never reached grouping; `<reason>` is `excluded`, `name`, `area`, `overlap` or `bridge` |
 | `NA` | an ROI that reached no group at all |
 
-`N` is sequential within an image and carries **no meaning across images** —
-`nucleus_1` in two series are unrelated objects. Always group by
+`NNNN` is four digits, fixed, from `0001` (`nucleus_1` before v0.8.0). It is
+sequential within a **series** and carries **no meaning across series** —
+`nucleus_0001` in two series are unrelated objects. Always group by
 `series_id` + `feature_id`.
+
+A series of several frames is grouped **one frame at a time** — by z overlap
+alone, one object's frames would join into a single feature — and numbered on
+from the last frame: if frame 1 ends at `nucleus_0006`, frame 2 starts at
+`nucleus_0007`. So a `feature_id` names one object at one time point, and is
+unique in the series. It does **not** follow an object through time: that is a
+track, which is a separate column (the `tracking` milestone).
 
 `<feature>` here is the **reporting** name, which `--rename 'nucleus=oocyte'`
 changes. The `roi` column keeps Fiji's original prefix either way, because that
 is what the grouping step matches on — so after a rename a row reads
-`feature_id = oocyte_1`, `roi = nucleus_0001-0001-0433`. That is not a
+`feature_id = oocyte_0001`, `roi = nucleus_0001-0001-0433`. That is not a
 mismatch; it is provenance.
 
 To test whether a row is a real detected feature, compare against the row's own
@@ -1231,9 +1501,9 @@ and a fingerprint of the resolved input files (basename and size). Written by
 `annotate_features_cli.r` onto every row, and carried through by
 `feature_stat_cli.r`.
 
-It exists because **`feature_id` is sequential within an image and means
+It exists because **`feature_id` is sequential within a series and means
 nothing across runs.** Two annotate runs over the same images produce the same
-series ids *and* the same `nucleus_1`, `nucleus_2`, … So joining one run's
+series ids *and* the same `nucleus_0001`, `nucleus_0002`, … So joining one run's
 per-feature table onto another run's annotation matches on
 `series_id` + `feature_id` at essentially **100%** and attaches every value to the
 wrong object. The obvious guard — reporting the match rate — reads *perfect*

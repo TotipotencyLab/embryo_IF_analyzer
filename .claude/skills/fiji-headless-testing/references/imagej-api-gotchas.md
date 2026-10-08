@@ -222,3 +222,26 @@ The pixels are identical, so this is a free swap when memory is tight: measured
 on synthetic 8- and 16-bit stacks, **0 of 16384 pixels differ**. Worth pinning
 with a test, since "stack" mode being per-plane is the assumption the swap rests
 on.
+
+## ShapeRoi.getRois() returns a lone ROI at (0,0)
+
+A `ShapeRoi` built from one ROI and never combined with another hands that ROI
+back from `getRois()` **at the origin** — right size, wrong place. Measured on
+1.54p: `new ShapeRoi(new Roi(10, 8, 20, 16)).getRois()` gives bounds
+`(0,0,20,16)`; after any `or()`, even with a disjoint ROI, every piece is
+where it should be.
+
+So a "union, then split into pieces" helper draws an image with exactly one
+ROI in its top-left corner, and nothing errors. `Overview.union()` did this for
+years unnoticed — real images always had several ROIs — and it surfaced once
+frames were drawn one at a time, where a frame with one nucleolus is ordinary.
+Return a lone ROI as itself (`clone()`); test the one-ROI case explicitly.
+
+## Groovy: count{} on a primitive array is count(value)
+
+`(int[] px).count { it > 0 }` compiles, runs, and returns **0** for every
+closure: Groovy resolves `count` on a primitive array to `count(Object value)`
+and counts the elements *equal to the closure object*. Same for `long[]`,
+`byte[]`. Convert first — `(px as List).count { ... }` — or loop. A pixel
+check written this way passes silently when it should be finding pixels, which
+is the shape of a test that cannot fail.

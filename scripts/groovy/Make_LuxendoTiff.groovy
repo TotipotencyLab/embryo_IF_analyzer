@@ -5,7 +5,8 @@
 #@ String  (visibility=MESSAGE, value=" ", required=false) help_sep0
 #@ String  (visibility=MESSAGE, value="Behavior control:", required=false) help_msg2
 #@ String  (persist=false, label="Output format", description="TIFF can be reopened easily in ImageJ, but have size limit of ~4GB. BigTIFF can hold larger file, but may not be compatible with ImageJ", value="tiff", choices={"tiff","bigtiff"}) format
-#@ String  (persist=false, label="Time points (blank = all)", description="Which time points to write, each into its own file named <series_id>_t<TTTT>: 0, or 0,47,95, or 0-3. Blank writes every time point of a series into one file, which for a long time course is too big for TIFF or for memory -- for tuning, one time point is what you want.", value="") frames
+#@ String  (persist=false, label="Time points (blank = all)", description="Which time points to write, each into its own file named <series_id>_t<TTTT>: 1, or 1,48,96, or 1-4 -- counted from 1, as Fiji shows frames. Blank writes every time point of a series into one file, which for a long time course is too big for TIFF or for memory -- for tuning, one time point is what you want.", value="") frames
+#@ Boolean (persist=false, label="Chosen time points in one file", description="Write the time points chosen above into ONE file per series, named after them (<series_id>_t0002_t0011_t0021, or _t0001-0004) -- a multi-frame image for the pipeline to analyse frame by frame. Inside it frames count from 1, so frame 2 of that file is time point 11; _gather.txt records which is which. No effect when Time points is blank.", value=false) oneFile
 #@ Integer (persist=false, label="Output scale (% of original)", description="Both x and y. 100 = full resolution, 50 = half width & height, The pixel size is scaled to match, so measurements stay in real units, and the filename gains _downscale<PC>pc. For looking, not for measuring.", min="1", max="100", value=100) scalePercent
 #@ Boolean (persist=false, label="Verify output", description="Read each written file back and check its pixels against the checksum taken while writing", value=true) verify
 #@ Boolean (persist=false, label="Skip existing targets", description="An output whose TIFF and _gather.txt are both already in the output directory is left alone, so an interrupted run can be resumed", value=true) skipExisting
@@ -36,7 +37,8 @@
 //
 // TIME POINTS. A series is a whole stack -- 96 frames, ~94 GB, on the real
 // acquisition -- which neither classic TIFF nor the heap can hold. Choose time
-// points (`frames`) and each is written to its own file, `<series_id>_t<TTTT>`.
+// points (`frames`) and each is written to its own file, `<series_id>_t<TTTT>`
+// -- or, with `oneFile`, all of them into one file named after the selection.
 // Blank writes every frame of a series into one file, which suits a short time
 // course. An output too big for the heap is a FAILED row naming `frames`,
 // decided from the tables before anything is read.
@@ -57,7 +59,7 @@
 // Headless:
 //   /Applications/Fiji.app/Contents/MacOS/ImageJ-macosx --headless --console \
 //     --run scripts/groovy/Make_LuxendoTiff.groovy \
-//     "seriesFile='/p/series.tsv',sourcesFile='/p/sources.tsv',outdir='/p/out',scalePercent=100,frames='0'"
+//     "seriesFile='/p/series.tsv',sourcesFile='/p/sources.tsv',outdir='/p/out',scalePercent=100,frames='1'"
 
 import ij.IJ
 
@@ -161,11 +163,12 @@ IJ.log("  sources: " + sourcesFile.getAbsolutePath() + "  (" + sourceRows.size()
 IJ.log("  images : " + srcRoot.getAbsolutePath())
 IJ.log("  output : " + outdir.getAbsolutePath())
 IJ.log("  format : " + fmt + (pct < 100 ? ("  downscaled to " + pct + "%") : ""))
-IJ.log("  frames : " + (frameSel == null ? "all, one file per series" : (frameSel.toString() + ", one file per time point")))
+IJ.log("  frames : " + (frameSel == null ? "all, one file per series"
+                         : (frameSel.toString() + (oneFile ? ", in one file per series" : ", one file per time point"))))
 
 def sums = TA.load(LIBDIR).assembleAll(sourceRows, srcRoot, outdir,
                                        [format: fmt, scalePercent: pct, verify: verify, frames: frames,
-                                        skipExisting: skipExisting,
+                                        oneFile: oneFile, skipExisting: skipExisting,
                                         includeBySeries: includeBySeries]) { IJ.log(it) }
 
 // Rectangular whatever happened: a skipped or failed output still has a row

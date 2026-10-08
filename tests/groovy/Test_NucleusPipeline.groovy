@@ -472,12 +472,450 @@ def bareCloses = { String path ->
     return bad
 }
 
+println ""
+println "=== the time axis: every image gets t, a multi-frame one is analysed per frame ==="
+def RX = GCL.parseClass(new File(LIBDIR, "RoiExport.groovy"))
+def readTsv = { File f ->
+    def lines = f.readLines()
+    def head = lines[0].split("\t", -1).toList()
+    return [head: head, rows: lines.drop(1).collect { l ->
+        def v = l.split("\t", -1)
+        def m = [:]; head.eachWithIndex { h, i -> m[h] = (i < v.length ? v[i] : "") }; m }]
+}
+
+// Single frame first: the columns are there, counted from 1, and ImageJ's own
+// position columns are not.
+def outOne = new File(tmp, "single"); outOne.mkdirs()
+pipe.run(makeImp("one"), outOne, baseParams + [series_id: "one"])
+def oOne = readTsv(new File(outOne, "one_nucleus_outline.txt"))
+check("outline header has t, before z",        oOne.head, ["name", "roi", "t", "z", "x", "y"])
+check("one frame is t = 1 everywhere",         oOne.rows.collect { it.t }.unique(), ["1"])
+def rOne = readTsv(new File(outOne, "one_nucleus_res.txt"))
+check("res carries roi, z, t, ch",             rOne.head.containsAll(["roi", "z", "t", "ch"]), true)
+// Identity first, then ImageJ's measurements in ImageJ's order.
+check("res leads with row number, Label, roi, z, t, ch",
+      rOne.head.take(6), [" ", "Label", "roi", "z", "t", "ch"])
+check("...then ImageJ's columns, starting at Area", rOne.head[6], "Area")
+check("no .part file left behind",             outOne.list().findAll { it.endsWith(".part") }.toList(), [])
+check("...and not ImageJ's Ch or Slice",       rOne.head.findAll { it in ["Ch", "Slice", "Frame"] }, [])
+// The explicit columns against the Label, which carries the same facts in
+// ImageJ's words: <title>:<roi name>:<slice label>.
+check("res roi is the name in the Label",
+      rOne.rows.every { it.Label.split(":")[1] == it.roi }, true)
+check("res z is the slice the roi name says",
+      rOne.rows.every { (it.roi =~ /_(\d{4})-\d{4}-\d{4}$/)[0][1] as int == it.z as int }, true)
+check("res ch is the measured channel",        rOne.rows.collect { it.ch }.unique(), ["1"])
+def tsOne = readTsv(new File(outOne, "one_threshold_stats.tsv"))
+check("threshold stats: one row for one frame", tsOne.rows.size(), 1)
+check("...with the documented columns",        tsOne.head, RX.THRESHOLD_STATS_COLUMNS)
+def cfgOne = readCfg(new File(outOne, "one_config.txt"))
+check("config: image_frames 1",                cfgOne.image_frames, "1")
+check("config: no frame interval for one frame", cfgOne.frame_interval, "")
+check("config: the threshold as a range, as before", cfgOne.nucleus_threshold_used ==~ /\d+-\d+/, true)
+check("...and it equals the stats row's",      cfgOne.nucleus_threshold_used, tsOne.rows[0].nucleus_threshold_used)
+check("config: measurements no longer ask for stack",
+      cfgOne.measurements.split(" ").contains("stack"), false)
+
+// Four frames, two channels. The discs move and the signal brightens frame by
+// frame, so a frame measured as another, or all frames measured as the first,
+// cannot pass.
+def makeTimeImp = { String title ->
+    def st = new ImageStack(200, 200)
+    (1..4).each { int t ->
+        (1..3).each { int z ->
+            def dna = new ByteProcessor(200, 200)
+            dna.setColor(255)
+            dna.fill(new OvalRoi(30 + 5 * t, 30, 50, 50))
+            dna.fill(new OvalRoi(120, 110 + 5 * t, 50, 50))
+            def sig = new ByteProcessor(200, 200)
+            sig.setColor(20 * t + 10 * z)
+            sig.fill(new Roi(0, 0, 200, 200))
+            st.addSlice("c:1/2 z:" + z + "/3 t:" + t + "/4", dna)
+            st.addSlice("c:2/2 z:" + z + "/3 t:" + t + "/4", sig)
+        }
+    }
+    def imp = new ImagePlus(title, st)
+    imp.setDimensions(2, 3, 4)
+    imp.setOpenAsHyperStack(true)
+    imp.getCalibration().frameInterval = 30d
+    imp.getCalibration().setTimeUnit("sec")
+    return imp
+}
+def mParams = baseParams + [channels_measured: "1,2"]
+def outTL = new File(tmp, "multi"); outTL.mkdirs()
+def timeImp = makeTimeImp("tl")
+def resTL = pipe.run(timeImp, outTL, mParams + [series_id: "tl", save_overview: true])
+def oTL = readTsv(new File(outTL, "tl_nucleus_outline.txt"))
+def rTL = readTsv(new File(outTL, "tl_nucleus_res.txt"))
+check("4 frames x 2 discs x 3 slices = 24 ROIs", resTL.nucRois.size(), 24)
+check("every ROI id is distinct",               resTL.nucNames.unique(false).size(), 24)
+check("ids carry TTTT- equal to their frame",
+      oTL.rows.every { (it.roi =~ /^nucleus_(\d{4})-\d{4}-\d{4}-\d{4}$/)[0][1] as int == it.t as int }, true)
+check("outline t runs 1..4",                    oTL.rows.collect { it.t as int }.unique().sort(), [1, 2, 3, 4])
+check("res t runs 1..4",                        rTL.rows.collect { it.t as int }.unique().sort(), [1, 2, 3, 4])
+check("res rows = ROIs x 2 channels",           rTL.rows.size(), 48)
+check("res ch is 1 and 2",                      rTL.rows.collect { it.ch }.unique().sort(), ["1", "2"])
+// The signal is 20t + 10z in channel 2, so its Mean says which frame and slice
+// were measured -- not just which were written in the t column.
+check("each ch2 Mean is its own frame's signal",
+      rTL.rows.findAll { it.ch == "2" }.every { (it.Mean as double) == 20d * (it.t as int) + 10d * (it.z as int) }, true)
+// The frame copy keeps the series' title, so the Label still names the image.
+check("the Label names the image, not a DUP_ copy",
+      rTL.rows.every { it.Label.startsWith("tl:") }, true)
+
+// Each frame analysed in the loop must equal that frame analysed ALONE -- the
+// proof that the loop hands over the frame rather than a neighbour, and adds
+// nothing but t and the id's frame field.
+def frameAloneSame = (1..4).every { int t ->
+    def outAlone = new File(tmp, "alone" + t); outAlone.mkdirs()
+    pipe.run(NP.frameOf(timeImp, t), outAlone, mParams + [series_id: "tl"])
+    def alone = readTsv(new File(outAlone, "tl_nucleus_res.txt")).rows
+    def inLoop = rTL.rows.findAll { it.t == t.toString() }
+    def strip = { List rows -> rows.collect { r ->
+        r.findAll { k, v -> !(k in ["roi", "t", "Label", " "]) } +
+        [roi: r.roi.replaceFirst(/_\d{4}-(\d{4}-\d{4}-\d{4})$/, '_$1')] } }
+    strip(alone) == strip(inLoop)
+}
+check("every frame equals that frame analysed alone", frameAloneSame, true)
+
+def tsTL = readTsv(new File(outTL, "tl_threshold_stats.tsv"))
+check("threshold stats: one row per frame",     tsTL.rows.collect { it.t }, ["1", "2", "3", "4"])
+check("...counts sum to the total",             tsTL.rows.sum { it.nucleus_count as int }, 24)
+def cfgTL = readCfg(new File(outTL, "tl_config.txt"))
+check("config: image_frames 4",                 cfgTL.image_frames, "4")
+check("config: frame interval from the calibration", [cfgTL.frame_interval, cfgTL.frame_unit], ["30.0", "sec"])
+check("config: threshold is `per-frame`",       [cfgTL.nucleus_threshold_used, cfgTL.nucleus_mask_pct], ["per-frame", "per-frame"])
+check("config: the count is the total",         cfgTL.nucleus_count, "24")
+check("no overview PNG for a multi-frame image",
+      outTL.list().findAll { it.endsWith(".png") }.toList(), [])
+// Its overview is a TIFF per channel, a page per frame (Test_Overview and
+// Test_SeriesSource check what is on the pages).
+def tifsTL = outTL.list().findAll { it.endsWith(".tif") }.sort()
+check("...but a TIFF per channel, and its overlay", tifsTL,
+      cfgTL.overview_channels.split(",").collect { ["tl_overview_ch" + it + ".tif", "tl_overview_ch" + it + "_overlay.tif"] }.flatten().sort())
+check("...a page per frame",                    ij.IJ.openImage(new File(outTL, tifsTL[0]).getPath()).getNFrames(), 4)
+check("...and the config says it was written",  [cfgTL.overview_saved, cfgTL.overview_display_range.split(" ").size()],
+      ["true", cfgTL.overview_channels.split(",").size()])
+def zipped = RX.loadRoiZip(new File(outTL, "tl_nucleus_outline_ROIs.zip").getPath())
+check("the zip holds all 24",                   zipped.size(), 24)
+check("each zipped ROI sits on its own frame",
+      zipped.every { r -> r.getTPosition() == ((r.getName() =~ /^nucleus_(\d{4})-/)[0][1] as int) }, true)
+check("...and its own slice",
+      zipped.every { r -> r.getZPosition() == ((r.getName() =~ /-(\d{4})-\d{4}-\d{4}$/)[0][1] as int) }, true)
+
+println ""
+println "=== a failed ROI zip leaves nothing behind ==="
+def zipDir = new File(tmp, "zipfail"); zipDir.mkdirs()
+def zipPath = new File(zipDir, "x_ROIs.zip").getPath()
+// A repeated entry name is what four frames of one object would have produced
+// without TTTT-: ZipOutputStream throws on the second.
+def oneRoi = new OvalRoi(10, 10, 20, 20)
+String zipErr = null
+try { RX.saveRoiZip([oneRoi, oneRoi], ["dup", "dup"], zipPath) } catch (Throwable t) { zipErr = t.getClass().getSimpleName() }
+check("a repeated name throws",                 zipErr != null, true)
+check("...and leaves no zip and no part file",  zipDir.list().toList(), [])
+
+println ""
+println "=== resume: an interrupted series carries on from the frames it staged ==="
+// The time-lapse again, with a dim spot in each disc so nucleoli are found too:
+// a resumed frame has to give back BOTH features' ROIs, and the overlay TIFF
+// draws them.
+def makeSpotImp = { String title ->
+    def imp = makeTimeImp(title)
+    (1..4).each { int t ->
+        (1..3).each { int z ->
+            def ip = imp.getStack().getProcessor(imp.getStackIndex(1, z, t))
+            ip.setColor(60)
+            ip.fill(new OvalRoi(30 + 5 * t + 18, 48, 12, 12))
+            ip.fill(new OvalRoi(138, 110 + 5 * t + 18, 12, 12))
+        }
+    }
+    return imp
+}
+def rsParams = mParams + [series_id: "rs", save_overview: true, nucleoli_enabled: true]
+def SS = pipe.SS
+def rsImp = makeSpotImp("rs")
+// The source, watched: which frames were read, and -- for the interrupted run --
+// the run dying after frame `stopAfter`. It dies from release(), outside the
+// per-frame catch, which is the path a killed run's staging is left by.
+def watched = { int stopAfter ->
+    def inner = SS.ofImage(rsImp, "", false)
+    def read = []
+    def w = new Expando()
+    ["title", "whole", "nFrames", "nSlices", "nChannels", "width", "height", "calibration",
+     "frameList", "frameInterval", "frameUnit"].each { w[it] = inner[it] }
+    w.choose  = { List wanted -> inner.choose(wanted) }
+    w.frame   = { int t -> read << t; inner.frame(t) }
+    w.release = { ImagePlus f ->
+        inner.release(f)
+        if (stopAfter > 0 && read && read[-1] == stopAfter)
+            throw new IllegalStateException("simulated: the run dies after frame " + stopAfter)
+    }
+    w.read = read
+    return w
+}
+def interrupt = { File out, Map params, int k ->
+    String err = null
+    try { pipe.runSource(watched(k), out, params, null, true) } catch (Throwable e) { err = e.getMessage() }
+    return err
+}
+// Zip entries, not zip bytes: ZipOutputStream stamps each entry with the time it
+// was written, so two uninterrupted runs differ there too.
+def zipEntries = { File f ->
+    def zis = new java.util.zip.ZipInputStream(new FileInputStream(f)), m = [:]
+    try {
+        def e
+        while ((e = zis.getNextEntry()) != null) {
+            def buf = new ByteArrayOutputStream(); byte[] b = new byte[8192]; int n
+            while ((n = zis.read(b)) > 0) buf.write(b, 0, n)
+            m[e.getName()] = buf.toByteArray().encodeHex().toString()
+        }
+    } finally { zis.close() }
+    return m
+}
+// Every file the series wrote, as comparable values: bytes, zip entries, and
+// the config without its timestamp.
+def written = { File out ->
+    out.listFiles().findAll { it.isFile() }.sort { it.getName() }.collectEntries { File f ->
+        def v = f.getName().endsWith(".zip") ? zipEntries(f)
+              : f.getName().endsWith("_config.txt") ? f.readLines().findAll { !it.startsWith("timestamp\t") }
+              : f.getBytes().encodeHex().toString()
+        [(f.getName()): v]
+    }
+}
+def stageOf = { File out -> new File(new File(out, NP.STAGING_DIR), "rs") }
+
+// The reference: one uninterrupted run.
+def rsRef = new File(tmp, "rs_ref"); rsRef.mkdirs()
+def wRef = watched(-1)
+def resRef = pipe.runSource(wRef, rsRef, rsParams, null, false)
+def ref = written(rsRef)
+check("reference read every frame",             wRef.read, [1, 2, 3, 4])
+check("reference found nucleoli (so they are tested)", resRef.nuclRois.size() > 0, true)
+println "    reference: " + resRef.nucRois.size() + " nuclei, " + resRef.nuclRois.size() + " nucleoli, " +
+        ref.size() + " files"
+
+// Interrupted after frame 2, then a half-written frame 3 planted, as a kill
+// mid-write leaves one.
+def rsOut = new File(tmp, "rs_resumed"); rsOut.mkdirs()
+def errI = interrupt(rsOut, rsParams, 2)
+check("the interrupted run died",               errI?.startsWith("simulated"), true)
+check("...leaving frames 1 and 2 staged, and its settings",
+      stageOf(rsOut).list().sort().toList(), ["settings.txt", "t0001", "t0002"])
+check("...and no series file written",          rsOut.listFiles().findAll { it.isFile() }.size(), 0)
+def junk = new File(stageOf(rsOut), "t0003.part"); junk.mkdirs()
+new File(junk, "nucleus_res.txt").setText("half a table")
+
+def wRes = watched(-1)
+def resRes = pipe.runSource(wRes, rsOut, rsParams, null, true)
+check("the resumed run read only frames 3 and 4", wRes.read, [3, 4])
+check("...every file the same as the uninterrupted run's", written(rsOut), ref)
+check("...including the ROIs it returns",       [resRes.nucNames, resRes.nuclNames], [resRef.nucNames, resRef.nuclNames])
+check("...frames 1-2 marked as an earlier run's, with no time",
+      resRes.frames.collect { [it.t, it.status, it.message, it.seconds] }.take(2),
+      [[1, "ok", NP.RESUMED_MESSAGE, null], [2, "ok", NP.RESUMED_MESSAGE, null]])
+check("...frames 3-4 as this run's",            resRes.frames.drop(2).collect { [it.t, it.status, it.message] },
+      [[3, "ok", ""], [4, "ok", ""]])
+check("...and the staging gone",                new File(rsOut, NP.STAGING_DIR).exists(), false)
+// The joined ROI zip and the overlay are compared above; this says the
+// comparison had something in it.
+check("...the overlay TIFFs among what was compared",
+      ref.keySet().findAll { it.endsWith("_overlay.tif") }.size(), 2)
+
+// Other settings: refused before a frame is read, the staging untouched. Then
+// resume=false (the batch's redo_all) discards it.
+def rsOther = new File(tmp, "rs_other"); rsOther.mkdirs()
+interrupt(rsOther, rsParams, 2)
+def wOther = watched(-1)
+String errO = null
+try { pipe.runSource(wOther, rsOther, rsParams + [nucleus_blur_sigma: 1.0d], null, true) }
+catch (IllegalStateException e) { errO = e.getMessage() }
+println "    refusal: " + errO
+check("other settings are refused",             errO?.contains("nucleus_blur_sigma '0.0' then, '1.0' now"), true)
+check("...naming only what differs",            errO?.count(" then, "), 1)
+check("...before a frame is read",              wOther.read, [])
+check("...leaving the staged frames alone",     stageOf(rsOther).list().sort().toList(), ["settings.txt", "t0001", "t0002"])
+def wRestart = watched(-1)
+pipe.runSource(wRestart, rsOther, rsParams + [nucleus_blur_sigma: 1.0d], null, false)
+check("resume=false reads every frame",         wRestart.read, [1, 2, 3, 4])
+check("...and its config has the new setting",  readCfg(new File(rsOther, "rs_config.txt")).nucleus_blur_sigma, "1.0")
+
+// Frames staged with no record of their settings -- as 0.8.0-dev before this
+// wrote one -- are refused too: nobody can vouch for them.
+def rsBare = new File(tmp, "rs_bare"); rsBare.mkdirs()
+interrupt(rsBare, rsParams, 2)
+new File(stageOf(rsBare), NP.STAGING_SETTINGS).delete()
+String errB = null
+try { pipe.runSource(watched(-1), rsBare, rsParams, null, true) } catch (IllegalStateException e) { errB = e.getMessage() }
+check("staged frames without settings are refused", errB?.contains("without recording its settings"), true)
+
+// A resume may ask for other frames than the run it continues: 2 is reused,
+// 3 analysed, and 1 -- staged but not asked for -- is not joined.
+def rsSome = new File(tmp, "rs_some"); rsSome.mkdirs()
+interrupt(rsSome, rsParams, 2)
+def wSome = watched(-1)
+pipe.runSource(wSome, rsSome, rsParams, [2, 3], true)
+check("a resume over frames 2-3 reads only 3",  wSome.read, [3])
+check("...and its results hold 2 and 3",        readCfg(new File(rsSome, "rs_config.txt")).frames_analysed, "2 3")
+check("...outline t is 2 and 3",
+      readTsv(new File(rsSome, "rs_nucleus_outline.txt")).rows.collect { it.t }.unique(), ["2", "3"])
+
+// The zip is staged for every frame now, for the resume to read; it must still
+// not be WRITTEN when save_roi_zips is off.
+def rsNoZip = new File(tmp, "rs_nozip"); rsNoZip.mkdirs()
+pipe.runSource(watched(-1), rsNoZip, rsParams + [save_roi_zips: false], null, true)
+check("save_roi_zips off writes no zip",        rsNoZip.list().findAll { it.endsWith(".zip") }.toList(), [])
+check("...but the outlines",                    new File(rsNoZip, "rs_nucleus_outline.txt").isFile(), true)
+
+println ""
+println "=== nucleus_threshold_scope: one threshold for every frame of a series ==="
+// Four frames whose nuclei FADE (220, 160, 110, 70 grey on a background of
+// ~20), as a bleaching time course does: each frame's own Otsu threshold sits
+// at a different level, so `frame` and `series` must give different answers.
+def FADE = [220, 160, 110, 70]
+def makeFadeImp = { String title ->
+    def st = new ImageStack(200, 200)
+    (1..4).each { int t ->
+        (1..3).each { int z ->
+            def ip = new ByteProcessor(200, 200)
+            for (int y = 0; y < 200; y++) for (int x = 0; x < 200; x++) ip.set(x, y, 18 + ((x * y + z) % 5))
+            ip.setColor(FADE[t - 1])
+            ip.fill(new OvalRoi(30, 30, 50, 50)); ip.fill(new OvalRoi(120, 110, 50, 50))
+            st.addSlice("z:" + z + "/3 t:" + t + "/4", ip)
+        }
+    }
+    def imp = new ImagePlus(title, st)
+    imp.setDimensions(1, 3, 4); imp.setOpenAsHyperStack(true)
+    return imp
+}
+def fadeImp = makeFadeImp("fade")
+// Mean, not Otsu: background and nuclei are separated by an empty gap here, and
+// Otsu puts every frame's threshold at the gap's bottom whatever the nuclei's
+// brightness -- the same 23-255 for all four frames, which would not tell the
+// scopes apart. Mean follows each frame's brightness.
+def fParams = baseParams + [series_id: "fade", channels_measured: "1", nucleus_threshold: "Mean"]
+// A source that counts its reads, and can refuse one (failRead) or die after a
+// frame (stopAfter), as the resume section's does.
+def watchedOf = { ImagePlus img, int stopAfter, Integer failRead = null ->
+    def inner = SS.ofImage(img, "", false)
+    def read = [], failedOnce = [false]
+    def w = new Expando()
+    ["title", "whole", "nFrames", "nSlices", "nChannels", "width", "height", "calibration",
+     "frameList", "frameInterval", "frameUnit"].each { w[it] = inner[it] }
+    w.choose  = { List wanted -> inner.choose(wanted) }
+    w.frame   = { int t ->
+        read << t
+        if (failRead != null && t == failRead && !failedOnce[0]) {
+            failedOnce[0] = true; throw new java.io.IOException("simulated: frame " + t + " unreadable") }
+        inner.frame(t) }
+    w.release = { ImagePlus f ->
+        inner.release(f)
+        if (stopAfter > 0 && read && read[-1] == stopAfter && read.size() > 4)
+            throw new IllegalStateException("simulated: the run dies after frame " + stopAfter)
+    }
+    w.read = read
+    return w
+}
+def statsOf = { File out -> readTsv(new File(out, "fade_threshold_stats.tsv")).rows }
+
+// frame scope: each frame its own threshold.
+def outFr = new File(tmp, "fade_frame"); outFr.mkdirs()
+pipe.runSource(watchedOf(fadeImp, -1), outFr, fParams + [nucleus_threshold_scope: "frame"], null, false)
+def perFrame = statsOf(outFr).collect { it.nucleus_threshold_used }
+println "    frame scope: " + perFrame
+check("frame scope: the fading frames get different thresholds", perFrame.unique(false).size() > 1, true)
+
+// series scope: one threshold, read twice.
+def outSe = new File(tmp, "fade_series"); outSe.mkdirs()
+def wSe = watchedOf(fadeImp, -1)
+pipe.runSource(wSe, outSe, fParams + [nucleus_threshold_scope: "series"], null, false)
+def perSeries = statsOf(outSe).collect { it.nucleus_threshold_used }
+def cfgSe = readCfg(new File(outSe, "fade_config.txt"))
+println "    series scope: " + perSeries + ", divisor " + statsOf(outSe).collect { it.nucleus_histogram_divisor }
+check("series scope reads every frame twice (choose, then analyse)", wSe.read, [1, 2, 3, 4, 1, 2, 3, 4])
+check("...and every frame has the same threshold",  perSeries.unique(false).size(), 1)
+check("...which differs from some frame's own",     perFrame.any { it != perSeries[0] }, true)
+check("config: the threshold, not `per-frame`",     cfgSe.nucleus_threshold_used, perSeries[0])
+check("config: and its divisor",                    cfgSe.nucleus_histogram_divisor, "1")
+check("config: the scope is recorded",              cfgSe.nucleus_threshold_scope, "series")
+// The ORACLE: the series threshold is the one exec() chooses for ONE stack
+// holding every frame's DNA slices -- what "one threshold for every frame" means.
+def allSt = new ImageStack(200, 200)
+(1..4).each { int t -> (1..3).each { int z -> allSt.addSlice(fadeImp.getStack().getProcessor(fadeImp.getStackIndex(1, z, t)).duplicate()) } }
+def allImp = new ImagePlus("all", allSt)
+def oracleT = fiji.threshold.Auto_Threshold.newInstance().exec(allImp, "Mean", true, true, true, false, false, true)[0] as int
+println "    exec() on all 12 slices as one stack: " + oracleT + " -> " + (oracleT + 1) + "-255"
+check("...equals exec() on every frame's slices as one stack", perSeries[0], (oracleT + 1) + "-255")
+
+// A single frame is its own series: series and frame give the same files.
+def outOneF = new File(tmp, "one_frame"); outOneF.mkdirs()
+def outOneS = new File(tmp, "one_series"); outOneS.mkdirs()
+pipe.run(makeImp("one"), outOneF, baseParams + [series_id: "one", nucleus_threshold_scope: "frame"])
+pipe.run(makeImp("one"), outOneS, baseParams + [series_id: "one", nucleus_threshold_scope: "series"])
+def sameOne = outOneF.list().sort().every { String n ->
+    n.endsWith("_config.txt") ||
+    java.util.Arrays.equals(new File(outOneF, n).bytes, new File(outOneS, n).bytes) }
+def cfgDiff = { File a, File b ->
+    def la = a.readLines().findAll { !it.startsWith("timestamp\t") }, lb = b.readLines().findAll { !it.startsWith("timestamp\t") }
+    (la - lb) + (lb - la) }
+check("one frame: series = frame, every file but the config", sameOne, true)
+check("...and the configs differ only in the scope",
+      cfgDiff(new File(outOneF, "one_config.txt"), new File(outOneS, "one_config.txt")).sort(),
+      ["nucleus_threshold_scope\tframe", "nucleus_threshold_scope\tseries"])
+
+// Per-slice thresholds cannot be pooled over a series: refused before a read.
+def wBad = watchedOf(fadeImp, -1)
+String errScope = null
+try { pipe.runSource(wBad, new File(tmp, "fade_bad"), fParams + [nucleus_threshold_scope: "series",
+                                                                  nucleus_stack_histogram: false], null, false) }
+catch (IllegalArgumentException e) { errScope = e.getMessage() }
+check("series + per-slice thresholds is refused",   errScope?.contains("choose one"), true)
+check("...before a frame is read",                  wBad.read, [])
+
+// A frame unreadable in the first pass is left out of the threshold and
+// reported failed -- not analysed at a threshold it had no part in.
+def outPf = new File(tmp, "fade_passfail"); outPf.mkdirs()
+def resPf = pipe.runSource(watchedOf(fadeImp, -1, 3), outPf, fParams + [nucleus_threshold_scope: "series"], null, false)
+check("first-pass failure: that frame failed, with why",
+      resPf.frames.collect { [it.t, it.status] }, [[1, "ok"], [2, "ok"], [3, "failed"], [4, "ok"]])
+check("...the message",                             resPf.frames[2].message, "could not be read when the series threshold was chosen")
+check("...and the results hold the others",         readCfg(new File(outPf, "fade_config.txt")).frames_analysed, "1 2 4")
+
+// Resume: the threshold comes from the staging, so nothing is read twice --
+// and the files equal the uninterrupted series run's.
+def outSr = new File(tmp, "fade_resume"); outSr.mkdirs()
+String errSr = null
+try { pipe.runSource(watchedOf(fadeImp, 2), outSr, fParams + [nucleus_threshold_scope: "series"], null, true) }
+catch (Throwable e) { errSr = e.getMessage() }
+def setSr = new File(outSr, ".staging/fade/settings.txt").readLines()
+check("(the interrupted series run died after frame 2)", errSr?.startsWith("simulated"), true)
+check("...its settings record the threshold it chose",
+      setSr.findAll { it.startsWith("series_threshold") || it.startsWith("series_frames") ||
+                      it.startsWith("series_histogram") }.sort(),
+      ["series_frames\t1 2 3 4", "series_histogram_divisor\t1", "series_threshold\t" + oracleT,
+       "series_threshold_frames\t1 2 3 4"])
+def wSr = watchedOf(fadeImp, -1)
+pipe.runSource(wSr, outSr, fParams + [nucleus_threshold_scope: "series"], null, true)
+check("the resume read only frames 3 and 4, once",  wSr.read, [3, 4])
+def filesOf = { File o -> o.listFiles().findAll { it.isFile() && !it.getName().endsWith(".zip") }.sort { it.getName() }
+                            .collectEntries { [(it.getName()): it.getName().endsWith("_config.txt")
+                                ? it.readLines().findAll { !it.startsWith("timestamp\t") } : it.getText("ISO-8859-1")] } }
+check("...and its files equal the uninterrupted series run's (zips aside)", filesOf(outSr), filesOf(outSe))
+// Other frames are another threshold: refused, like any other setting.
+def outSo = new File(tmp, "fade_resume_other"); outSo.mkdirs()
+try { pipe.runSource(watchedOf(fadeImp, 2), outSo, fParams + [nucleus_threshold_scope: "series"], null, true) } catch (Throwable e) { }
+String errSo = null
+try { pipe.runSource(watchedOf(fadeImp, -1), outSo, fParams + [nucleus_threshold_scope: "series"], [1, 2, 3], true) }
+catch (IllegalStateException e) { errSo = e.getMessage() }
+check("a resume over other frames is refused (series_frames)", errSo?.contains("series_frames '1 2 3 4' then, '1 2 3' now"), true)
+
 def unpaired = []
 ["scripts/groovy/NucleusPipeline.groovy",
  "scripts/groovy/Overview.groovy",
  "scripts/groovy/RoiDetect.groovy",
  "scripts/groovy/NucleolusDetect.groovy",
- "scripts/groovy/BatchRunner.groovy"].each { unpaired.addAll(bareCloses(it)) }
+ "scripts/groovy/BatchRunner.groovy",
+ "scripts/groovy/SeriesSource.groovy"].each { unpaired.addAll(bareCloses(it)) }
 check("no close() without flush() in the library", unpaired, [])
 
 // Once everything has been read back, not partway through: sections added after

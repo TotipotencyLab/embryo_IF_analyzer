@@ -589,3 +589,53 @@ test_that("a column only the sheet has is still joined", {
     "--no_plot", "--series_sheet", sheet))))
   expect_identical(unique(st$timepoint), "E3.5")
 })
+
+# --- the time axis --------------------------------------------------------------
+
+test_that("the ROI id's frame field is understood", {
+  source_r_scripts("feature_stats.r")
+  # A 4-field id matched nothing before, so the measurement table was never
+  # looked for -- no signal, and only a warning.
+  expect_identical(feature_roi_prefix("nucleus_0002-0001-0001-0433"), "nucleus")
+  expect_identical(feature_roi_prefix("growing_oocyte_0002-0001-0001-0433"), "growing_oocyte")
+  expect_identical(feature_roi_prefix("nucleus_0001-0001-0433"), "nucleus")
+})
+
+test_that("measurements join on (roi, t): each frame keeps its own numbers", {
+  source_r_scripts("feature_stats.r")
+  # Two frames that share 3-field ROI ids -- the case where keying on roi alone
+  # kept the first frame's measurements for both and called the rest
+  # duplicates. Different features per frame, as grouping per frame gives.
+  f1 <- make_feats(ids = rep("nucleus_1", 3)); f1$t <- 1
+  f2 <- make_feats(ids = rep("nucleus_2", 3)); f2$t <- 2
+  res <- rbind(cbind(make_res(f1$roi, mean = 10), t = 1, z = f1$z),
+               cbind(make_res(f2$roi, mean = 80), t = 2, z = f2$z))
+  st <- expect_silent(summarise_feature_stats(rbind(f1, f2), res = res))
+  got <- setNames(st$ch1_signal, st$feature_id)
+  expect_equal(unname(got[c("nucleus_1", "nucleus_2")]), c(10, 80))
+})
+
+test_that("a measurement table whose z disagrees with the outlines stops", {
+  source_r_scripts("feature_stats.r")
+  f <- make_feats(); f$t <- 1
+  res <- cbind(make_res(f$roi), t = 1, z = rev(f$z))   # z 3,2,1 against 1,2,3
+  expect_error(summarise_feature_stats(f, res = res), "different z")
+})
+
+test_that("an older feature table and measurement table are one frame", {
+  source_r_scripts("feature_stats.r")
+  # Neither carries t: both read as t = 1, and the join still matches.
+  st <- summarise_feature_stats(make_feats(), res = make_res(make_feats()$roi, mean = 42))
+  expect_equal(st$ch1_signal, 42)
+})
+
+test_that("t is part of the feature's key, and a feature cannot span frames", {
+  source_r_scripts("feature_stats.r")
+  f <- make_feats(); f$t <- 3
+  st <- summarise_feature_stats(f)
+  expect_identical(colnames(st)[1:4], c("series_id", "feature_type", "feature_id", "t"))
+  expect_identical(st$t, 3)
+  # The same feature id in two frames is grouping that ran across time.
+  f$t <- c(1, 1, 2)
+  expect_error(summarise_feature_stats(f), "more than one frame")
+})

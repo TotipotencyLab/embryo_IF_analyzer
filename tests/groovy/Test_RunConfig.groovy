@@ -85,7 +85,9 @@ check("the pipeline library is present",       runner.isFile(), true)
 def src = runner.getText("UTF-8")
 check("records image_width",                   src.contains("image_width"), true)
 check("records image_height",                  src.contains("image_height"), true)
-check("reads them from the ImagePlus",         src.contains("imp.getWidth()") && src.contains("imp.getHeight()"), true)
+// From the series source -- the open image, or a series streamed a frame at a
+// time, which has no whole image to ask (SeriesSource).
+check("reads them from the series source",     src.contains("src.width") && src.contains("src.height"), true)
 
 // The overview pair. The raw projection and the outlined one used to share one
 // file name, which made them mutually exclusive; montage_qc_cli.r needs both.
@@ -298,6 +300,7 @@ def VAR_TO_PARAM = [
     dnaCh: "dna_channel", channelsCsv: "channels_measured",
     nucSigma: "nucleus_blur_sigma", nucMethod: "nucleus_threshold",
     nucRange: "nucleus_threshold_range", nucStackHist: "nucleus_stack_histogram",
+    nucThresholdScope: "nucleus_threshold_scope",
     nucSize: "nucleus_particle_size", nucCircularity: "nucleus_circularity",
     nucWatershed: "nucleus_watershed",
     doNucleoli: "nucleoli_enabled", nucleolusSigma: "nucleolus_blur_sigma",

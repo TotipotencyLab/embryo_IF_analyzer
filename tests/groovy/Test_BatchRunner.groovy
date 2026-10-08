@@ -162,7 +162,7 @@ println "=== batch_summary.tsv is the deliverable ==="
 def sum = TSV.read(new File(out1, "batch_summary.tsv"))
 check("one row per sheet row, excluded too",   sum.size(), 4)
 check("columns",                               sum[0].keySet().toList(),
-      ["series_id", "path", "series_index", "status", "open_method",
+      ["series_id", "t", "path", "series_index", "status", "open_method",
        "threshold", "mask_pct", "n_nucleus",
        "n_nucleolus", "seconds", "message"])
 check("A is ok",                               sum.find { it.series_id == "A" }.status, "ok")
@@ -521,9 +521,9 @@ def outEach = new File(tmp, "each"); outEach.mkdirs()
 def seen = []
 def eachRes = runner.runEach(rows, raw, [open_mode: "auto"], outEach,
                              ["n_slices", "title"], null,
-                             { imp, prefix, si, openMethod, row ->
+                             { src, prefix, si, openMethod, row ->
                                  seen << prefix
-                                 return [n_slices: imp.getNSlices(), title: imp.getTitle()]
+                                 return [n_slices: src.nSlices, title: src.title]
                              })
 // A, B and C are included; B points at a file that is not there. So the work
 // closure must see exactly the rows that OPENED -- naming them, because a
@@ -536,7 +536,7 @@ def eachTsv = new File(outEach, "batch_summary.tsv")
 check("runEach writes batch_summary.tsv",     eachTsv.isFile(), true)
 def eachHdr = eachTsv.readLines()[0].split("\t").toList()
 check("...with the caller's columns, in place",
-      eachHdr, ["series_id", "path", "series_index", "status", "open_method",
+      eachHdr, ["series_id", "t", "path", "series_index", "status", "open_method",
                 "n_slices", "title", "seconds", "message"])
 
 // THE point of `blanks`: an excluded or failed row has no work output, and a
@@ -554,7 +554,7 @@ def outThrow = new File(tmp, "eachthrow"); outThrow.mkdirs()
 int called = 0
 def throwRes = runner.runEach(rows, raw, [open_mode: "auto"], outThrow,
                               ["n_slices"], null,
-                              { imp, prefix, si, openMethod, row ->
+                              { src, prefix, si, openMethod, row ->
                                   called++
                                   throw new IllegalStateException("deliberate")
                               })
@@ -577,7 +577,7 @@ check("...and B's reason is the missing file",
 // would warn about a blur sigma it never uses.
 def outNote = new File(tmp, "eachnote"); outNote.mkdirs()
 def noteRes = runner.runEach(mixed, raw, [open_mode: "auto"], outNote, [], null,
-                             { imp, prefix, si, openMethod, row -> [:] })
+                             { src, prefix, si, openMethod, row -> [:] })
 def mixedWarn = noteRes.warnings.find { it.contains("different pixel sizes") }
 check("mixed pixel sizes still warn",         mixedWarn != null, true)
 check("...with the generic note by default",
@@ -588,6 +588,56 @@ check("run() still gives the nucleus note",
       nucWarn == null ? "no warning" : nucWarn.contains("nucleus_blur_sigma"), true)
 check("...naming nucleolus_erode_px too",
       nucWarn == null ? "no warning" : nucWarn.contains("nucleolus_erode_px"), true)
+
+println ""
+println "=== run_tag: several batches sharing one output directory ==="
+// The SLURM array's tasks all write into one outdir. Each series is in one
+// task, so a series' files cannot collide; the batch's own two files would,
+// and a summary overwritten by another task reads as rows that never ran.
+check("blank names the files as always",      BR.runFileName("batch_summary", ".tsv", ""), "batch_summary.tsv")
+check("...and so does null",                  BR.runFileName("batch_summary", ".tsv", null), "batch_summary.tsv")
+check("a tag goes before the extension",      BR.runFileName("batch_params", ".txt", "task_03"), "batch_params_task_03.txt")
+check("a tag with a path separator is refused",
+      errOf { BR.runFileName("batch_summary", ".tsv", "../x") }?.contains("runTag may hold only"), true)
+
+def outShared = new File(tmp, "shared")
+def tagWork = { src, sid, si, openMethod, row -> [n_slices: src.nSlices] }
+def tagA = runner.runEach(rows.findAll { it.series_id == "A" }, raw, [open_mode: "auto", run_tag: "task_01"],
+                          outShared, ["n_slices"], null, tagWork)
+def tagC = runner.runEach(rows.findAll { it.series_id == "C" }, raw, [open_mode: "auto", run_tag: "task_02"],
+                          outShared, ["n_slices"], null, tagWork)
+// Each summary holds ITS task's row, named -- two files existing would pass
+// if the second had been written over the first under both names.
+check("task_01's summary holds A only",
+      TSV.read(new File(outShared, "batch_summary_task_01.tsv")).collect { it.series_id }, ["A"])
+check("task_02's summary holds C only",
+      TSV.read(new File(outShared, "batch_summary_task_02.tsv")).collect { it.series_id }, ["C"])
+check("...no untagged summary beside them",   new File(outShared, "batch_summary.tsv").exists(), false)
+check("runEach returns the file it wrote",    tagC.summary_file.getName(), "batch_summary_task_02.tsv")
+
+// A bad tag costs one message, before any row is opened.
+int tagCalls = 0
+def outBadTag = new File(tmp, "badtag")
+check("a bad tag is refused",
+      errOf { runner.runEach(rows, raw, [open_mode: "auto", run_tag: "a b"], outBadTag, [], null,
+                             { src, sid, si, m, row -> tagCalls++; [:] }) }?.contains("runTag may hold only"), true)
+check("...before any row ran",                tagCalls, 0)
+check("...or the outdir was made",            outBadTag.exists(), false)
+
+// run() names batch_params.txt by the same tag.
+def outTagRun = new File(tmp, "tagrun")
+runner.run(rows.findAll { it.series_id == "A" }, raw, params + [run_tag: "task_07"], outTagRun)
+check("run() writes batch_params_<tag>.txt",  new File(outTagRun, "batch_params_task_07.txt").isFile(), true)
+check("...and batch_summary_<tag>.tsv",      new File(outTagRun, "batch_summary_task_07.tsv").isFile(), true)
+check("...and neither untagged name",
+      [new File(outTagRun, "batch_params.txt").exists(), new File(outTagRun, "batch_summary.tsv").exists()],
+      [false, false])
+// run_tag names a file; it is not an analysis parameter, so it must not be
+// written into a file meant to be fed back in as a config.
+check("run_tag is not in batch_params",
+      new File(outTagRun, "batch_params_task_07.txt").text.contains("run_tag"), false)
+check("...nor in the series' own _config.txt",
+      errOf { RC.readParams(new File(outTagRun, "A_config.txt"), NP.PARAM_TYPES) }, null)
 
 tmp.deleteDir()
 

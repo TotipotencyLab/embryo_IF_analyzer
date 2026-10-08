@@ -338,7 +338,12 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
         feature_area_range  = eff_feat_area,
         feature_prefix         = paste0(feat, "_"),
         invalid_feature_prefix = paste0("invalid_", feat, "_"),
-        fail_ROI_feature_prefix = paste0("failed_", feat, "_")
+        fail_ROI_feature_prefix = paste0("failed_", feat, "_"),
+        # Each frame grouped on its own and numbered on from the last, so one
+        # object's frames never join into one feature and a feature_id names
+        # one object at one time point. t comes back beside roi, as in the
+        # outline table: (roi, t) is the key the measurements join on.
+        partition = "t"
       )
       feature_group$feature_type <- feat
       feature_group$series_id <- sid
@@ -349,6 +354,8 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       message("    ", feat,
               if (feat != roi_prefix) paste0(" (from ", roi_prefix, ")") else "",
               ": ", nrow(feature_group), " ROIs -> ", n_valid, " feature(s)",
+              if (length(unique(feature_group$t)) > 1)
+                paste0(" over ", length(unique(feature_group$t)), " frames") else "",
               "  [max_z_dist=", eff_z_dist, " min_z_span=", eff_z_span,
               " min_intersect_ratio=", eff_ratio,
               if (!is.null(eff_roi_area))  paste0(" roi_area=", rng(eff_roi_area)) else "",
@@ -408,7 +415,14 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     saveRDS(series_sf, rds_path)
     message("    -> ", basename(rds_path))
     
-    if (argv$qc_plot) {
+    # One picture per image, so one per FRAME of a time course: drawn together,
+    # the same nucleus at 96 time points reads as one blot. The frames are the
+    # pages of one TIFF -- 96 PNGs per series is clutter.
+    n_frames <- length(unique(series_sf$t))
+    if (argv$qc_plot && n_frames > 1) {
+      path <- .qc_plot_frames(series_sf, sid, outdir)
+      message("    -> ", basename(path), " (", n_frames, " pages, one per frame)")
+    } else if (argv$qc_plot) {
       png_path <- file.path(outdir, paste0(sid, "_features_qc.png"))
       .qc_plot(series_sf, sid, png_path)
       message("    -> ", basename(png_path))
@@ -436,10 +450,12 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   if (length(absent)) {
     stop("Outline table ", basename(path), " is missing column(s): ",
          paste(absent, collapse = ", "),
-         "\n  (expected the output contract: name, roi, z, x, y)", call. = FALSE)
+         "\n  (expected the output contract: name, roi, t, z, x, y)", call. = FALSE)
   }
+  # A table from before the time axis has no t: it is one frame, t = 1.
+  if (!"t" %in% colnames(df)) df$t <- 1
   # @Chad: You have make sure that all of `need` columns exist anyway, so no need to overcomplicated thing
-  return(tibble::as_tibble(df[, needed, drop = FALSE]))
+  return(tibble::as_tibble(df[, c("roi", "t", "z", "x", "y"), drop = FALSE]))
 }
 
 #' Report how many inner features found a parent, and how
@@ -530,6 +546,55 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   
   ggplot2::ggsave(path, p, width = 6, height = 6, dpi = 150)
   invisible(path)
+}
+
+#' The QC plot of a time course: <sid>_features_qc.tif, one page per frame in
+#' t order, 8-bit (mg_write()).
+#'
+#' Every frame is drawn over the SAME extent, taken from the whole series, and
+#' with the same colour for each feature type -- flicking between frames must
+#' show the objects moving, not the axes or the legend. A frame with no valid
+#' feature still gets its plot, showing the ROIs that were rejected: a frame
+#' missing from a run of 96 is not something anyone notices.
+#'
+#' @return The path written.
+.qc_plot_frames <- function(series_sf, sid, outdir) {
+  .cli_need("magick")
+  bb  <- sf::st_bbox(series_sf)
+  pad <- 0.02 * max(bb["xmax"] - bb["xmin"], bb["ymax"] - bb["ymin"])
+  xlim <- unname(c(bb["xmin"] - pad, bb["xmax"] + pad))
+  ylim <- unname(c(bb["ymin"] - pad, bb["ymax"] + pad))
+  # flip_y_image() maps y to y_ref - y; ymin + ymax maps the box onto itself,
+  # so ylim reads the same flipped or not.
+  y_ref <- unname(bb["ymin"] + bb["ymax"])
+  types <- sort(unique(series_sf$feature_type))
+  # ggplot's own default colours for the full set of types, fixed, so a frame
+  # lacking one type does not shift the colours of the rest.
+  palette <- stats::setNames(scales::hue_pal()(length(types)), types)
+
+  frames <- sort(unique(series_sf$t))
+  pages <- vector("list", length(frames))
+  tmp <- tempfile(fileext = ".png")
+  on.exit(unlink(tmp), add = TRUE)
+  for (t in frames) {
+    fr <- series_sf[series_sf$t == t, ]
+    valid <- .cli_valid_rows(fr)
+    unioned <- if (nrow(valid)) union_features(valid) else NULL
+    p <- plot_features_topView(fr, unioned, color_by = "feature_type", y_ref = y_ref,
+                               xlim = xlim, ylim = ylim, palette = palette) +
+      ggplot2::labs(
+        title = sid,
+        subtitle = paste0("t = ", t, " (frame ", match(t, frames), " of ", length(frames), "): ",
+                          nrow(fr), " ROIs -> ", if (is.null(unioned)) 0 else nrow(unioned),
+                          " features"))
+    # Rendered as the single-frame plot is, to a PNG, then read back as a page:
+    # every page the same size, and the same pixels a PNG would have held.
+    ggplot2::ggsave(tmp, p, width = 6, height = 6, dpi = 150)
+    pages[[match(t, frames)]] <- magick::image_read(tmp)
+  }
+  path <- file.path(outdir, paste0(sid, "_features_qc.tif"))
+  mg_write(do.call(c, pages), path)
+  return(path)
 }
 
 if (!interactive() && sys.nframe() == 0L) annotate_features_cli()

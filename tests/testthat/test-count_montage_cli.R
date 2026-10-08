@@ -658,3 +658,100 @@ test_that("count_features_cli --feature_class_by survives its own narrow sourcin
                            stringsAsFactors = FALSE)
   expect_true(nrow(got) > 0L)
 })
+
+# --- a time course: one page per frame ------------------------------------------
+
+# Three frames, t = 2, 11, 21, of one square moving right, annotated; overview
+# TIFFs whose pages are grey at three different levels, so a page drawn from
+# the wrong frame shows it; and a config naming the frames the overview holds.
+timecourse_fixture <- function(env = parent.frame(), frames_analysed = "2 11 21") {
+  source_cli("annotate_features_cli.r")
+  d <- withr::local_tempdir(.local_envir = env)
+  sq <- function(t, z, x0) data.frame(name = "tc", roi = sprintf("nucleus_%04d-%04d-0001-0015", t, z),
+                                      t = t, z = z, x = x0 + c(0, 10, 10, 0), y = c(10, 10, 20, 20))
+  write.table(do.call(rbind, lapply(c(2, 11, 21), function(t) rbind(sq(t, 1, t), sq(t, 2, t)))),
+              file.path(d, "tc_nucleus_outline.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+  feat <- withr::local_tempdir(.local_envir = env)
+  suppressMessages(annotate_features_cli(c("--input", d, "--feature", "nucleus", "--outdir", feat,
+                                           "--min_z_span", "default=2")))
+  greys <- c("gray20", "gray50", "gray80")
+  pages <- do.call(c, lapply(greys, function(g) magick::image_blank(100, 50, color = g)))
+  magick::image_write(pages, file.path(d, "tc_overview_ch1.tif"), format = "tiff")
+  magick::image_write(pages, file.path(d, "tc_overview_ch1_overlay.tif"), format = "tiff")
+  write.table(data.frame(parameter = c("image_width", "image_height", "pixel_width", "pixel_height",
+                                       "frames_analysed"),
+                         value = c("100", "50", "0.5", "0.5", frames_analysed)),
+              file.path(d, "tc_config.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+  list(rds = file.path(feat, "tc_features.rds"), dir = d,
+       args = c("--features", file.path(feat, "tc_features.rds"),
+                "--projection", file.path(d, "tc_overview_ch1.tif"),
+                "--overlay", file.path(d, "tc_overview_ch1_overlay.tif"),
+                "--config", file.path(d, "tc_config.txt")))
+}
+# The grey level of the raw-projection panel, read low in its left half -- clear
+# of the caption box at the top-left and of the title band above.
+left_grey <- function(img) {
+  px <- as.integer(magick::image_data(img, channels = "gray"))
+  px[nrow(px) - 20, 30, 1]
+}
+
+test_that("a time course is one page per frame, each from its own overview page", {
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
+  source_cli("montage_qc_cli.r")
+  fx <- timecourse_fixture()
+  out <- file.path(withr::local_tempdir(), "tc_montage.tif")
+  msgs <- testthat::capture_messages(suppressWarnings(montage_qc_cli(c(fx$args, "--output", out))))
+
+  m <- magick::image_read(out)
+  expect_identical(length(m), 3L)
+  info <- magick::image_info(m)
+  expect_identical(length(unique(info$width)), 1L)     # one extent, every page
+  expect_identical(length(unique(info$height)), 1L)
+  # gray20 / 50 / 80 are 51 / 127 / 204: page i is overview page i.
+  expect_identical(vapply(seq_along(m), function(i) left_grey(m[i]), integer(1)), c(51L, 127L, 204L))
+  expect_true(any(grepl("Panel (iii), t = 11: 2 ROIs -> 1 unioned", msgs, fixed = TRUE)))
+  expect_true(any(grepl("3 pages: t = 2, 11, 21", msgs, fixed = TRUE)))
+  expect_identical(unique(info$colorspace), "sRGB")
+})
+
+test_that("--t draws chosen frames, and one frame is a PNG", {
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
+  source_cli("montage_qc_cli.r")
+  fx <- timecourse_fixture()
+  out <- file.path(withr::local_tempdir(), "t11.png")
+  suppressWarnings(suppressMessages(montage_qc_cli(c(fx$args, "--output", out, "--t", "11"))))
+  m <- magick::image_read(out)
+  expect_identical(length(m), 1L)
+  expect_identical(left_grey(m), 127L)                 # the page of t = 11, the 2nd
+  out2 <- file.path(withr::local_tempdir(), "two.tif")
+  suppressWarnings(suppressMessages(montage_qc_cli(c(fx$args, "--output", out2, "--t", "11,21"))))
+  m2 <- magick::image_read(out2)
+  expect_identical(vapply(seq_along(m2), function(i) left_grey(m2[i]), integer(1)), c(127L, 204L))
+})
+
+test_that("a per-frame montage refuses what it cannot match", {
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
+  source_cli("montage_qc_cli.r")
+  fx <- timecourse_fixture()
+  run <- function(...) suppressWarnings(suppressMessages(montage_qc_cli(c(...))))
+  expect_error(run(fx$args, "--output", file.path(withr::local_tempdir(), "m.png")),
+               "3 frames make a multi-page montage")
+  expect_error(run(fx$args, "--output", file.path(withr::local_tempdir(), "m.tif"), "--t", "5"),
+               "no features in tc_features.rds: 5")
+  # A PNG overview beside a time course: one page for three frames.
+  png <- file.path(fx$dir, "one.png")
+  magick::image_write(magick::image_blank(100, 50, color = "gray50"), png)
+  expect_error(run("--features", fx$rds, "--projection", png, "--config", file.path(fx$dir, "tc_config.txt"),
+                   "--output", file.path(withr::local_tempdir(), "m.tif")),
+               "not a PNG")
+  # Pages are matched through frames_analysed, or not at all.
+  fx2 <- timecourse_fixture(frames_analysed = "2 11")
+  expect_error(run(fx2$args, "--output", file.path(withr::local_tempdir(), "m.tif")),
+               "has 3 page\\(s\\) but the run analysed 2")
+  fx3 <- timecourse_fixture(frames_analysed = "")
+  expect_error(run(fx3$args, "--output", file.path(withr::local_tempdir(), "m.tif")),
+               "needs frames_analysed")
+})

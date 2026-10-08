@@ -167,8 +167,10 @@ test_that("annotate_features_cli finds 6 nuclei and 7 nucleoli on the fixture", 
   # The tidy table must not lose or invent rows.
   expect_identical(nrow(res), 97L)
   expect_setequal(colnames(res),
-                  c("roi", "z", "area", "is_bridge", "feature_id", "feature_type",
+                  c("roi", "t", "z", "area", "is_bridge", "feature_id", "feature_type",
                     "series_id", "run_id"))
+  # The fixture predates the time axis: no t column, so one frame, t = 1.
+  expect_identical(unique(res$t), 1)
 })
 
 test_that("annotate_features_cli writes a QC plot only when asked", {
@@ -235,4 +237,85 @@ test_that("annotate_features_cli stops when the sheet excludes everything", {
     "--input", fixture_file("nucleus", "outline"),
     "--outdir", withr::local_tempdir(), "--series_sheet", sheet)))),
     "no series in common")
+})
+
+# --- the time axis --------------------------------------------------------------
+
+test_that("several frames are grouped one frame at a time, and numbered on", {
+  skip_if_no_sf()
+  skip_if_no_pkg("argparser")
+  source_cli("annotate_features_cli.r")
+  # The same square on slices 1-2 in both frames: grouped by z overlap alone it
+  # is ONE object, which is what grouping across time would report.
+  d <- withr::local_tempdir()
+  sq <- function(roi, t, z) data.frame(name = "tl", roi = roi, t = t, z = z,
+                                       x = c(10, 20, 20, 10), y = c(10, 10, 20, 20))
+  write.table(rbind(sq("nucleus_0001-0001-0001-0015", 1, 1),
+                    sq("nucleus_0001-0002-0001-0015", 1, 2),
+                    sq("nucleus_0002-0001-0001-0015", 2, 1),
+                    sq("nucleus_0002-0002-0001-0015", 2, 2)),
+              file.path(d, "tl_nucleus_outline.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+  out <- withr::local_tempdir()
+  msgs <- testthat::capture_messages(res <- annotate_features_cli(c(
+    "--input", d, "--feature", "nucleus", "--outdir", out,
+    "--min_z_span", "default=2", "--qc_plot")))
+
+  expect_identical(unname(unique(res$feature_id[res$t == 1])), "nucleus_0001")
+  expect_identical(unname(unique(res$feature_id[res$t == 2])), "nucleus_0002")
+  expect_identical(colnames(res)[1:3], c("roi", "t", "z"))
+  expect_true(any(grepl("2 feature(s) over 2 frames", msgs, fixed = TRUE)))
+  # One QC plot per frame, as the pages of one TIFF -- no PNGs, and no plot
+  # of both frames drawn on top of each other.
+  expect_identical(list.files(out, pattern = "_qc"), "tl_features_qc.tif")
+  skip_if_no_pkg("magick")
+  qc <- magick::image_read(file.path(out, "tl_features_qc.tif"))
+  expect_identical(length(qc), 2L)
+  info <- magick::image_info(qc)
+  expect_identical(unique(info$width), 900L)           # 6 in x 150 dpi, every page
+  expect_true(any(grepl("tl_features_qc.tif (2 pages, one per frame)", msgs, fixed = TRUE)))
+})
+
+test_that("a frame with no valid feature still gets its QC plot", {
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2"))
+  source_cli("annotate_features_cli.r")
+  # Frame 2 holds one slice only, so min_z_span = 2 leaves it nothing valid.
+  # A frame missing from a run of 96 is not something anyone would notice.
+  d <- withr::local_tempdir()
+  sq <- function(roi, t, z) data.frame(name = "gap", roi = roi, t = t, z = z,
+                                       x = c(10, 20, 20, 10), y = c(10, 10, 20, 20))
+  write.table(rbind(sq("nucleus_0001-0001-0001-0015", 1, 1),
+                    sq("nucleus_0001-0002-0001-0015", 1, 2),
+                    sq("nucleus_0002-0001-0001-0015", 2, 1)),
+              file.path(d, "gap_nucleus_outline.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+  out <- withr::local_tempdir()
+  suppressWarnings(suppressMessages(annotate_features_cli(c(
+    "--input", d, "--feature", "nucleus", "--outdir", out,
+    "--min_z_span", "default=2", "--qc_plot"))))
+  skip_if_no_pkg("magick")
+  qc <- magick::image_read(file.path(out, "gap_features_qc.tif"))
+  expect_identical(length(qc), 2L)
+  # Page 2 shows its rejected ROIs, drawn in the grey per-ROI layer. Counted as
+  # light-grey pixels: measured 5100 on this page against 326 on a page holding
+  # only a title and 792 on page 1, whose ROIs are mostly under a coloured union.
+  px <- as.integer(magick::image_data(qc[2], channels = "rgb"))
+  light_grey <- sum(px[, , 1] == px[, , 2] & px[, , 2] == px[, , 3] &
+                    px[, , 1] >= 180 & px[, , 1] <= 225)
+  expect_gt(light_grey, 2000)
+})
+
+test_that("a one-frame v0.8.0 outline keeps its t on every feature row", {
+  skip_if_no_sf()
+  skip_if_no_pkg("argparser")
+  source_cli("annotate_features_cli.r")
+  d <- withr::local_tempdir()
+  sq <- function(roi, z) data.frame(name = "one", roi = roi, t = 1, z = z,
+                                    x = c(10, 20, 20, 10), y = c(10, 10, 20, 20))
+  write.table(rbind(sq("nucleus_0001-0001-0015", 1), sq("nucleus_0002-0001-0015", 2)),
+              file.path(d, "one_nucleus_outline.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+  out <- withr::local_tempdir()
+  res <- suppressMessages(annotate_features_cli(c(
+    "--input", d, "--feature", "nucleus", "--outdir", out, "--min_z_span", "default=1")))
+  expect_identical(unique(res$t), 1L)
+  expect_identical(colnames(res)[1:3], c("roi", "t", "z"))
 })

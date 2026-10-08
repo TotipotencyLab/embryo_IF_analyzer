@@ -111,6 +111,194 @@ class RoiDetect {
         }
     }
 
+    // --- Choosing an automatic threshold --------------------------------------
+    //
+    // The threshold is chosen HERE, from a histogram this code builds, by the
+    // Auto Threshold plugin's per-method statics -- not by its exec(). Two
+    // reasons, both about size:
+    //
+    //   1. exec() sums the stack histogram into an int[], and three of its
+    //      methods (Huang, IsoData, Li) accumulate value x count in int, and
+    //      MinError(I) forms value x count and value^2 x count per bin in int.
+    //      On a large stack those overflow and the threshold is silently wrong
+    //      (what was known bug 1: on an oocyte tile merge, Huang 1 where 7
+    //      was right, Li 0).
+    //   2. A threshold for a whole SERIES (nucleus_threshold_scope = series)
+    //      is chosen from every frame's histogram at once -- ~10^10 voxels for a
+    //      96-frame Luxendo position, which no int holds.
+    //
+    // chooseThreshold() is exec()'s own sequence, read from the 1.18.0 bytecode:
+    // bilevel() on the whole histogram; else zero the end bins (ignore black,
+    // ignore white), trim to the first..last non-empty bin, run the method on
+    // that, and add the trim offset back. The histogram is a long[], and the
+    // counts are divided by a power of two only as far as the method needs to
+    // stay inside int -- recorded as the divisor, 1 meaning exact counts.
+    // Test_BuildMask keeps exec() as the oracle wherever nothing overflows.
+
+    /** Methods that sum value x count over the histogram in int. */
+    static final Set<String> SUMS_VALUE_X_COUNT  = ["Huang", "IsoData", "Li"] as Set
+    /** Methods that form value x count for one bin in int (then widen). */
+    static final Set<String> BIN_VALUE_X_COUNT   = ["Default", "IJDefault", "Huang2", "Li",
+                                                    "MinError(I)", "MinErrorI"] as Set
+    /** Methods that form value^2 x count for one bin in int. */
+    static final Set<String> BIN_VALUE2_X_COUNT  = ["MinError(I)", "MinErrorI"] as Set
+
+    /**
+     * The histogram of every slice of a stack, or of one slice, as long counts.
+     * Bins are the type's own: 256 for 8-bit, 65536 for 16-bit -- what
+     * getHistogram() gives and exec() sums.
+     */
+    static long[] histogramOf(ImagePlus imp, Integer slice = null) {
+        def st = imp.getStack()
+        long[] acc = null
+        def zs = (slice == null) ? (1..st.getSize()) : [slice]
+        zs.each { int z ->
+            int[] h = st.getProcessor(z).getHistogram()
+            if (acc == null) acc = new long[h.length]
+            for (int i = 0; i < h.length; i++) acc[i] += h[i]
+        }
+        return acc
+    }
+
+    /** Add one histogram into another, as a series accumulates its frames. */
+    static long[] addHistogram(long[] acc, long[] h) {
+        if (acc == null) return h.clone()
+        if (acc.length != h.length) {
+            throw new IllegalArgumentException("histograms of " + acc.length + " and " + h.length +
+                                               " bins cannot be added: the frames differ in bit depth")
+        }
+        for (int i = 0; i < h.length; i++) acc[i] += h[i]
+        return acc
+    }
+
+    /**
+     * The threshold Auto_Threshold.exec() would choose for this histogram, with
+     * IGNORE_BLACK and IGNORE_WHITE, and without its overflows.
+     *
+     * @return [t: the threshold (pixels ABOVE it are objects), or null when the
+     *         histogram has nothing to separate; divisor: what the counts were
+     *         divided by before the method ran, 1 = exact, null for bilevel or
+     *         nothing to separate]
+     */
+    static Map chooseThreshold(long[] hist, String method) {
+        // bilevel(): exactly two values present decides it outright, before
+        // the end bins are touched.
+        int first = -1, second = -1, present = 0
+        for (int i = 0; i < hist.length; i++) {
+            if (hist[i] > 0) {
+                present++
+                if (first < 0) first = i else second = i
+            }
+        }
+        if (present == 2) return [t: second - 1, divisor: null]
+
+        long[] d = hist.clone()
+        if (IGNORE_BLACK) d[0] = 0
+        if (IGNORE_WHITE) d[d.length - 1] = 0
+        int minbin = -1, maxbin = -1
+        for (int i = 0; i < d.length; i++) if (d[i] > 0) { if (minbin < 0) minbin = i; maxbin = i }
+        if (minbin < 0) return [t: null, divisor: null]        // exec(): ArrayIndexOutOfBounds
+        int n = maxbin - minbin + 1
+        if (n < 2) return [t: minbin, divisor: 1L]              // exec(): 0 + minbin
+
+        long[] b = new long[n]
+        System.arraycopy(d, minbin, b, 0, n)
+        long divisor = countDivisor(method, b)
+        int[] counts = new int[n]
+        for (int i = 0; i < n; i++) counts[i] = (int) ((b[i] + divisor.intdiv(2)).intdiv(divisor))
+        return [t: callMethod(method, counts) + minbin, divisor: divisor]
+    }
+
+    /**
+     * The smallest power of two the counts must be divided by for `method`'s
+     * int arithmetic to hold them. Every method is held to the total count and
+     * the largest bin fitting in an int; the ones that multiply in int are held
+     * to their own products as well. Rounded counts are checked, not ideal ones.
+     */
+    static long countDivisor(String method, long[] b) {
+        long max = Integer.MAX_VALUE
+        for (long f = 1L; f <= (1L << 40); f <<= 1) {
+            long total = 0L, sumVC = 0L, maxVC = 0L, maxV2C = 0L
+            boolean fits = true
+            for (int i = 0; i < b.length && fits; i++) {
+                long c = (b[i] + f.intdiv(2)).intdiv(f)
+                total += c
+                sumVC += (long) i * c
+                maxVC  = Math.max(maxVC, (long) i * c)
+                maxV2C = Math.max(maxV2C, (long) i * i * c)
+                fits = total <= max &&
+                       (!SUMS_VALUE_X_COUNT.contains(method)  || sumVC  <= max) &&
+                       (!BIN_VALUE_X_COUNT.contains(method)   || maxVC  <= max) &&
+                       (!BIN_VALUE2_X_COUNT.contains(method)  || maxV2C <= max)
+            }
+            if (fits) return f
+        }
+        throw new IllegalStateException("no divisor up to 2^40 keeps " + method + "'s arithmetic in int")
+    }
+
+    /** One of the plugin's per-method statics, by the name a config carries. */
+    static int callMethod(String method, int[] counts) {
+        // The plugin's menu spells two methods differently from its statics.
+        String name = (method == "Default") ? "IJDefault"
+                    : (method == "MinError(I)") ? "MinErrorI" : method
+        def m = Auto_Threshold.class.getMethods().find {
+            java.lang.reflect.Modifier.isStatic(it.getModifiers()) && it.getName() == name &&
+            it.getParameterTypes().length == 1 && it.getParameterTypes()[0] == int[].class &&
+            it.getName() != NOT_A_METHOD
+        }
+        if (m == null) throw new IllegalArgumentException("unknown threshold method '" + method + "'")
+        return (int) m.invoke(null, [counts] as Object[])
+    }
+
+    /** The scopes a nucleus threshold can be chosen over, for a multi-frame series. */
+    static final List<String> THRESHOLD_SCOPES = ["frame", "series"]
+
+    /**
+     * Check the scope against the rest of the threshold request, without an
+     * image. `series` pools every slice of every frame into one histogram, so
+     * it cannot be combined with a threshold per slice.
+     */
+    static void validateScope(String scope, String method, boolean stackHistogram) {
+        if (!THRESHOLD_SCOPES.contains(scope)) {
+            throw new IllegalArgumentException("nucleus_threshold_scope must be one of " +
+                                               THRESHOLD_SCOPES.join(", ") + "; got '" + scope + "'")
+        }
+        if (scope == "series" && !MANUAL.equalsIgnoreCase(method) && !stackHistogram) {
+            throw new IllegalArgumentException(
+                "nucleus_threshold_scope=series pools every slice of every frame into one histogram, " +
+                "and nucleus_stack_histogram=false asks for a threshold per slice; choose one")
+        }
+    }
+
+    /**
+     * One channel of an image, blurred plane by plane: what the nucleus
+     * threshold looks at. A new single-channel stack the caller must close.
+     */
+    static ImagePlus blurredChannel(ImagePlus imp, int channel, double sigma) {
+        def ch = new Duplicator().run(imp, channel, channel, 1, imp.getNSlices(), 1, 1)
+        // Blurred one plane at a time, NOT with IJ.run(..., "stack").
+        //
+        // The stack form is parallelised over slices (PARALLELIZE_STACKS), and
+        // each worker converts its byte plane to a float one -- 415 MB per
+        // thread on the large tile merges, eight of them at once. Measured peak
+        // there was 9218 MB against a ceiling that starts at 8889 MB and only
+        // grows to 9607 MB: it survived on the garbage collector keeping up,
+        // which is a margin that passes in testing and fails on the run that
+        // matters. Per slice, one float plane is live at a time.
+        //
+        // The pixels are identical: measured on 8- and 16-bit synthetic stacks,
+        // 0 of 16384 pixels differ from the IJ.run form, because "stack" mode
+        // is this same 2D blur applied per plane. Test_BuildMask pins that.
+        if (sigma > 0) {
+            def blur = new ij.plugin.filter.GaussianBlur()
+            def blurStack = ch.getStack()
+            for (int z = 1; z <= blurStack.getSize(); z++) {
+                blur.blurGaussian(blurStack.getProcessor(z), sigma)
+            }
+        }
+        return ch
+    }
+
     /**
      * Build a binary mask from one channel: blur, auto-threshold, optionally fill
      * holes, and optionally split touching objects by watershed.
@@ -130,28 +318,26 @@ class RoiDetect {
      * inline mask step exactly, so turning it on is the only thing that can
      * change existing results.
      *
-     * WHY exec() RATHER THAN IJ.run("Auto Threshold", ...)
+     * HOW THE THRESHOLD IS CHOSEN
      *
-     * It is the same plugin, reached through its API instead of its macro
-     * recorder string, and it RETURNS THE THRESHOLD IT CHOSE. That number was
-     * previously thrown away, which meant a run could not say what it had
-     * thresholded at -- no way to tell a sensible threshold from a disastrous
-     * one after the fact, and no way to read off a value in order to pin it.
+     * By chooseThreshold(), on a histogram built here -- the Auto Threshold
+     * plugin's own per-method statics, in exec()'s own sequence, without
+     * exec()'s int overflows (see the section above). It RETURNS THE THRESHOLD
+     * IT CHOSE, which the macro call this once was threw away, leaving a run
+     * unable to say what it had thresholded at.
      *
-     * Measured against the old call on synthesised 8- and 16-bit stacks, four
-     * methods each (Test_BuildMask keeps the old call as the oracle):
+     * Before this, exec() did it, and before that the macro string; each was
+     * measured against the one before on synthesised 8- and 16-bit stacks, and
+     * Test_BuildMask keeps both as oracles: where nothing overflows, the same
+     * pixels are selected. The mask is always 8-bit 0/255 (applyRange), which
+     * is what detect()'s setThreshold(128, 255), Fill Holes and Watershed
+     * assume.
      *
-     *   8-bit    byte-identical
-     *   16-bit   the same pixels selected, but exec() leaves a 16-bit 0/65535
-     *            mask where the macro path converts to 8-bit 0/255
-     *
-     * Hence to8BitMask(). Without it a 16-bit run would produce a mask whose
-     * "on" value is 65535, and detect() sets a threshold of 128-255 on it --
-     * the ROIs would be right, by luck, and the mask would be wrong.
-     *
-     * ⚠️ exec() thresholds only the CURRENT SLICE unless the stack histogram is
-     * used; the slice loop lives in the plugin's run(), not in exec(). This
-     * passes true, as the option string did.
+     * opts.chosen: a threshold already chosen (chooseThreshold's result) -- a
+     * series' threshold, chosen once over every frame -- applied here instead
+     * of one chosen from this stack. The result's `divisor` says what the
+     * histogram counts were divided by to keep the method's arithmetic in int:
+     * 1 for exact counts, null where no method ran.
      */
     static Map buildMask(ImagePlus imp, int channel, double sigma, String method,
                          boolean fillHoles, boolean watershed, Map opts = [:]) {
@@ -159,27 +345,7 @@ class RoiDetect {
         boolean stackHistogram = (opts.stackHistogram == null) ? true : (opts.stackHistogram as boolean)
         validateThreshold(method, rangeSpec)
 
-        def mask = new Duplicator().run(imp, channel, channel, 1, imp.getNSlices(), 1, 1)
-        // Blurred one plane at a time, NOT with IJ.run(..., "stack").
-        //
-        // The stack form is parallelised over slices (PARALLELIZE_STACKS), and
-        // each worker converts its byte plane to a float one -- 415 MB per
-        // thread on the large tile merges, eight of them at once. Measured peak
-        // there was 9218 MB against a ceiling that starts at 8889 MB and only
-        // grows to 9607 MB: it survived on the garbage collector keeping up,
-        // which is a margin that passes in testing and fails on the run that
-        // matters. Per slice, one float plane is live at a time.
-        //
-        // The pixels are identical: measured on 8- and 16-bit synthetic stacks,
-        // 0 of 16384 pixels differ from the IJ.run form, because "stack" mode
-        // is this same 2D blur applied per plane. Test_BuildMask pins that.
-        if (sigma > 0) {
-            def blur = new ij.plugin.filter.GaussianBlur()
-            def blurStack = mask.getStack()
-            for (int z = 1; z <= blurStack.getSize(); z++) {
-                blur.blurGaussian(blurStack.getProcessor(z), sigma)
-            }
-        }
+        def mask = blurredChannel(imp, channel, sigma)
         int maxValue = (imp.getBitDepth() == 16) ? 65535 : 255
 
         // --- Manual: no algorithm runs at all ------------------------------
@@ -205,76 +371,52 @@ class RoiDetect {
         // and its noise becomes objects, which is why the stack histogram is
         // the default.
         if (!stackHistogram) {
-            def los = []
-            for (int z = 1; z <= mask.getStackSize(); z++) {
-                mask.setSlice(z)
-                try {
-                    def o = new Auto_Threshold().exec(mask, method, IGNORE_WHITE, IGNORE_BLACK,
-                                                      true, false, false, false)
-                    if (o == null || o[0] == null) {
-                        throw new IllegalArgumentException(
-                            "Auto Threshold returned nothing for method '${method}'")
-                    }
-                    los << ((o[0] as Number).intValue() + 1)
-                } catch (ArrayIndexOutOfBoundsException e) {
-                    // This slice alone had nothing to separate. Blank it rather
-                    // than leave the raw pixels standing in for a mask.
-                    blankSlice(mask, z)
-                }
-            }
-            to8BitMask(mask)
+            // One threshold per slice, each from that slice's histogram alone.
+            def perSlice = (1..mask.getStackSize()).collect { int z ->
+                chooseThreshold(histogramOf(mask, z), method) }
+            // A slice with nothing to separate is blanked rather than left with
+            // its raw pixels standing in for a mask.
+            applyRanges(mask, perSlice.collect { it.t == null ? null : (it.t as int) + 1 }, maxValue)
             double covN = coveragePct(mask)
+            def los = perSlice.findAll { it.t != null }.collect { (it.t as int) + 1 }
             // A spread, not a range: there were as many thresholds as slices, so
             // there is no single value to paste into a manual setting. The ".."
             // says so at a glance.
             String rep = los.isEmpty() ? NO_THRESHOLD
                                        : ("per-slice " + los.min() + ".." + los.max())
+            def divs = perSlice.findAll { it.divisor != null }.collect { it.divisor as long }
             if (fillHoles) IJ.run(mask, "Fill Holes", "stack")
             if (watershed) { Prefs.blackBackground = true; IJ.run(mask, "Watershed", "stack") }
-            return [mask: mask, threshold: rep, lo: null, hi: null, coverage: covN]
+            return [mask: mask, threshold: rep, lo: null, hi: null, coverage: covN,
+                    divisor: (divs ? divs.max() : null)]
         }
 
-        // exec(imp, method, noWhite, noBlack, doIwhite, doIset, doIlog, doIstackHistogram)
-        def out = null
-        boolean degenerate = false
-        try {
-            out = new Auto_Threshold().exec(mask, method, IGNORE_WHITE, IGNORE_BLACK,
-                                            true, false, false, true)
-        } catch (ArrayIndexOutOfBoundsException e) {
-            // NOTHING TO SEPARATE. ignore_black and ignore_white zero the two
-            // end bins before the algorithm runs, so a frame whose pixels are
-            // ALL pure black or all saturated leaves an empty histogram and the
-            // plugin's min/max bin search returns -1.
-            //
-            // This is not hypothetical on a slide that scans across sections --
-            // a field of blank mounting medium is exactly this -- and it is the
-            // reason the exception is caught rather than left to fail the row.
-            //
-            // ⚠️ THIS IS A BEHAVIOUR CHANGE, and the old behaviour was the
-            //    dangerous one. IJ.run() routes through ImageJ's Executer,
-            //    which CATCHES the plugin's exception, logs it, and returns --
-            //    leaving the image UNTHRESHOLDED, after which buildMask handed
-            //    back the raw pixels as if they were a mask. Measured on an
-            //    all-255 frame: IJ.run left 1600/1600 pixels "on"; on an
-            //    all-black frame, 0/1600. Both looked like a successful run.
-            //
-            // The honest answer is that no threshold separates a uniform frame,
-            // so nothing is selected and the caller is told so by name.
-            degenerate = true
-        }
-        if (!degenerate && (out == null || out[0] == null)) {
-            throw new IllegalArgumentException(
-                "Auto Threshold returned nothing for method '${method}'; " +
-                "it must be one of the Auto Threshold plugin's own names")
-        }
+        // One threshold for the stack: from its own pooled histogram, or the one
+        // a caller chose over a whole series (opts.chosen, chooseThreshold's
+        // result) -- applied the same way either way.
+        def chosen = (opts.chosen != null) ? (Map) opts.chosen : chooseThreshold(histogramOf(mask), method)
 
         Integer lo = null, hi = null
         String thresholdUsed = NO_THRESHOLD
-        if (degenerate) {
+        if (chosen.t == null) {
+            // NOTHING TO SEPARATE. ignore_black and ignore_white zero the two
+            // end bins before the algorithm runs, so a frame whose pixels are
+            // ALL pure black or all saturated leaves an empty histogram (exec()
+            // threw ArrayIndexOutOfBounds there).
+            //
+            // This is not hypothetical on a slide that scans across sections --
+            // a field of blank mounting medium is exactly this.
+            //
+            // The old IJ.run() route was the dangerous one: ImageJ's Executer
+            // CAUGHT the plugin's exception, logged it, and returned -- leaving
+            // the image UNTHRESHOLDED, after which buildMask handed back the
+            // raw pixels as if they were a mask. Measured on an all-255 frame:
+            // 1600/1600 pixels "on"; on an all-black frame, 0/1600. Both looked
+            // like a successful run. No threshold separates a uniform frame, so
+            // nothing is selected and the caller is told so by name.
             blank(mask)
         } else {
-            int t = (out[0] as Number).intValue()
-            to8BitMask(mask)
+            int t = chosen.t as int
             // The range as APPLIED, not the bare number: "white" objects are the
             // pixels ABOVE the threshold, so the algorithm's t is the bottom of
             // the selected range and the top is whatever the type can hold.
@@ -283,6 +425,7 @@ class RoiDetect {
             // it was.
             lo = t + 1
             hi = maxValue
+            applyRange(mask, lo, hi)
             thresholdUsed = lo + "-" + hi
         }
         double coverage = coveragePct(mask)
@@ -301,7 +444,8 @@ class RoiDetect {
             // hole and shatters one object into a ring of fragments.
             IJ.run(mask, "Watershed", "stack")
         }
-        return [mask: mask, threshold: thresholdUsed, lo: lo, hi: hi, coverage: coverage]
+        return [mask: mask, threshold: thresholdUsed, lo: lo, hi: hi, coverage: coverage,
+                divisor: chosen.divisor]
     }
 
     /**
@@ -323,11 +467,21 @@ class RoiDetect {
      *   available; in place it is 7781 MB.
      */
     static void applyRange(ImagePlus imp, int lo, int hi) {
+        applyRanges(imp, (1..imp.getStackSize()).collect { lo }, hi)
+    }
+
+    /**
+     * applyRange() with its own low end per slice; a null low end blanks that
+     * slice. The same in-place rules.
+     */
+    static void applyRanges(ImagePlus imp, List<Integer> los, int hi) {
         if (imp.getBitDepth() == 8) {
             def src = imp.getStack()
             for (int z = 1; z <= src.getSize(); z++) {
                 // getPixels() hands back the LIVE array, so this edits the stack.
                 byte[] px = (byte[]) src.getProcessor(z).getPixels()
+                Integer loZ = los[z - 1]
+                int lo = (loZ == null) ? Integer.MAX_VALUE : loZ
                 for (int i = 0; i < px.length; i++) {
                     int v = px[i] & 0xff
                     // ⚠️ The else branch is not optional. The old code started
@@ -342,7 +496,7 @@ class RoiDetect {
             }
             return
         }
-        replaceWith8Bit(imp) { int v -> v >= lo && v <= hi }
+        replaceWith8Bit(imp) { int z, int v -> los[z - 1] != null && v >= los[z - 1] && v <= hi }
     }
 
     /** Zero one slice in place, leaving the rest of the stack alone. */
@@ -362,7 +516,7 @@ class RoiDetect {
             }
             return
         }
-        replaceWith8Bit(imp) { int v -> false }
+        replaceWith8Bit(imp) { int z, int v -> false }
     }
 
     /**
@@ -378,7 +532,7 @@ class RoiDetect {
      */
     static void to8BitMask(ImagePlus imp) {
         if (imp.getBitDepth() == 8) { return }
-        replaceWith8Bit(imp) { int v -> v != 0 }
+        replaceWith8Bit(imp) { int z, int v -> v != 0 }
     }
 
     /**
@@ -409,7 +563,7 @@ class RoiDetect {
             int i = 0
             for (int y = 0; y < h; y++) {
                 for (int x = 0; x < w; x++, i++) {
-                    if (isOn(ip.get(x, y))) px[i] = (byte) 255
+                    if (isOn(z, ip.get(x, y))) px[i] = (byte) 255
                 }
             }
             out.addSlice(src.getSliceLabel(z), bp)

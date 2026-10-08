@@ -126,6 +126,174 @@ def bytesOf = { ImagePlus imp ->
 }
 
 println ""
+println "=== the threshold path against exec(): every method, both histograms ==="
+// buildMask chooses the threshold itself now (RoiDetect.chooseThreshold), from
+// a histogram it builds, through the plugin's per-method statics -- exec()'s own
+// sequence without exec()'s int overflows. exec() is kept here, called exactly
+// as buildMask used to call it, as the oracle: on stacks this small nothing
+// overflows, so every method must select the same pixels and report the same
+// range. The method list is the plugin's menu -- every name exec() dispatches.
+// A narrower 16-bit range than probe()'s: Huang's cost grows with the square
+// of the histogram's span (exec() runs the same static), and probe()'s 16-bit
+// span of ~14,000 levels takes minutes per case. This one spans ~1,300 -- still
+// a 65536-bin histogram, still trimmed, still with both end bins present.
+def probeN = { int bits ->
+    def st = new ImageStack(120, 120)
+    (1..4).each { int z ->
+        def ip = (bits == 8) ? new ByteProcessor(120, 120) : new ShortProcessor(120, 120)
+        int bg = (bits == 8) ? 10 : 300
+        int fg = (bits == 8) ? (90 + 25 * z) : (1000 + 150 * z)
+        for (int y = 0; y < 120; y++) for (int x = 0; x < 120; x++) ip.set(x, y, bg + ((x * y) % 7))
+        ip.setColor(fg); ip.fill(new OvalRoi(20, 20, 40, 40))
+        ip.setColor(fg); ip.fill(new OvalRoi(70, 65, 30, 30))
+        ip.set(0, 0, 0)
+        ip.set(1, 0, (bits == 8) ? 255 : 65535)
+        st.addSlice(ip)
+    }
+    def imp = new ImagePlus("probeN" + bits, st)
+    imp.setDimensions(1, 4, 1)
+    return imp
+}
+def EXEC_METHODS = ["Default", "Huang", "Huang2", "Intermodes", "IsoData", "Li", "MaxEntropy", "Mean",
+                    "MinError(I)", "Minimum", "Moments", "Otsu", "Percentile", "RenyiEntropy",
+                    "Shanbhag", "Triangle", "Yen"]
+def AT = fiji.threshold.Auto_Threshold
+def execStack = { ImagePlus raw, String m ->
+    def dup = new Duplicator().run(raw, 1, 1, 1, raw.getNSlices(), 1, 1)
+    String rep
+    try {
+        def o = AT.newInstance().exec(dup, m, true, true, true, false, false, true)
+        rep = ((o[0] as int) + 1) + "-" + (raw.getBitDepth() == 16 ? 65535 : 255)
+    } catch (ArrayIndexOutOfBoundsException e) {
+        for (int z = 1; z <= dup.getStackSize(); z++) dup.getStack().getProcessor(z).setValue(0d)
+        for (int z = 1; z <= dup.getStackSize(); z++) dup.getStack().getProcessor(z).fill()
+        rep = "none"
+    }
+    RD.to8BitMask(dup)
+    [mask: dup, threshold: rep]
+}
+def execPerSlice = { ImagePlus raw, String m ->
+    def dup = new Duplicator().run(raw, 1, 1, 1, raw.getNSlices(), 1, 1)
+    def los = []
+    for (int z = 1; z <= dup.getStackSize(); z++) {
+        dup.setSlice(z)
+        try {
+            def o = AT.newInstance().exec(dup, m, true, true, true, false, false, false)
+            los << ((o[0] as int) + 1)
+        } catch (ArrayIndexOutOfBoundsException e) {
+            RD.blankSlice(dup, z)
+        }
+    }
+    RD.to8BitMask(dup)
+    [mask: dup, threshold: los ? ("per-slice " + los.min() + ".." + los.max()) : "none"]
+}
+def disagreeExec = [], divided = []
+EXEC_METHODS.each { String m ->
+    [8, 16].each { int bits ->
+        [true, false].each { boolean pooled ->
+            def raw = probeN(bits)
+            long c0 = System.currentTimeMillis()
+            def want = pooled ? execStack(raw, m) : execPerSlice(raw, m)
+            long c1 = System.currentTimeMillis()
+            def got = RD.buildMask(raw, 1, 0.0d, m, false, false, [stackHistogram: pooled])
+            long c2 = System.currentTimeMillis()
+            if (c2 - c0 > 2000) println String.format("    (slow: %s %d-bit %s: exec %d ms, now %d ms)",
+                                                       m, bits, pooled ? "pooled" : "per-slice", c1 - c0, c2 - c1)
+            boolean same = java.util.Arrays.equals(bytesOf(want.mask), bytesOf(got.mask)) &&
+                           want.threshold == got.threshold
+            String label = m + " " + bits + "-bit " + (pooled ? "pooled" : "per-slice")
+            // Where the counts had to be divided, exec()'s int arithmetic
+            // overflowed and it is not an oracle there -- see the next section.
+            if ((got.divisor ?: 1L) as long > 1L) {
+                divided << (label + ": exec " + want.threshold + ", now " + got.threshold +
+                            " (divisor " + got.divisor + ")")
+            } else if (!same) {
+                disagreeExec << (label + ": exec " + want.threshold + ", now " + got.threshold)
+            }
+            want.mask.close(); got.mask.close(); raw.close()
+        }
+    }
+}
+println "    compared " + (EXEC_METHODS.size() * 4) + " cases (" + EXEC_METHODS.size() + " methods x 8/16-bit x pooled/per-slice)"
+check("wherever nothing was divided: same mask and range as exec()", disagreeExec, [])
+divided.each { println "    divided, so exec() overflowed: " + it }
+// MinError(I) forms value^2 x count per bin in int, so on a 16-bit histogram
+// even this 120x120x4 image overflows it: exec() is wrong here, not the oracle.
+check("...and the cases that had to be divided are MinError(I) 16-bit",
+      divided.collect { it.split(":")[0] }.every { it.startsWith("MinError(I) 16-bit") } && divided.size() > 0, true)
+
+// The two static names exec() does NOT dispatch: it compares the menu
+// spelling, so "IJDefault" and "MinErrorI" fell through to no method and a
+// threshold of (first non-empty bin - 1). methodNames() accepts them; now they
+// mean their methods.
+[["IJDefault", "Default"], ["MinErrorI", "MinError(I)"]].each { pair ->
+    def raw = probe(16)
+    def a = RD.buildMask(raw, 1, 0.0d, pair[0], false, false), b = RD.buildMask(raw, 1, 0.0d, pair[1], false, false)
+    def viaExec = execStack(raw, pair[0])
+    check(pair[0] + " is " + pair[1] + " now (exec gave " + viaExec.threshold + ")", a.threshold, b.threshold)
+    a.mask.close(); b.mask.close(); viaExec.mask.close(); raw.close()
+}
+
+println ""
+println "=== overflow: the counts are divided only as far as the method needs ==="
+// What was bug 1 of note/known_issue.md, on a synthetic histogram of the kind a blurred
+// tile merge gives: a huge dark peak and a dim tail, ~10^9 voxels. Every count
+// is a multiple of 4096, so dividing by any power of two up to that is exact,
+// and the same histogram at counts x16 (b16) is small enough for exact int
+// arithmetic -- the reference. `naive` is the int route exec() took: the
+// static on the raw counts.
+def MAXI = (long) Integer.MAX_VALUE
+long[] base = new long[256]
+[[1, 9000], [2, 60000], [3, 120000], [4, 30000], [5, 4000]].each { base[it[0]] = it[1] }
+(60..120).each { int v -> base[v] = Math.round(2000d * Math.exp(-Math.pow((v - 90) / 12d, 2))) + 1 }
+def times = { long[] h, long k -> def o = new long[h.length]; for (int i = 0; i < h.length; i++) o[i] = h[i] * k; o }
+long[] big = times(base, 4096L), b16 = times(base, 16L)
+long nBig = big.sum() as long
+long vcBig = 0L; for (int i = 0; i < 256; i++) vcBig += i * big[i]
+println String.format("    big: %.2e voxels, sum value x count %.2e (int max %.2e)", nBig as double, vcBig as double, MAXI as double)
+def toInt = { long[] h -> int[] o = new int[h.length]; for (int i = 0; i < h.length; i++) o[i] = (int) h[i]; o }
+def naiveOf = { long[] h, String m ->
+    // exec()'s own sequence, on int counts: end bins zeroed, trimmed, + offset
+    long[] d = h.clone(); d[0] = 0; d[d.length - 1] = 0
+    int lo = (0..<d.length).find { d[it] > 0 }, hi = (0..<d.length).findAll { d[it] > 0 }.max()
+    long[] b = new long[hi - lo + 1]; System.arraycopy(d, lo, b, 0, b.length)
+    RD.callMethod(m, toInt(b)) + lo
+}
+["Huang", "IsoData", "Li", "MinError(I)", "Otsu", "Triangle", "Default", "Mean"].each { String m ->
+    def now = RD.chooseThreshold(big, m), ref = RD.chooseThreshold(b16, m)
+    int naive = naiveOf(big, m)
+    println String.format("    %-12s naive int %4d   now %4d (divisor %5d)   reference %4d (divisor %d)",
+                          m, naive, now.t, now.divisor, ref.t, ref.divisor)
+    check(m + ": the reference needed no division",       ref.divisor, 1L)
+    check(m + ": equals the reference",                   now.t, ref.t)
+}
+// The test could fail: the naive route is wrong for the three that sum in int.
+check("naive int route is wrong for Huang, IsoData, Li here",
+      ["Huang", "IsoData", "Li"].every { naiveOf(big, it) != RD.chooseThreshold(b16, it).t }, true)
+check("a method with no int product is not divided (Otsu)",  RD.chooseThreshold(big, "Otsu").divisor, 1L)
+
+// MinError(I) forms value^2 x count per bin, so on a 16-bit range it needs
+// dividing long before any sum overflows. A histogram spanning 0..4095:
+long[] meHist = new long[65536]
+(100..4000).each { int v -> meHist[v] = 64L * (v < 1000 ? 40 : 3) }
+long[] meHistRef = new long[65536]; (0..<65536).each { meHistRef[it] = meHist[it].intdiv(64) }
+def wNow = RD.chooseThreshold(meHist, "MinError(I)"), wRef = RD.chooseThreshold(meHistRef, "MinError(I)")
+println "    16-bit MinError(I): now " + wNow.t + " (divisor " + wNow.divisor + "), counts/64 " + wRef.t +
+        " (divisor " + wRef.divisor + "), naive " + naiveOf(meHist, "MinError(I)")
+check("16-bit MinError(I) is divided for its square term", (wNow.divisor as long) > 1L, true)
+check("...and equals the same histogram at exact small counts", wNow.t, wRef.t)
+
+println ""
+println "=== nucleus_threshold_scope is checked before an image is opened ==="
+def scopeErr = { String scope, String m, boolean pooled ->
+    try { RD.validateScope(scope, m, pooled); return null } catch (IllegalArgumentException e) { return e.getMessage() } }
+check("frame and series are the scopes",           RD.THRESHOLD_SCOPES, ["frame", "series"])
+check("series with a pooled histogram is fine",    scopeErr("series", "Otsu", true), null)
+check("an unknown scope is refused",               scopeErr("stack", "Otsu", true)?.contains("must be one of frame, series"), true)
+check("series with per-slice thresholds is refused", scopeErr("series", "Otsu", false)?.contains("choose one"), true)
+check("...but not for Manual, which has no histogram", scopeErr("series", "Manual", false), null)
+
+println ""
 println "=== the reported range really is the range that was applied ==="
 // The point of reporting lo-hi rather than the algorithm's bare number is that
 // it can be copied straight into a manual threshold without anyone working out

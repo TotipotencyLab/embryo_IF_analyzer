@@ -67,12 +67,38 @@ test_that("ROI ids match the documented <feature>_SSSS-NNNN-YYYY form", {
 test_that("read_fiji_result returns the documented columns", {
   skip_if_no_fixture(fixture_file("nucleus", "res"))
   source_r_scripts("read_fiji_result.r")
+  # The fixture is from before v0.8.0: ImageJ's ch/slice, the position parsed
+  # out of Label, and t = 1 because a table without t is one frame.
   res <- read_fiji_result(fixture_file("nucleus", "res"))
   expect_identical(
     colnames(res),
     c("label", "area", "mean", "stddev", "min", "max", "x", "y", "circ",
       "intden", "median", "rawintden", "ch", "slice", "ar", "round",
-      "solidity", "filename", "roi", "pos", "z"))
+      "solidity", "filename", "roi", "pos", "z", "t"))
+  expect_identical(unique(res$t), 1)
+})
+
+test_that("a v0.8.0 measurement table is read from its own columns, checked against Label", {
+  source_r_scripts("read_fiji_result.r")
+  d <- withr::local_tempdir()
+  p <- file.path(d, "tl_nucleus_res.txt")
+  # The shape Fiji now writes: no Ch/Slice, then roi, z, t, ch; a multi-frame
+  # id with its TTTT- field. The Label repeats roi and z in ImageJ's words.
+  writeLines(c(
+    " \tLabel\tArea\tMean\troi\tz\tt\tch",
+    "1\ttl:nucleus_0002-0003-0001-0050:c:1/2 z:3/3 t:2/4\t10\t70\tnucleus_0002-0003-0001-0050\t3\t2\t1",
+    "2\ttl:nucleus_0002-0003-0001-0050:c:2/2 z:3/3 t:2/4\t10\t90\tnucleus_0002-0003-0001-0050\t3\t2\t2"), p)
+  res <- read_fiji_result(p)
+  expect_identical(colnames(res), c("label", "area", "mean", "roi", "z", "t", "ch"))
+  expect_identical(res$t, c(2, 2))
+  expect_identical(res$ch, c(1, 2))
+  expect_identical(res$z, c(3, 3))
+
+  # A table whose own columns disagree with its Label is refused, not joined.
+  bad <- readLines(p)
+  bad[3] <- sub("\t3\t2\t2$", "\t2\t2\t2", bad[3])   # z 2, but the Label says z:3
+  writeLines(bad, p)
+  expect_error(read_fiji_result(p), "disagree with the Label")
 })
 
 test_that("the config file is a two-column parameter/value table", {
@@ -167,7 +193,9 @@ test_that("pixel_depth is written by the Groovy side and documented here", {
   expect_match(src, "pixel_depth", fixed = TRUE)
   # Blank for a single plane, not ImageJ's default 1.0 -- a z step that does
   # not exist must not arrive looking usable.
-  expect_match(src, "getNSlices() > 1", fixed = TRUE)
+  # The guard on the line that writes it -- `src.nSlices` since the pipeline
+  # reads a series source rather than an ImagePlus.
+  expect_match(src, "pixel_depth\\s*:\\s*\\(src\\.nSlices > 1 \\?")
 
   doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
   # The ROW in the _config.txt field table, not merely a mention of the name:
@@ -208,6 +236,26 @@ test_that("open_method is written, readable back, and documented", {
   expect_length(rows, 2L)
   expect_true(any(grepl("importer", rows, fixed = TRUE)))
   expect_true(any(grepl("reader", rows, fixed = TRUE)))
+})
+
+test_that("the overview display range is written, readable back, and documented", {
+  # A multi-frame series' overview is drawn at ONE range per channel across its
+  # frames; the config is where a results folder says what that range was.
+  np <- file.path(repo_root(), "scripts", "groovy", "NucleusPipeline.groovy")
+  rc <- file.path(repo_root(), "scripts", "groovy", "RunConfig.groovy")
+  skip_if_not(all(file.exists(np, rc)), "Groovy library not found")
+  expect_match(paste(readLines(np, warn = FALSE), collapse = "\n"),
+               "overview_display_range\\s*:", perl = TRUE)
+  # Registered as provenance, or the run's own _config.txt is refused as the
+  # config of the next run.
+  expect_match(paste(readLines(rc, warn = FALSE), collapse = "\n"),
+               '"overview_display_range"', fixed = TRUE)
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  row <- grep("^\\|\\s*`overview_display_range`\\s*\\|", doc, value = TRUE)
+  expect_length(row, 1L)
+  expect_match(row, "one per channel for a whole multi-frame series", fixed = TRUE)
+  # And the files it describes are in the output list.
+  expect_true(any(grepl("<series_id>_overview_ch<c>.tif", doc, fixed = TRUE)))
 })
 
 test_that("the Fiji circularity filter records what it deleted, and is documented", {
@@ -282,6 +330,7 @@ test_that("the threshold a run used is recorded, and is provenance not a paramet
   rc_src <- paste(readLines(rc, warn = FALSE), collapse = "\n")
   expect_match(rc_src, '"nucleus_threshold_used"', fixed = TRUE)
   expect_match(rc_src, '"nucleus_mask_pct"', fixed = TRUE)
+  expect_match(rc_src, '"nucleus_histogram_divisor"', fixed = TRUE)
 
   # The batch columns, so finding the rows where it went wrong does not mean
   # opening a thousand _config.txt files.
@@ -292,6 +341,7 @@ test_that("the threshold a run used is recorded, and is provenance not a paramet
   # A ROW in each of the two field tables, not a passing mention.
   expect_length(grep("^\\|\\s*`nucleus_threshold_used`\\s*\\|", doc), 1L)
   expect_length(grep("^\\|\\s*`nucleus_mask_pct`\\s*\\|", doc), 1L)
+  expect_length(grep("^\\|\\s*`nucleus_histogram_divisor`\\s*\\|", doc), 1L)
   expect_length(grep("^\\|\\s*`threshold`\\s*\\|", doc), 1L)
   expect_length(grep("^\\|\\s*`mask_pct`\\s*\\|", doc), 1L)
   # The rule that makes it safe to feed a config forward.
@@ -549,7 +599,7 @@ test_that("annotate writes the documented columns", {
     "--min_z_span", "default=5", "nucleolus=2",
     "--within", "nucleolus=nucleus")))
 
-  documented <- c("roi", "z", "area", "is_bridge", "feature_id", "feature_type",
+  documented <- c("roi", "t", "z", "area", "is_bridge", "feature_id", "feature_type",
                   "series_id", "run_id", "parent_feature_id", "parent_feature_type",
                   "parent_containment", "parent_match")
   expect_identical(colnames(tsv), documented)
@@ -577,8 +627,8 @@ test_that("feature_id uses the documented vocabulary", {
     "--min_z_span", "default=5", "nucleolus=2")))
 
   ids <- unique(tsv$feature_id[!is.na(tsv$feature_id)])
-  ok <- grepl("^(nucleus|nucleolus)_\\d+$", ids) |
-    grepl("^invalid_(nucleus|nucleolus)_\\d+$", ids) |
+  ok <- grepl("^(nucleus|nucleolus)_\\d{4}$", ids) |
+    grepl("^invalid_(nucleus|nucleolus)_\\d{4}$", ids) |
     grepl("^failed_(nucleus|nucleolus)_(excluded|name|area|overlap)$", ids)
   expect_true(all(ok), info = paste(ids[!ok], collapse = ", "))
 })
@@ -597,7 +647,7 @@ test_that("count writes the documented columns", {
   out <- withr::local_tempdir()
   counts <- suppressMessages(count_features_cli(c("--input", feat, "--outdir", out)))
   expect_identical(colnames(counts),
-                   c("series_id", "feature_class", "feature_type", "n_detected",
+                   c("series_id", "t", "feature_class", "feature_type", "n_detected",
                      "n_invalid", "n_failed", "n_roi"))
   # With the default --feature_class_by the composite IS the feature type, so
   # the extra column is a rename of nothing rather than a change of meaning.
@@ -614,7 +664,7 @@ test_that("count writes the documented columns", {
   s <- read.delim(file.path(out2, "feature_counts_summary.tsv"),
                   stringsAsFactors = FALSE)
   expect_identical(colnames(s),
-                   c("genotype", "feature_type", "n_series", "mean_detected",
+                   c("genotype", "t", "feature_type", "n_series", "mean_detected",
                      "sd_detected", "total_detected"))
 })
 
@@ -635,7 +685,7 @@ test_that("feature_stat writes the documented columns", {
   st <- suppressMessages(feature_stat_cli(c(
     "--input", feat, "--outdir", out, "--res_dir", fixture_dir(), "--no_plot")))
 
-  documented <- c("series_id", "feature_type", "feature_id", "n_roi", "n_z",
+  documented <- c("series_id", "feature_type", "feature_id", "t", "n_roi", "n_z",
                   "z_min", "z_max", "z_span", "area_med", "area_mean",
                   "area_max", "area_sum", "z_gaps", "circ_med", "circ_min")
   expect_true(all(documented %in% colnames(st)),
@@ -685,7 +735,9 @@ test_that(".read_outline survives a name column containing spaces", {
     "Image005 Denoised\tnucleus_0001-0001-0433\t1\t5.5\t0.5"), p)
 
   got <- .read_outline(p)
-  expect_identical(colnames(got), c("roi", "z", "x", "y"))
+  # No t in this (older) table: one frame, t = 1.
+  expect_identical(colnames(got), c("roi", "t", "z", "x", "y"))
+  expect_identical(unique(got$t), 1)
   expect_identical(nrow(got), 3L)
   expect_identical(unique(got$roi), "nucleus_0001-0001-0433")
   expect_equal(got$x, c(1.5, 3.5, 5.5))

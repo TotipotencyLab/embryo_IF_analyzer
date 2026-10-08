@@ -100,12 +100,12 @@ def rows = LS.withSeriesId(scanRes.sources, scanRes.series).sources
 def out  = new File(tmp, "out")
 // Every frame in its own file: the per-time-point outputs the gathered and
 // frame-chosen ones below are compared against.
-def sums = asm.assembleAll(rows, root, out, [verify: true, frames: "0-1"]) { }
+def sums = asm.assembleAll(rows, root, out, [verify: true, frames: "1-2"]) { }
 check("one summary per output", sums.size(), 4)
 check("all written",            sums.collect { it.status }.unique(), ["written"])
 check("all verified",           sums.collect { it.verified }.unique(), ["yes"])
 
-def s0 = sums.find { it.series_id.contains("pos1") && it.t == 0 }
+def s0 = sums.find { it.series_id.contains("pos1") && it.t == 1 }
 def r0 = sheet.inspect(new File(out, s0.output_path))[0]
 check("channels",    r0.size_c, 2)
 check("slices",      r0.size_z, 3)
@@ -115,7 +115,7 @@ checkNear("pixel width", r0.pixel_width as Double, 0.208d)
 checkNear("z step",      r0.pixel_depth as Double, 5.0d)
 
 println "\n=== a single-plane position keeps a blank z step ==="
-def sFlat = sums.find { it.series_id.contains("pos2") && it.t == 0 }
+def sFlat = sums.find { it.series_id.contains("pos2") && it.t == 1 }
 def rFlat = sheet.inspect(new File(out, sFlat.output_path))[0]
 check("slices",      rFlat.size_z, 1)
 check("pixel_depth", rFlat.pixel_depth, null)
@@ -125,7 +125,7 @@ println "\n=== resizing scales the CALIBRATION, not only the pixels ==="
 // square of the factor while the image looks perfect.
 def outR = new File(tmp, "out_ds")
 def sR = asm.assembleAll(rows, root, outR, [scalePercent: 50]) { }
-def sR0 = sR.find { it.series_id.contains("pos1") && it.t == 0 }
+def sR0 = sR.find { it.series_id.contains("pos1") && it.t == 1 }
 def rR = sheet.inspect(new File(outR, sR0.output_path))[0]
 check("width halved",   rR.size_x, 6)
 check("height halved",  rR.size_y, 8)
@@ -147,7 +147,7 @@ println "\n=== over the limit is a per-output failure, not an aborted run ==="
 // A sources table claiming a stack too large for classic TIFF. No pixels are read:
 // the refusal happens on the prediction, before anything is opened.
 def huge = (0..2).collect { c ->
-    [series_id: "huge", t: 0, channel: c,
+    [series_id: "huge", t: 1, channel: c + 1,
      channel_name: "c" + c, source_path: "nope.lux.h5", size_x: 4096, size_y: 4096,
      size_z: 100, pixel_width: 0.1, pixel_height: 0.1, pixel_depth: 1.0,
      pixel_unit: "micron"]
@@ -158,7 +158,7 @@ check("reason names the fix", hugeSum.reason.contains("format=bigtiff"), true)
 check("nothing written", new File(out, "huge.tif").exists(), false)
 // and the rest of the run still happens
 def mixed = rows + huge
-def mixedSums = asm.assembleAll(mixed, root, new File(tmp, "mixed"), [frames: "0-1"]) { }
+def mixedSums = asm.assembleAll(mixed, root, new File(tmp, "mixed"), [frames: "1-2"]) { }
 check("one failure does not stop the others",
       mixedSums.count { it.status == "written" }, 4)
 check("the failure has its own row", mixedSums.count { it.status == "failed" }, 1)
@@ -167,8 +167,8 @@ check("summary is rectangular",
 
 println "\n=== bigtiff carries the same pixels and keeps its calibration ==="
 def outB = new File(tmp, "out_big")
-def sB = asm.assembleAll(rows, root, outB, [format: "bigtiff", frames: "0-1"]) { }
-def sB0 = sB.find { it.series_id.contains("pos1") && it.t == 0 }
+def sB = asm.assembleAll(rows, root, outB, [format: "bigtiff", frames: "1-2"]) { }
+def sB0 = sB.find { it.series_id.contains("pos1") && it.t == 1 }
 check("same pixel checksum as classic", sB0.checksum, s0.checksum)
 def rB = sheet.inspect(new File(outB, sB0.output_path))[0]
 check("channels", rB.size_c, 2)
@@ -180,7 +180,7 @@ println "\n=== include is honoured, and a half-included output is a question ===
 // include is a SERIES property now, handed in as a map, so "some channels of
 // this output are excluded" is no longer a state that can be expressed.
 def offSum = asm.assembleAll(rows, root, new File(tmp, "off"),
-                             [frames: "0-1", includeBySeries: [(s0.series_id): "false"]]) { }
+                             [frames: "1-2", includeBySeries: [(s0.series_id): "false"]]) { }
 check("skipped", offSum.find { it.output_path == s0.output_path }.status, "skipped")
 check("reason",  offSum.find { it.output_path == s0.output_path }.reason, "include=false")
 // include belongs to the SERIES: every frame of it is skipped, nothing else is.
@@ -200,7 +200,7 @@ def gRows = rows
 check("same number of sources",     gRows.size(), rows.size())
 check("one output per position",    gRows.collect { it.series_id }.unique().size(), 2)
 check("the series id carries no t", gRows[0].series_id.contains("_t0"), false)
-check("but the rows still do",      gRows.collect { it.t }.unique().sort(), [0, 1])
+check("but the rows still do, from 1", gRows.collect { it.t }.unique().sort(), [1, 2])
 
 def outG = new File(tmp, "out_gather")
 def sG = asm.assembleAll(gRows, root, outG, [verify: true]) { }
@@ -249,51 +249,101 @@ check("gathered pixels are the per-timepoint pixels, in order",
 // A position whose z changes between timepoints cannot be one hyperstack, and
 // that is FATAL when gathering where it is only a warning when not.
 def ragged = gRows.collect { new LinkedHashMap(it) }
-ragged.findAll { it.series_id.contains("pos1") && it.t == 1 }.each { it.size_z = 2 }
+ragged.findAll { it.series_id.contains("pos1") && it.t == 2 }.each { it.size_z = 2 }
 throwsWith("z changing between frames refuses", "disagree on dimensions",
            { scanner.validate(scanRes.series, ragged) { } })
 
 println "\n=== choosing time points: each one its own file ==="
 // A series is now a whole position, which for a long time course fits neither
 // classic TIFF nor the heap. Tuning needs one frame, so `frames` takes them out.
-check("one time point",          TA.parseFrames("0"), [0])
-check("a list and a range",      TA.parseFrames("3, 0-1"), [0, 1, 3])
+check("one time point",          TA.parseFrames("1"), [1])
+check("a list and a range",      TA.parseFrames("4, 1-2"), [1, 2, 4])
+// Counted from 1 since v0.8.0, as Fiji shows frames. A 0 is a habit from the
+// old count, and "no source has time point 0" would send a person looking for
+// a missing file -- so it is refused, naming the count.
+throwsWith("0 refuses, naming the count", "count from 1", { TA.parseFrames("0") })
+throwsWith("...inside a range too",       "count from 1", { TA.parseFrames("0-3") })
 check("blank is every frame",    TA.parseFrames(""), null)
 check("'all' is every frame",    TA.parseFrames("all"), null)
 throwsWith("a word refuses",           "frames must be", { TA.parseFrames("first") })
 throwsWith("a backwards range refuses", "runs backwards", { TA.parseFrames("3-1") })
 
 def outF = new File(tmp, "out_frames")
-def sF = asm.assembleAll(gRows, root, outF, [verify: true, frames: "1"]) { }
+def sF = asm.assembleAll(gRows, root, outF, [verify: true, frames: "2"]) { }
 check("one output per position, for the chosen frame", sF.size(), 2)
 check("written and verified", sF.collect { [it.status, it.verified] }.unique(), [["written", "yes"]])
-check("named series_id + _t0001",
+check("named series_id + _t0002",
       sF.collect { it.output_path }.sort(),
-      gRows.collect { it.series_id }.unique().sort().collect { it + "_t0001.tif" })
+      gRows.collect { it.series_id }.unique().sort().collect { it + "_t0002.tif" })
 def sF0 = sF.find { it.series_id.contains("pos1") }
 check("one frame in it", sF0.frames, 1)
-check("and it is t=1",   sF0.t, 1)
+check("and it is t=2",   sF0.t, 2)
 // The same pixels, under the same name, as the per-time-point table gives.
-def perT1 = sums.find { it.series_id.contains("pos1") && it.t == 1 }
+def perT1 = sums.find { it.series_id.contains("pos1") && it.t == 2 }
 check("the per-time-point file had that name too", sF0.output_path, perT1.output_path)
 check("and these are its pixels",
       crcOf(new File(outF, sF0.output_path)), crcOf(new File(out, perT1.output_path)))
 def rF = sheet.inspect(new File(outF, sF0.output_path))[0]
 check("one frame on disk", rF.size_t, 1)
 
+println "\n=== choosing time points: all of them in one file (oneFile) ==="
+// The name is the selection, runs compressed, and never the bare series id --
+// that is the blank-frames file, and skipExisting decides by name alone.
+check("a list",                TA.framesBase("S", [21, 2, 11]), "S_t0002_t0011_t0021")
+check("a range",               TA.framesBase("S", [1, 2, 3, 4]), "S_t0001-0004")
+check("runs and points",       TA.framesBase("S", [10, 1, 2, 3]), "S_t0001-0003_t0010")
+check("one frame is frameBase", TA.framesBase("S", [7]), TA.frameBase("S", 7))
+
+// Grouping, on rows alone: three frames, two chosen.
+def fake = []
+[1, 2, 3].each { t -> [1, 2].each { c -> fake << [series_id: "A", t: t, channel: c] } }
+fake << [series_id: "ONE", t: 1, channel: 1]
+def gSplit = TA.groupByOutput(fake, [1, 3], false)
+def gOne   = TA.groupByOutput(fake, [1, 3], true)
+check("split: one output per frame",  gSplit.keySet().toList(), ["A_t0001", "A_t0003", "ONE"])
+check("oneFile: one output, named after what is in it", gOne.keySet().toList(), ["A_t0001_t0003", "ONE"])
+check("...holding both frames, every channel", gOne["A_t0001_t0003"].collect { [it.t, it.channel] },
+      [[1, 1], [1, 2], [3, 1], [3, 2]])
+// Named after what the series HOLDS of the selection, not what was asked for.
+check("a chosen frame the series lacks is not in the name",
+      TA.groupByOutput(fake, [1, 3, 5], true).keySet().toList(), ["A_t0001_t0003", "ONE"])
+check("oneFile without frames changes nothing",
+      TA.groupByOutput(fake, null, true).keySet().toList(), TA.groupByOutput(fake, null, false).keySet().toList())
+
+// Real sources: both frames chosen into one file must be the blank-frames
+// file's pixels exactly -- same planes, same order -- under the selection's name.
+def outO = new File(tmp, "out_onefile")
+def sO = asm.assembleAll(gRows, root, outO, [verify: true, frames: "1-2", oneFile: true]) { }
+check("one output per position", sO.size(), 2)
+check("written and verified", sO.collect { [it.status, it.verified] }.unique(), [["written", "yes"]])
+check("named after the selection",
+      sO.collect { it.output_path }.sort(),
+      gRows.collect { it.series_id }.unique().sort().collect { it + "_t0001-0002.tif" })
+def sO0 = sO.find { it.series_id.contains("pos1") }
+check("two frames in it", sO0.frames, 2)
+check("the frames on disk", sheet.inspect(new File(outO, sO0.output_path))[0].size_t, 2)
+check("its pixels are the gathered pixels",
+      Long.toHexString(crcOf(new File(outO, sO0.output_path))), Long.toHexString(joined))
+def pO = [:]
+new File(outO, sO0.output_path.replace(".tif", "_gather.txt")).eachLine { l ->
+    def q = l.split("\t", 2); if (q.size() == 2) pO[q[0]] = q[1] }
+check("provenance: which time point each frame is", pO.time_points, "1 2")
+check("provenance: every source, keyed by time point",
+      [1, 2].every { t -> (1..2).every { c -> pO["t${t}_channel_${c}_source"]?.endsWith(".lux.h5") } }, true)
+
 // include is the SERIES', so it is looked up by series_id, not by output name.
 def pos2 = gRows.collect { it.series_id }.unique().find { it.contains("pos2") }
 def sInc = asm.assembleAll(gRows, root, new File(tmp, "out_finc"),
-                           [frames: "0", includeBySeries: [(pos2): "false"]]) { }
+                           [frames: "1", includeBySeries: [(pos2): "false"]]) { }
 check("include=false still skips a chosen frame",
       sInc.collectEntries { [(it.series_id.contains("pos2") ? "pos2" : "pos1"): it.status] },
       [pos1: "written", pos2: "skipped"])
 
 // A series that holds ONE frame keeps its own name: there is nothing to tell
-// apart, and a _t0000 would only make the name longer.
-def oneFrame = rows.findAll { it.t == 0 }
-def sP = asm.assembleAll(oneFrame, root, new File(tmp, "out_pt0"), [frames: "0"]) { }
-check("a one-frame series: only t=0 written", sP.collect { it.t }.unique(), [0])
+// apart, and a _t0001 would only make the name longer.
+def oneFrame = rows.findAll { it.t == 1 }
+def sP = asm.assembleAll(oneFrame, root, new File(tmp, "out_pt0"), [frames: "1"]) { }
+check("a one-frame series: only t=1 written", sP.collect { it.t }.unique(), [1])
 check("...under its own series_id",
       sP.collect { it.output_path }.sort(), oneFrame.collect { it.series_id + ".tif" }.unique().sort())
 
@@ -362,7 +412,8 @@ prov.eachLine { l -> def p = l.split("\t", 2); if (p.size() == 2) pm[p[0]] = p[1
 check("names its own output", pm.output_path, s0.output_path)
 check("records the checksum",  pm.pixel_checksum, s0.checksum)
 check("records the version",   pm.gatherer_version != null && !pm.gatherer_version.isEmpty(), true)
-check("names every source",    (0..1).every { pm["channel_${it}_source"]?.endsWith(".lux.h5") }, true)
+check("names every source, channels from 1", (1..2).every { pm["channel_${it}_source"]?.endsWith(".lux.h5") }, true)
+check("...and no channel_0",   pm.containsKey("channel_0_source"), false)
 check("records the scale",     pm.scale_percent, "100")
 check("records the frame count", pm.frames, "1")
 

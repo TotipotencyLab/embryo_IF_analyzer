@@ -320,6 +320,13 @@ check("'merged' draws one outline",            OV.addOutlines(view, overlapping(
 png = saveAndOpen(view)
 check("'merged': inner edge is gone",          rgb(png, 20, 20), GREY)
 check("'merged': outer edge is kept",          rgb(png, 10, 20), YELLOW)
+// A lone ROI never goes through ShapeRoi.or(), and ImageJ's getRois() then
+// hands it back at (0,0): it was drawn in the corner, not where it is.
+view = halfView()
+check("'merged', one ROI: one outline",        OV.addOutlines(view, [rect(60, 20, 40, 40)], [mode: "merged"]), 1)
+png = saveAndOpen(view)
+check("'merged', one ROI: at its scaled edge",  rgb(png, 30, 20), YELLOW)
+check("'merged', one ROI: not in the corner",   rgb(png, 0, 10), GREY)
 check("'merged' keeps separate ROIs separate",
       OV.addOutlines(halfView(), overlapping() + [rect(120, 20, 20, 20)], [mode: "merged"]), 2)
 view = halfView()
@@ -547,6 +554,153 @@ check("a validated projection really runs",    okProj.getStackSize(), 1)
 check("...and a validated prepare really runs",
       OV.prepare(okProj, 1, [contrast: "none", saturated: 1.0d, width: 0]) != null, true)
 okProj.close()
+
+println ""
+println "=== a multi-frame series: staged frames, one range, one TIFF per channel ==="
+// The oracle is ImageJ's own ContrastEnhancer, run on ONE image holding every
+// frame's pixels. rangeFromHistogram() on the summed histogram must give
+// exactly its range: if it does, the series range is "auto" applied to the
+// series, and a single frame's range is its PNG's.
+def rnd = new Random(20261007)
+def randomShort = { int w, int h, int base, int spread, int nHot ->
+    def ip = new ShortProcessor(w, h)
+    for (int i = 0; i < w * h; i++) ip.set(i, base + rnd.nextInt(spread))
+    nHot.times { ip.set(rnd.nextInt(w * h), 60000 + rnd.nextInt(5000)) }
+    ip
+}
+def randomByte = { int w, int h, int base, int spread ->
+    def ip = new ByteProcessor(w, h)
+    for (int i = 0; i < w * h; i++) ip.set(i, Math.min(255, base + rnd.nextInt(spread)))
+    ip
+}
+// The frames stacked into one tall image, the oracle's input.
+def tall = { List<ImageProcessor> fs ->
+    int w = fs[0].getWidth(), h = fs.sum { it.getHeight() } as int
+    def out = fs[0].createProcessor(w, h)
+    int y = 0
+    fs.each { out.insert(it, 0, y); y += it.getHeight() }
+    // As a projection comes out of ZProjector: its range is its data's. It
+    // matters only for a flat image, where ImageJ keeps the range it found.
+    out.resetMinAndMax()
+    out
+}
+def oracle = { ImageProcessor ip, double sat ->
+    def d = ip.duplicate()
+    new ij.plugin.ContrastEnhancer().stretchHistogram(d, sat)
+    [d.getMin(), d.getMax()]
+}
+def summed = { List<ImageProcessor> fs ->
+    def m = new TreeMap<Integer, Long>()
+    fs.each { f -> f.getHistogram().eachWithIndex { int n, int k -> if (n) m[k] = (m[k] ?: 0L) + n } }
+    m
+}
+def cases = [
+    ["16-bit, three frames of different brightness", (1..3).collect { randomShort(40, 30, 200 * it, 900, 0) }, 16],
+    ["16-bit, nHot pixels in one frame",              [randomShort(40, 30, 100, 500, 0), randomShort(40, 30, 100, 500, 25)], 16],
+    ["16-bit, one frame",                            [randomShort(50, 20, 1000, 3000, 3)], 16],
+    ["16-bit, two values only",                      [new ShortProcessor(10, 10), { def q = new ShortProcessor(10, 10); q.setValue(700); q.fill(); q }()], 16],
+    ["16-bit, flat",                                 [{ def q = new ShortProcessor(10, 10); q.setValue(321); q.fill(); q }()], 16],
+    ["8-bit, three frames",                          (1..3).collect { randomByte(40, 30, 20 * it, 120) }, 8],
+    ["8-bit, flat",                                  [{ def q = new ByteProcessor(10, 10); q.setValue(77); q.fill(); q }()], 8],
+]
+cases.each { String what, List<ImageProcessor> fs, int bits ->
+    [0d, 0.35d, 5d].each { double sat ->
+        // A flat image is where ImageJ sets no range at all and keeps whatever
+        // the processor had -- not a rule to reproduce. The series path uses
+        // the type's full range there; asserted as that, not as the oracle.
+        def want = what.endsWith("flat") ? [0d, (bits == 16 ? 65535d : 255d)] : oracle(tall(fs), sat)
+        check(what + ", saturated " + sat, OV.rangeFromHistogram(summed(fs), sat, bits), want)
+    }
+}
+
+// A synthetic multi-channel frame: 2 channels x 3 slices, 16-bit, each plane
+// random around a level set by (frame, channel), so frames differ in
+// brightness and a per-frame stretch would hide it.
+def frameImp = { int t, int w = 64, int h = 48 ->
+    def st = new ImageStack(w, h)
+    (1..3).each { z -> (1..2).each { c -> st.addSlice("c${c}z${z}", randomShort(w, h, 300 * t + 100 * c, 400, 0)) } }
+    def imp = new ImagePlus("frame" + t, st)
+    imp.setDimensions(2, 3, 1)
+    imp.getCalibration().pixelWidth = 0.5; imp.getCalibration().pixelHeight = 0.5
+    imp.getCalibration().setUnit("micron")
+    imp
+}
+def tmpS = File.createTempDir("test_overview_series", "")
+def opts = [width: 32, contrast: "auto", saturated: 0.35d]
+
+// --- one frame: the TIFF page IS the PNG -----------------------------------
+def f1 = frameImp(1)
+def d1 = new File(tmpS, "t0001")
+check("stageFrame returns the channels",         OV.stageFrame(f1, null, "max", [1, 2], opts, d1), [1, 2])
+check("...staging a plane and a histogram each",
+      ["overview_ch1.tif", "overview_ch1_hist.tsv", "overview_ch2.tif", "overview_ch2_hist.tsv"].every { new File(d1, it).isFile() }, true)
+def sBox = new Roi(10, 8, 20, 16)
+def res1 = OV.writeSeries([d1], [1], tmpS.getPath(), "one", [1, 2], opts, 64, 48,
+                          [[rois: [sBox], ts: [1], color: "yellow"]])
+def proj1 = OV.project(f1, null, "max", [1, 2])
+[1, 2].each { int c ->
+    def sv = OV.prepare(proj1, c, opts)
+    check("ch" + c + ": the series range = the PNG's range", [res1[c].lo, res1[c].hi], [sv.lo, sv.hi])
+    def sPng = IJ.openImage(OV.savePng(sv, new File(tmpS, "one_png_ch${c}.sPng").getPath()).getPath())
+    def sTif = IJ.openImage(res1[c].files[0].getPath())
+    def sPngRed = ((ij.process.ColorProcessor) sPng.getProcessor()).getChannel(1, null).getPixels() as byte[]
+    check("ch" + c + ": the TIFF page = the PNG's pixels",  sTif.getProcessor().getPixels() as byte[] == sPngRed, true)
+    check("ch" + c + ": ...and is 8-bit grey",              [sTif.getBitDepth(), sTif.getWidth(), sTif.getHeight()], [8, 32, 24])
+    OV.addOutlines(sv, [sBox], [mode: "merged", color: "yellow", lineWidth: 1])
+    def sPngO = IJ.openImage(OV.savePng(sv, new File(tmpS, "one_png_ch${c}_overlay.sPng").getPath()).getPath())
+    def sTifO = IJ.openImage(res1[c].files[1].getPath())
+    check("ch" + c + ": the overlay page = the overlay PNG",
+          sTifO.getProcessor().getPixels() as int[] == sPngO.getProcessor().getPixels() as int[], true)
+    // Not vacuous: the outline is there to be matched.
+    // NB: `as List` first -- on an int[], count{} resolves to count(Object
+    //     value) and compares each pixel with the closure, which is never 0.
+    def yellowAt = ((sTifO.getProcessor().getPixels() as int[]) as List).count { ((it >> 16) & 255) != (it & 255) }
+    check("ch" + c + ": ...which has the outline drawn",   yellowAt > 0, true)
+}
+check("files are named <series_id>_overview_ch<c>[_overlay].tif",
+      res1[1].files.collect { it.getName() }, ["one_overview_ch1.tif", "one_overview_ch1_overlay.tif"])
+
+// --- three frames: one range, the frames' brightness kept -------------------
+def dirs = [], ts = [2, 11, 21]
+ts.eachWithIndex { int t, int i ->
+    def d = new File(tmpS, String.format("t%04d", t))
+    OV.stageFrame(frameImp(i + 1), null, "max", [1, 2], opts, d)
+    dirs << d
+}
+def rois3 = [new Roi(2, 2, 10, 10), new Roi(40, 30, 10, 10)]
+def res3 = OV.writeSeries(dirs, ts, tmpS.getPath(), "three", [1, 2], opts, 64, 48,
+                          [[rois: rois3, ts: [2, 21], color: "yellow"]], 1800d)
+def hist3 = new TreeMap<Integer, Long>()
+dirs.each { d -> new File(d, "overview_ch1_hist.tsv").readLines().drop(1).each { l -> def q = l.split("\t"); hist3[q[0] as int] = (hist3[q[0] as int] ?: 0L) + (q[1] as long) } }
+check("the range is ImageJ's on all three frames' histogram",
+      [res3[1].lo, res3[1].hi], OV.rangeFromHistogram(hist3, 0.35d, 16))
+def t3 = IJ.openImage(res3[1].files[0].getPath())
+check("one page per frame, as frames",          [t3.getNChannels(), t3.getNSlices(), t3.getNFrames()], [1, 1, 3])
+check("...labelled with their t",               (1..3).collect { t3.getStack().getSliceLabel(it) }, ["t=2", "t=11", "t=21"])
+check("...calibrated to the reduced pixel",     t3.getCalibration().pixelWidth, 1.0d)
+check("...with the frame interval",             t3.getCalibration().frameInterval, 1800d)
+def meanOf = { int i -> t3.getStack().getProcessor(i).getStatistics().mean }
+println "         (page means ${(1..3).collect { IJ.d2s(meanOf(it), 1) }}, range ${res3[1].lo}-${res3[1].hi})"
+check("brightness still rises across the frames", meanOf(1) < meanOf(2) && meanOf(2) < meanOf(3), true)
+def ov3 = IJ.openImage(res3[1].files[1].getPath())
+def yellowIn = { int i, int x0, int y0, int x1, int y1 ->
+    def ip = ov3.getStack().getProcessor(i); int n = 0
+    for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) { int px = ip.getPixel(x, y); if (((px >> 16) & 255) != (px & 255)) n++ }
+    n
+}
+// The ROIs are in original pixels; the plane is half size.
+check("t=2's outline is on page 1 only",        [yellowIn(1, 0, 0, 8, 8) > 0, yellowIn(2, 0, 0, 8, 8), yellowIn(3, 0, 0, 8, 8)], [true, 0, 0])
+check("t=21's outline is on page 3 only",       [yellowIn(1, 18, 13, 27, 22), yellowIn(2, 18, 13, 27, 22), yellowIn(3, 18, 13, 27, 22) > 0], [0, 0, true])
+check("no layers, no overlay file",
+      OV.writeSeries(dirs, ts, new File(tmpS, "plain").getPath(), "three", [2], opts, 64, 48)[2].files.size(), 1)
+check("contrast none is the type's full range",
+      [OV.seriesRange(dirs, 1, [contrast: "none"], 16), OV.seriesRange(dirs, 1, [contrast: "none"], 8)],
+      [[0d, 65535d], [0d, 255d]])
+throwsWith("a 32-bit projection is refused for a series", "32-bit", { OV.validateSeriesSettings("mean") })
+throwsWith("...by stageFrame too",                        "32-bit", { OV.stageFrame(frameImp(1), null, "sum", [1], opts, new File(tmpS, "x")) })
+throwsWith("a frame count that does not match is refused", "one staged directory per frame", {
+    OV.writeSeries(dirs, [2, 11], tmpS.getPath(), "bad", [1], opts, 64, 48) })
+tmpS.deleteDir()
 
 println ""
 println "passed: ${passed}   FAILED: ${failed}"

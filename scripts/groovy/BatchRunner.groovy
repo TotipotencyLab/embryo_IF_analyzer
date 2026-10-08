@@ -33,7 +33,7 @@ import loci.plugins.util.ImageProcessorReader
 class BatchRunner {
 
     String libDir
-    Class TSV, NP, RC, RD, RX, SCHEMA
+    Class TSV, NP, RC, RD, RX, SCHEMA, SS, LFC, LS, TA
     Object pipeline
 
     static BatchRunner load(String libDir) {
@@ -49,6 +49,12 @@ class BatchRunner {
         b.RD = gcl.parseClass(new File(dir, "RoiDetect.groovy"))
         b.SCHEMA = gcl.parseClass(new File(dir, "SheetSchema.groovy"))
         b.RX = gcl.parseClass(new File(dir, "RoiExport.groovy"))
+        // A series that comes from a sources table (Luxendo) rather than a file.
+        b.SS  = gcl.parseClass(new File(dir, "SeriesSource.groovy"))
+        b.LFC = gcl.parseClass(new File(dir, "LuxendoFile.groovy"))
+        b.LS  = gcl.parseClass(new File(dir, "LuxendoScan.groovy"))
+        // For parseFrames(), the one reading of a time-point selection.
+        b.TA  = gcl.parseClass(new File(dir, "TiffAssembler.groovy"))
         b.pipeline = b.NP.load(b.libDir)
         return b
     }
@@ -149,6 +155,124 @@ class BatchRunner {
                 "saveOverview=true would have meant 'no'.")
         }
         return (s == OVERVIEW_FROM_CONFIG) ? null : (s == "yes")
+    }
+
+    /**
+     * What the nucleus batch does with output an earlier run left in outdir,
+     * in order of how much of it is reused:
+     *
+     *   resume_unfinished  a series a run left unfinished carries on from the
+     *                      frames it finished; a finished one is analysed again
+     *   skip_finished      as resume_unfinished, and a finished series whose
+     *                      settings match is not opened at all
+     *   redo_all           nothing is reused: every series is analysed again
+     *
+     * One choice rather than two switches, because two give four combinations
+     * and one of them ("redo everything, but skip what is finished") means
+     * nothing. resume_unfinished is the default rather than skip_finished: the
+     * settings compared include VERSION, which does not move between commits on
+     * a development branch, so skipping by default would quietly keep the
+     * output of code that has since been fixed.
+     */
+    static final List<String> EXISTING_OUTPUT = ["resume_unfinished", "skip_finished", "redo_all"]
+
+    /** Resolve existingOutput. Absent means the default; anything unknown is refused, as for saveOverview. */
+    static String existingOutput(Object v) {
+        if (v == null) return EXISTING_OUTPUT[0]
+        String s = v.toString().trim()
+        if (!EXISTING_OUTPUT.contains(s)) {
+            throw new IllegalArgumentException(
+                "existingOutput must be one of " + EXISTING_OUTPUT.join(", ") + "; got >>>" + v + "<<<")
+        }
+        return s
+    }
+
+    /**
+     * The name of one of the batch's own files -- batch_summary.tsv,
+     * batch_params.txt -- for a run tagged `tag`; blank names it as always.
+     *
+     * For several batches sharing ONE output directory: a SLURM array splits a
+     * sheet into tasks that all write there, so a series' files and its staging
+     * are where any later run looks for them, whichever task it lands in next time -- which is
+     * what resume and skip_finished need. A series' own files cannot collide,
+     * each series being in one task; these two would, every task overwriting
+     * the others' as it finished, and a merged summary missing tasks would read
+     * as tasks that never ran. Refused rather than sanitised: a tag is part of
+     * a file name a script will go looking for.
+     */
+    static String runFileName(String stem, String ext, Object tag) {
+        String t = (tag == null) ? "" : tag.toString().trim()
+        if (!t) return stem + ext
+        if (!(t ==~ /[A-Za-z0-9_-]+/)) {
+            throw new IllegalArgumentException(
+                "runTag may hold only letters, digits, '_' and '-'; got >>>" + tag + "<<<")
+        }
+        return stem + "_" + t + ext
+    }
+
+    /** batch_summary.tsv's message for the frames of a series skip_finished did not open. */
+    static final String FINISHED_MESSAGE = "finished by an earlier run"
+
+    /**
+     * Whether an earlier run already wrote this series' results with the
+     * settings this run would use -- decided from outdir alone, BEFORE the image
+     * is opened, because opening is what a skip is for: up to minutes a row on a
+     * many-series .lif.
+     *
+     * Finished means `_config.txt` and `_threshold_stats.tsv` (written last) are
+     * there and nothing is staged for the series (staging is deleted last; a
+     * series with staging left is unfinished, and resumes). The settings are
+     * the config's: every PARAM_TYPES value, VERSION, ImageJ's version, and
+     * which image -- path, series index and name, as the sheet gives them --
+     * and the frames: the results must hold exactly the frames this run would
+     * analyse, so a series with a failed frame, or analysed over other frames,
+     * is done again. The image's dimensions and pixel size are not compared;
+     * they need it opened.
+     *
+     * @return null to analyse the series; otherwise [open_method, frames], the
+     *         summary rows, from its _threshold_stats.tsv
+     */
+    Map finishedSeries(File outdir, String seriesId, int si, Map row, Map params, List<Integer> wanted,
+                       Closure say = null) {
+        def cfgFile = new File(outdir, seriesId + "_config.txt")
+        def tsFile  = new File(outdir, seriesId + "_threshold_stats.tsv")
+        if (!cfgFile.isFile() || !tsFile.isFile()) return null
+        if (new File(new File(outdir, NP.STAGING_DIR), seriesId).exists()) return null
+        def differ = []
+        Map<String, String> cfg
+        Map<String, Object> then
+        try {
+            cfg  = RC.read(cfgFile)
+            then = RC.params(cfg, NP.PARAM_TYPES, cfgFile.getName())
+        } catch (Throwable e) {
+            say?.call("  " + seriesId + ": its _config.txt cannot be read back (" + e.getMessage() +
+                      ") -- analysed again")
+            return null
+        }
+        // saveRunConfig writes a blank z_spec as "(all)"; NP.fromConfig maps it back.
+        if (then.z_spec == "(all)") then.z_spec = ""
+        def str = { v -> v == null ? "" : v.toString() }
+        NP.PARAM_TYPES.keySet().each { k -> if (str(then[k]) != str(params[k])) differ << k }
+        def version = (cfg.script ?: "").tokenize(" ")
+        if ((version ? version[-1] : "") != RX.repoVersion(libDir)) differ << "code version"
+        if (cfg.imagej_version != ij.IJ.getVersion()) differ << "imagej_version"
+        if (str(cfg.source_file) != str(row.path))          differ << "source_file"
+        if (str(cfg.series_index) != str(si))               differ << "series_index"
+        if (str(cfg.series_name) != str(row.series_name))   differ << "series_name"
+        int n = (cfg.image_frames ?: "1") as int
+        def expect = (n <= 1) ? [1] : (wanted == null ? (1..n).toList() : wanted.findAll { it >= 1 && it <= n })
+        def got = (cfg.frames_analysed ?: "").tokenize(" ").collect { it as int }
+        if (got != expect) differ << "frames"
+        if (differ) {
+            say?.call("  " + seriesId + ": earlier results differ in " + differ.join(", ") + " -- analysed again")
+            return null
+        }
+        def frames = TSV.read(tsFile).collect { Map r ->
+            [t: r.t, status: "ok", message: FINISHED_MESSAGE, seconds: "",
+             threshold: r.nucleus_threshold_used ?: "", mask_pct: r.nucleus_mask_pct ?: "",
+             n_nucleus: r.nucleus_count ?: "", n_nucleolus: r.nucleolus_count ?: ""]
+        }
+        return [open_method: cfg.open_method ?: "", frames: frames]
     }
 
     /**
@@ -366,6 +490,72 @@ class BatchRunner {
         return symbol
     }
 
+    // --- the one resolver -----------------------------------------------------
+    //
+    // How a series row becomes frames. MEMBERSHIP decides, never a guess about
+    // `path`: a row whose series_id has rows in the sources table is read from
+    // them; any other row is a file. A stale path or a moved mount must not
+    // quietly take the other branch (note/time_series_plan.md §3.2b), and
+    // membership lets one sheet mix Luxendo and ordinary files.
+
+    /**
+     * The sources table, typed and joined to the series table.
+     *
+     * The join is LuxendoScan.withSeriesId(): on (alias, series_index), never on
+     * series_id, which you may edit. A source with no series row stops the
+     * batch -- the two tables did not come from one scan.
+     *
+     * @return series_id -> its sources rows
+     */
+    Map<String, List<Map>> loadSources(List<Map> sourceRows, List<Map> seriesRows) {
+        if (!sourceRows) return [:]
+        def need = ["source_path", "alias", "series_index", "channel", "t"]
+        def absent = need - sourceRows[0].keySet().toList()
+        if (absent) {
+            throw new IllegalArgumentException(
+                "The sources table is missing column(s) " + absent.join(", ") +
+                (sourceRows[0].containsKey("series_id")
+                 ? " -- it was written before v0.7.0. Regenerate both tables with Make_LuxendoSheets."
+                 : " -- is it a sources.tsv from Make_LuxendoSheets?"))
+        }
+        def joined = LS.withSeriesId(SS.typed(sourceRows), seriesRows)
+        return joined.sources.groupBy { it.series_id as String }
+    }
+
+    /**
+     * Open one series row as a SeriesSource.
+     *
+     * @param sources series_id -> sources rows (loadSources), or empty
+     */
+    Object openSource(Map row, File imageRoot, String openMode, Map<String, List<Map>> sources) {
+        def seriesId = (row.series_id ?: "").toString()
+        if (sources?.containsKey(seriesId)) {
+            // `path` on a Luxendo row is the ACQUISITION DIRECTORY, the root
+            // source_path is relative to.
+            def dir = resolve(row.path.toString(), imageRoot)
+            if (!dir.isDirectory()) {
+                throw new IllegalArgumentException("no such acquisition directory: " + dir.getAbsolutePath())
+            }
+            return SS.ofLuxendo(sources[seriesId], dir, seriesId, LFC)
+        }
+        def image = resolve(row.path.toString(), imageRoot)
+        if (image.isDirectory()) {
+            // Membership still decides -- a directory is never opened as an
+            // acquisition on its look -- but "no such image file" about a
+            // directory that plainly exists sends a person checking the mount.
+            throw new IllegalArgumentException(image.getAbsolutePath() + " is a directory, not an image file; " +
+                (sources ? "a Luxendo series needs rows in the sources table, and its (alias, series_index) has none"
+                         : "a Luxendo series is read through the sources table -- give sourcesFile"))
+        }
+        if (!image.isFile()) {
+            throw new IllegalArgumentException("no such image file: " + image.getAbsolutePath() +
+                                               (sources ? " (and no rows in the sources table)" : ""))
+        }
+        int si = (row.series_index ?: "0").toString() as Integer
+        def method = resolveMethod(openMode, image)
+        return SS.ofImage(openSeries(image, si, method), method, true)
+    }
+
     /** Sheet says one thing, the file says another: the sheet is stale. */
     static List<String> checkDimensions(Map row, Object imp) {
         def out = []
@@ -375,10 +565,12 @@ class BatchRunner {
                 out << (col + ": sheet says " + want + ", the image says " + got)
             }
         }
-        cmp("size_x", imp.getWidth())
-        cmp("size_y", imp.getHeight())
-        cmp("size_z", imp.getNSlices())
-        cmp("size_c", imp.getNChannels())
+        // An ImagePlus or a SeriesSource: the same four facts either way.
+        boolean isImp = (imp instanceof ImagePlus)
+        cmp("size_x", isImp ? imp.getWidth()     : imp.width)
+        cmp("size_y", isImp ? imp.getHeight()    : imp.height)
+        cmp("size_z", isImp ? imp.getNSlices()   : imp.nSlices)
+        cmp("size_c", isImp ? imp.getNChannels() : imp.nChannels)
         return out
     }
 
@@ -408,33 +600,61 @@ class BatchRunner {
         // and the columns that work reports. Kept as its own entry point
         // because it is what every existing caller asks for.
         def cols = ["threshold", "mask_pct", "n_nucleus", "n_nucleolus"]
+        // Which time points of a multi-frame series to analyse; parsed ONCE,
+        // so a typo costs one message rather than one per row.
+        def wanted = TA.parseFrames(params.frames)
+        // What to do with output an earlier run left (EXISTING_OUTPUT). Not a
+        // run parameter: like `frames`, a choice about this batch. Resolved
+        // before any row, so an unknown value costs one message.
+        def existing = existingOutput(params.existing_output)
+        boolean resume = existing != "redo_all"
+        Closure finished = null
+        if (existing == "skip_finished") {
+            if (params.save_config) {
+                finished = { String sid, int si, Map row ->
+                    finishedSeries(outdir, sid, si, row, params, wanted, log) }
+            } else {
+                log?.call("WARNING: skip_finished needs save_config: without a _config.txt nothing " +
+                          "says what a result was made with, so every series is analysed")
+            }
+        }
+        log?.call("existing output: " + existing)
         def res = runEach(rows, imageRoot,
                           params + [pixel_size_note: PIXEL_SIZE_NOTE_NUCLEUS],
-                          outdir, cols, log) {
-                      imp, seriesId, si, method, row ->
+                          outdir, cols, log, finished) {
+                      src, seriesId, si, method, row ->
             // The sheet's series_id is authoritative: an id taken from the image
             // title would be "Series001", which recurs in every file.
             // Where this image came from, recorded in its own _config.txt: a
             // results folder should say which series of which file produced it
             // without anyone having to parse the id back apart.
-            def r = pipeline.run(imp, outdir,
-                                 params + [series_id   : seriesId,
-                                           open_method : method,
-                                           source_file : row.path,
-                                           series_index: si,
-                                           series_name : (row.series_name ?: "")])
-            // What the threshold chose, per row. Every _config.txt carries it
-            // too, but finding the handful of rows where it went wrong should
-            // not mean opening a thousand files -- and on a slide that scans
-            // across empty sections, "went wrong" is the common case.
-            return [threshold: r.threshold, mask_pct: r.maskPct,
-                    n_nucleus: r.nucRois.size(), n_nucleolus: r.nuclRois.size()]
+            def r = pipeline.runSource(src, outdir,
+                                       params + [series_id   : seriesId,
+                                                 open_method : method,
+                                                 source_file : row.path,
+                                                 series_index: si,
+                                                 series_name : (row.series_name ?: "")],
+                                       wanted, resume)
+            // What the threshold chose, per FRAME. Every _config.txt and
+            // _threshold_stats.tsv carries it too, but finding the handful of
+            // frames where it went wrong should not mean opening a thousand
+            // files -- and on a slide that scans across empty sections, or a
+            // time course that bleaches, "went wrong" is the common case.
+            return [frames: r.frames.collect { fr ->
+                def st = fr.stats ?: [:]
+                [t: fr.t, status: fr.status, message: fr.message ?: "",
+                 // Blank for a frame an earlier run analysed: not redone.
+                 seconds: (fr.seconds == null ? "" : fmtSeconds(fr.seconds as long)),
+                 threshold: st.nucleus_threshold_used ?: "", mask_pct: st.nucleus_mask_pct ?: "",
+                 n_nucleus: (st.nucleus_count == null ? "" : st.nucleus_count),
+                 n_nucleolus: (st.nucleolus_count == null ? "" : st.nucleolus_count)]
+            }]
         }
 
         // The parameters actually used, as a file that can be fed straight back
         // in -- provenance for the batch as a whole, beside the per-image config.
         RC.writeParams(params.findAll { k, v -> NP.PARAM_TYPES.containsKey(k) },
-                       new File(outdir, "batch_params.txt"))
+                       new File(outdir, runFileName("batch_params", ".txt", params.run_tag)))
         return res
     }
 
@@ -450,11 +670,26 @@ class BatchRunner {
      *                  between open_method and seconds, and are written blank
      *                  for excluded and failed rows -- so every row has every
      *                  column and the table is rectangular whatever happened.
-     * @param work      called as (imp, seriesId, seriesIndex, openMethod, row);
-     *                  returns a Map of extraCols -> value.
+     * @param work      called as (source, seriesId, seriesIndex, openMethod, row),
+     *                  `source` a SeriesSource; returns a Map of extraCols ->
+     *                  value -- one summary row -- or [frames: [...]], one row
+     *                  per frame, each with its own t, status, seconds, message
+     *                  and extraCols.
+     *
+     * @param finished  optional, called as (seriesId, seriesIndex, row) BEFORE
+     *                  the image is opened: null to go on, or [open_method,
+     *                  frames] -- the summary rows of a series an earlier run
+     *                  finished, which is then not opened at all
+     *                  (finishedSeries).
+     *
+     * params.sources, when given, is the sources table's rows: a row whose
+     * series_id has rows there is read from them (Luxendo), any other from
+     * its file.
      */
     Map runEach(List<Map> rows, File imageRoot, Map params, File outdir,
-                List<String> extraCols, Closure log = null, Closure work) {
+                List<String> extraCols, Closure log = null, Closure finished = null, Closure work) {
+        // Named before anything runs, so a bad tag costs one message.
+        def summaryFile = new File(outdir, runFileName("batch_summary", ".tsv", params.run_tag))
         outdir.mkdirs()
         def blanks = extraCols.collectEntries { [(it): ""] }
         def say = { String m -> log?.call(m) }
@@ -513,19 +748,27 @@ class BatchRunner {
         // into one of importer/reader per file, and that is what gets recorded.
         def openMode = (params.open_mode ?: "auto").toString()
 
+        // Joined and checked before any row runs: two tables that disagree are
+        // one error, not one per row.
+        def sources = loadSources((params.sources ?: []) as List<Map>, rows)
+        if (sources) {
+            def n = included.count { sources.containsKey((it.series_id ?: "").toString()) }
+            say("  " + n + " included row(s) read from the sources table")
+        }
+
         def summary = []
-        int ok = 0, failed = 0
+        int ok = 0, failed = 0, skipped = 0
         try {
         rows.each { row ->
             def seriesId = (row.series_id ?: "").toString()
             if (!isIncluded(row.include)) {
-                summary << ([series_id: seriesId, path: row.path, series_index: row.series_index,
+                summary << ([series_id: seriesId, t: "", path: row.path, series_index: row.series_index,
                              status: "excluded", open_method: ""] + blanks +
                             [seconds: "", message: ""])
                 return
             }
             long t0 = System.currentTimeMillis()
-            def imp = null
+            def src = null
             // Outside the try: a failure before the image opens still has to say
             // what was attempted.
             def method = ""
@@ -537,17 +780,28 @@ class BatchRunner {
                 // image opens, rather than rewritten into a name the sheet does
                 // not hold -- see RoiExport.checkSeriesId.
                 RX.checkSeriesId(seriesId)
-                def image = resolve(row.path.toString(), imageRoot)
-                if (!image.isFile()) {
-                    throw new IllegalArgumentException("no such image file: " + image.getAbsolutePath())
-                }
                 int si = (row.series_index ?: "0").toString() as Integer
-                method = resolveMethod(openMode, image)
-                say("--- " + seriesId + "  (" + image.getName() + " series " + si +
-                    ", " + method + ")")
-                imp = openSeries(image, si, method)
+                def done = finished?.call(seriesId, si, row)
+                if (done != null) {
+                    // Results already there, made exactly as this run would make
+                    // them: reported from what they recorded, and not opened.
+                    method = done.open_method ?: ""
+                    say("--- " + seriesId + "  skipped: " + FINISHED_MESSAGE + ", with the same settings")
+                    done.frames.each { Map fr ->
+                        summary << ([series_id: seriesId, t: fr.t, path: row.path, series_index: row.series_index,
+                                     status: fr.status, open_method: method] +
+                                    extraCols.collectEntries { [(it): (fr[it] == null ? "" : fr[it])] } +
+                                    [seconds: fr.seconds ?: "", message: oneLine(fr.message as String)])
+                    }
+                    ok++; skipped++
+                    return
+                }
+                src = openSource(row, imageRoot, openMode, sources)
+                method = src.method
+                say("--- " + seriesId + "  (" + new File(row.path.toString()).getName() + " series " + si +
+                    ", " + method + (src.nFrames > 1 ? (", " + src.nFrames + " frames") : "") + ")")
 
-                def mism = checkDimensions(row, imp)
+                def mism = checkDimensions(row, src)
                 if (mism) {
                     def w = seriesId + ": the sheet does not match the image (" + mism.join("; ") +
                             "). Regenerate the sheet -- it was made from a different version of this file."
@@ -559,24 +813,36 @@ class BatchRunner {
                 // include, duplicate series_ids, opening, closing, the summary
                 // row, one row's failure not costing the rest -- is the same
                 // for any batch and is not worth a second copy.
-                def extra = work.call(imp, seriesId, si, method, row) ?: [:]
-                summary << ([series_id: seriesId, path: row.path, series_index: row.series_index,
-                             status: "ok", open_method: method] + extra +
-                            [seconds: fmtSeconds(System.currentTimeMillis() - t0), message: ""])
+                def extra = work.call(src, seriesId, si, method, row) ?: [:]
+                if (extra.frames instanceof List) {
+                    // The unit of work is the FRAME: one row each, so a frame
+                    // that failed is visible beside the ones that did not.
+                    extra.frames.each { Map fr ->
+                        summary << ([series_id: seriesId, t: fr.t, path: row.path, series_index: row.series_index,
+                                     status: fr.status, open_method: method] +
+                                    extraCols.collectEntries { [(it): (fr[it] == null ? "" : fr[it])] } +
+                                    [seconds: fr.seconds ?: "", message: oneLine(fr.message as String)])
+                    }
+                } else {
+                    summary << ([series_id: seriesId, t: (extra.t == null ? "" : extra.t), path: row.path,
+                                 series_index: row.series_index, status: "ok", open_method: method] +
+                                extraCols.collectEntries { [(it): (extra[it] == null ? "" : extra[it])] } +
+                                [seconds: fmtSeconds(System.currentTimeMillis() - t0), message: ""])
+                }
                 ok++
             } catch (Throwable t) {
                 // One bad image must not cost the other hundred and ninety-nine.
                 def msg = t.getClass().getSimpleName() + ": " + (t.getMessage() ?: "(no message)")
                 say("FAILED " + seriesId + ": " + msg)
-                summary << ([series_id: seriesId, path: row.path, series_index: row.series_index,
+                summary << ([series_id: seriesId, t: "", path: row.path, series_index: row.series_index,
                              status: "failed", open_method: method] + blanks +
                             [seconds: fmtSeconds(System.currentTimeMillis() - t0),
                              message: oneLine(msg)])
                 failed++
             } finally {
                 // Always, on both paths: a stack held here is gigabytes.
-                if (imp != null) {
-                    try { imp.changes = false; imp.close(); imp.flush() } catch (ignored) { }
+                if (src != null) {
+                    try { src.dispose() } catch (ignored) { }
                 }
             }
         }
@@ -585,13 +851,21 @@ class BatchRunner {
             closeReader()
         }
 
-        def cols = ["series_id", "path", "series_index", "status", "open_method"] +
+        // `t` beside series_id: the two are the key of a row once a series has
+        // frames. Blank where no frame was reached (excluded, failed to open).
+        def cols = ["series_id", "t", "path", "series_index", "status", "open_method"] +
                    extraCols + ["seconds", "message"]
-        TSV.write(summary, new File(outdir, "batch_summary.tsv"), cols)
+        TSV.write(summary, summaryFile, cols)
 
-        say("Done: " + ok + " ok, " + failed + " failed, " +
-            (rows.size() - included.size()) + " excluded")
-        return [summary: summary, ok: ok, failed: failed,
+        // A series whose frames partly failed is an ok ROW -- its files hold
+        // the frames that worked -- so the failed frames are counted apart.
+        int framesFailed = summary.count { it.status == "failed" && it.t != "" }
+        say("Done: " + ok + " ok" + (skipped ? (" (" + skipped + " skipped as finished)") : "") +
+            ", " + failed + " failed, " +
+            (rows.size() - included.size()) + " excluded" +
+            (framesFailed ? (", " + framesFailed + " frame(s) failed") : ""))
+        return [summary: summary, summary_file: summaryFile,
+                ok: ok, skipped: skipped, failed: failed, frames_failed: framesFailed,
                 excluded: rows.size() - included.size(), warnings: warnings]
     }
 
