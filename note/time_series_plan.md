@@ -140,14 +140,20 @@ one (position, time point), and that is what §6.17 records reversing.
 | `series_id` | one series — one row of the series table | the series table | `Make_SeriesSheet` / `Make_LuxendoSheets` |
 | `t` | which time point, within a series | a `series_id` | the frame index, written by Fiji into the output tables (`time_axis`) |
 | `feature_id` | one object **at one time point** | a `series_id` | `define_feature_group()` |
-| `track_id` | one object **through time** | a `series_id` | `tracking`: computed from `<series_id>_tracks.tsv` at use (§4) |
+| `track_id` | a **lineage**: features connected by links, divisions and merges included | a `series_id` | `tracking`: computed from `<series_id>_tracks.tsv` at use (§4) |
+| `branch_id` | one object **through time**: a stretch of a track with no division or merge in it, at most one feature per `t` | a `series_id` | `tracking`, computed alongside `track_id` (§4) |
 
 🔒 `feature_id` = `<feature_type>_<NNNN>`, numbered **globally within a series**
 across all time points it contains. Four-digit padding.
-🔒 `track_id` = `<feature_type>_track_<NNNN>`, `NA` when unlinked.
-Never stored: numbered deterministically from the links in `_tracks.tsv`
-(after hand edits) each time they are joined, and never copied into the
-feature table (§4 `tracking`).
+🔒 `track_id` = `<feature_type>_track_<NNNN>`, `NA` when unlinked;
+`branch_id` = `<track_id>_b<NN>`. Neither is stored: both are numbered
+deterministically from the links in `_tracks.tsv` (after hand edits) each time
+they are joined, and never copied into the feature table (§4 `tracking`).
+Revised 2026-10-08: `track_id` was "one object through time", which stops
+being true once a track holds a division or a merge — a mother and both
+daughters are one track, with two features at one `t`. One object through time
+is the **branch**; with no division or merge a track is one branch, which is
+the embryo-tracking case.
 
 **No `position_id`.** It was planned as a column so a position could span
 several series rows; with a series being the whole position it would always
@@ -1062,23 +1068,34 @@ every `annotate` run, so a tracks table from before a re-annotation would join
   `count_features_cli.r` use for per-feature tables. Not a second guard.
   `run_id` is coarse — it changes with `VERSION`, any parameter, or any input
   file of the run — which is right for a table regenerated in seconds.
-- **`_track_edits.tsv` carries a per-series content fingerprint** instead: a
-  hash of the tracked features' sorted `(feature_id, t)` keys and centroids.
-  Hand edits are work, and keying them on `run_id` would refuse them after a
+- **`_track_edits.tsv` carries a per-series membership fingerprint** instead:
+  a hash of the tracked features' sorted `(feature_id, t, roi)` triples — what
+  a feature *is*. Exact (no floating-point centroids), needs no `_config.txt`
+  to recompute, and changes exactly when a re-annotation regroups ROIs. Hand
+  edits are work, and keying them on `run_id` would refuse them after a
   release bump or after one more series was added to the batch, though no
   tracked feature changed. 🔒 **Strict** (decided 2026-10-08): a mismatch is
   refused, not applied to whichever nuclei now hold those ids. Nobody types a
   hash, so the tracks step **seeds** an empty `_track_edits.tsv` with the
-  fingerprint filled in, and never overwrites one that exists; an edit row
-  without it is refused. Re-annotating means redoing edits; a key that
-  survives re-annotation (a centroid within a tolerance) is possible later.
+  fingerprint filled in; an edit row without it is refused. **An edits file
+  with no edit rows is never refused, and the tracks step may replace it**;
+  only a file holding edits is kept and checked. Otherwise the seeded empty
+  file would block every re-annotation until someone deleted a file holding
+  nothing. Re-annotating means redoing edits; a key that survives
+  re-annotation (a centroid within a tolerance) is possible later.
 
 Beyond that, every `_tracks.tsv` row's `feature_id` and `prev_feature_id` must
 each match exactly one feature, every tracked feature must have at least one
 row — blank `prev_feature_id` when nothing leads to it — and no
 `(feature_id, prev_feature_id)` pair may repeat, so a missing or duplicated row
-stops the join rather than shrinking it. A feature linked to nothing, in either
-direction, gets `NA` as its `track_id` (§3.1), not a track of one.
+stops the join rather than shrinking it. **These checks are `join_tracks()`'s
+own, made before it calls `join_feature_table()`**, which refuses a `run_id`
+mismatch and a duplicated key but only *warns* when features go unmatched, and
+only warns when a table has no `run_id` (written for tables older than
+`run_id`; `feature_join.r`). A `_tracks.tsv` without `run_id` is refused:
+there are no older tracks files to stay compatible with. A feature linked to
+nothing, in either direction, gets `NA` as its `track_id` and `branch_id`
+(§3.1), not a track of one.
 
 **The tracked set is `<feature>_NNNN` only.** The feature table also holds
 `invalid_<feature>_NNNN`, `failed_<feature>_<reason>` and `NA` (data_formats
@@ -1106,22 +1123,51 @@ even with watershed, before cleavage gives two. With merging off, one
 pronucleus's track simply ends there; with it on, both lead into the merged
 feature, which is the honest record. Recorded with the tracker settings.
 
-🔒 **`track_id` is computed, not stored, and numbered deterministically.**
-TrackMate's own track ids are internal integers. `join_tracks()` derives tracks
-as the connected components of the links (after edits) and numbers them
-`<feature_type>_track_<NNNN>` (§3.1) by first `t`, then first `feature_id`, so
-identical links give identical ids. Consequence, stated rather than hidden: an
-edit can renumber tracks, so a `track_id` noted down is valid for one set of
-edits. **Edits are written in `feature_id`s only**, never in track ids, which
-is what keeps them valid while ids move:
+🔒 **Tracks and branches are computed, not stored, and numbered
+deterministically.** TrackMate's own track ids are internal integers.
+`join_tracks()` derives, from the links after edits:
+
+- **`track_id`** — a connected component of the links: a lineage, mother and
+  daughters together. Numbered `<feature_type>_track_<NNNN>` (§3.1) by first
+  `t`, then first `feature_id`.
+- **`branch_id`** — a stretch of a track with no event in it. A new branch
+  starts at a track's first feature, at each daughter of a division (a
+  feature whose predecessor has two successors), and at a merged feature (one
+  with two predecessors), and continues while each feature has exactly one
+  successor and that successor has exactly one predecessor. So a branch has
+  at most one feature per `t`: it is **one object through time**, and what a
+  per-cell trajectory is computed over. Numbered `<track_id>_b<NN>` within
+  its track, by first `t`, then first `feature_id`. A branch formed by a
+  merge is flagged (`branch_merged`): any statistic on it describes two
+  objects, and a per-cell analysis leaves it out.
+- **Lineage is derivable, not stored:** a branch's first feature has a
+  `prev_feature_id` in its parent branch, so `parent_branch_id` is computed
+  on request.
+
+Example: cell A divides at t3 into A1 and A2; A2 is missed at t4 and found at
+t5, gap-closed. All of A, A1 and A2 is `nucleus_track_0001`; A is `_b01`, A1
+`_b02`, A2 `_b03` (present at t3 and t5, t4 absent rather than invented). A
+cell B that never divides is `nucleus_track_0002`, one branch, `_b01`.
+
+Identical links give identical ids. Consequence, stated rather than hidden: an
+edit can renumber tracks and branches, so an id noted down is valid for one
+set of edits. **Edits are written in `feature_id`s only**, never in track or
+branch ids, which is what keeps them valid while ids move:
 
 | action | means |
 |---|---|
-| `link X Y` | feature Y follows feature X; a division by hand is two `link`s from one X, a merge two `link`s into one Y |
+| `link X Y` | feature Y follows feature X; a division by hand is two `link`s from one X, a merge two `link`s into one Y. 🔒 **Refused unless `t(X) < t(Y)`**: a link must go forward in time, which also makes a cycle impossible — otherwise a backwards link would be numbered like any other and nothing would say so |
 | `cut X Y` | remove the link between X and Y |
-| `join X Y` | X ends one track, Y starts another, and they are one object: a `link` from X to Y, **refused** if the two tracks share a `t` |
+| `join X Y` | X ends one branch and Y starts another, and they are one object: a `link` from X to Y, **refused** unless X has no successor, Y has no predecessor, and `t(X) < t(Y)`. The check is on **branch ends**, not on whole tracks: a daughter whose track broke and resumed as a new track shares `t`s with her sister's branch in the old one, and a whole-track check would refuse the commonest repair |
 
 `join_tracks()` records `track_source` (`auto` / `edited`) per track.
+
+*Considered and rejected for edits:* TrackMate's own editor (TrackScheme), via
+a TrackMate XML export and re-import. It is a ready-made editing interface,
+but it needs an image open in Fiji, and a Luxendo `.lux.h5` cannot be opened
+there — only a TIFF made by `Make_LuxendoTiff`, a second copy of data this
+repo reads in place to avoid duplicating it. An edited XML would also need its
+own staleness guard. The TSV needs no image and can be diffed and scripted.
 
 **z in the linking distance — chosen per run, no default.** Open question 1
 (§9) cannot be settled on the data available: the Luxendo FUCCI series'
@@ -1146,9 +1192,14 @@ segmented time-lapse exists (`note/wishlist.md`).
       fingerprint. x and y are µm already; the feature table's `z` is a slice
       index, and **`annotate` reads no `_config.txt` today**, so z's step comes
       through `feature_stat_cli.r`'s `.z_step_for()` (moved to a shared
-      helper): blank `pixel_depth` (one plane) writes `z = 0`; a missing
-      config or conflicting values **refuses**, rather than writing slice
-      numbers labelled µm. **QC, by feature** (the user's request; the
+      helper), given `annotate`'s **input** directories as `res_dirs` — it
+      otherwise searches beside the features file, which is `annotate`'s
+      output. A blank `pixel_depth` (one plane) writes `z = 0`; no usable step
+      (no `_config.txt`, or conflicting values) writes **`z` blank**, never
+      slice numbers labelled µm — and does **not** stop `annotate`, which
+      needs no config today and runs on data that has none
+      (`PLA_analysis/`). The refusal belongs where z is used: PR 2 refuses
+      `useZ=true` on a table with blank z, and `useZ=false` still works. **QC, by feature** (the user's request; the
       centroid places the label), in `annotate --qc_plot` and
       `montage_qc_cli.r` panel (iii): `--qc_label` draws short ids (`0007`,
       optionally only chosen ones — ~100 labelled nuclei crowd);
@@ -1160,9 +1211,15 @@ segmented time-lapse exists (`note/wishlist.md`).
 - [ ] **PR 2 — `tracking-trackmate` (Groovy).** `Make_FeatureTracks.groovy`:
       a series' centroid table → `SparseLAPTrackerFactory` (§5.2) →
       `_tracks.tsv`, the settings used, and the seeded `_track_edits.tsv`.
-      Calibrated units, never pixels (§5.4); `useZ` required; gap closing on
-      (`MAX_FRAME_GAP`, `GAP_CLOSING_MAX_DISTANCE` — the time version of
-      `max_z_dist`); splitting on; `allowMerging` (above), off by default. Tracks one feature
+      Calibrated units, never pixels (§5.4); `useZ` required, and `true`
+      refused on a table with blank z (PR 1); gap closing on (`MAX_FRAME_GAP`,
+      `GAP_CLOSING_MAX_DISTANCE` — the time version of `max_z_dist`);
+      splitting on; `allowMerging` (above), off by default. **Inputs:**
+      `annotate`'s output directory, every `*_feature_centroids.tsv` in it, a
+      series per file, each tracked on its own. A single-frame series has
+      nothing to link: it writes a `_tracks.tsv` of start rows only (every
+      `track_id` `NA`), so the join's completeness rule still holds, and says
+      so in the log. Tracks one feature
       type, named by the caller, never `nucleus` by assumption (the N-feature
       refactor, `note/wishlist.md`); after `--rename`, the renamed name.
 - [ ] **PR 3 — `tracking-join` (R).** `join_tracks()` (above) and its callers.
@@ -1170,10 +1227,15 @@ segmented time-lapse exists (`note/wishlist.md`).
       writes the features before any track exists, so colouring by track there
       would mean re-running it after Fiji. `montage_qc_cli.r` already reads
       `_features.rds` and joins per-feature tables under the `run_id` guard,
-      and its per-frame TIFF is where `--qc_color_by track_id` pays: a nucleus
-      keeps its colour from page to page, so a track switch shows as a colour
-      jump — the visual check of tracking. Counts and `feature_stat` per track
-      over `t`.
+      and its per-frame TIFF is where `--qc_color_by branch_id` (or
+      `track_id`, a lineage in one colour) pays: a nucleus keeps its colour
+      from page to page, so a track switch shows as a colour jump — the visual
+      check of tracking. **Per-object statistics are per branch**:
+      `feature_stat` over `t` by `branch_id`, merged branches flagged and left
+      out of per-cell summaries by default. Per *track*, only what a lineage
+      means: features per `(track_id, t)`, counted, never averaged — a track
+      can hold two cells at one `t`, and averaging them would be the
+      frames-summed-into-a-count mistake again.
 - [ ] **PR 4 — `tracking-edits` (R).** `_track_edits.tsv` (the table above),
       applied by `join_tracks()`, strict, fingerprint-checked.
 - [ ] *Not in this milestone* (moved out 2026-10-08): **the overlap-core
@@ -1199,11 +1261,15 @@ as one for two frames, then two again (the pronuclei case) → with
 each with `useZ` `true` and `false`, plus two stationary nuclei stacked in z
 (§5.4): `true` must keep them two tracks, and `false`, which cannot tell them
 apart, has what it does recorded. PR 1: a
-missing config refused, a single plane at `z = 0`. PR 3: a `_tracks.tsv` after
+missing config writing blank z (and `annotate` still finishing), a single
+plane at `z = 0`; PR 2 refusing `useZ=true` on blank z. PR 3: a `_tracks.tsv` after
 a re-annotation refused by `run_id`; a dropped and a duplicated row each
-refused; a merge's two rows giving one `track_id`; track ids identical
-across two runs. PR 4: each action; a `join` of
-tracks sharing a `t` refused; edits against another annotation refused; an
+refused; a `_tracks.tsv` without `run_id` refused; a merge's two rows giving
+one `track_id` and a flagged merged branch; the A/A1/A2/B example above giving
+exactly those tracks and branches; ids identical across two runs. PR 4: each action; a backwards `link` refused; a `join` across a daughter's
+break accepted although her sister shares its `t`s, and a `join` onto a
+feature that already has a predecessor refused; an empty edits file left from
+before a re-annotation accepted, a non-empty one refused; edits against another annotation refused; an
 edit after a `VERSION` bump with unchanged features accepted. **Real data: none
 that can validate tracking yet** (above); the release notes say tracking is
 verified on synthetic data only, accepted by the user. The FUCCI series is
@@ -1325,12 +1391,14 @@ structure(list(
                        #   feature_id, feature_type
   measure = <tibble>,  # per (series_id, roi, ch) — the _res.txt measurements
   feature = <tibble>,  # per (series_id, feature_id) — t, feature_type,
-                       #   parent_feature_id, track_id, z_span, containment,
+                       #   parent_feature_id, track_id, branch_id, z_span,
+                       #   containment,
                        #   match_kind, per-channel stats
   track   = <tibble>,  # per (series_id, track_id), from join_tracks()
                        #   (§4 `tracking`; track_id is never stored) --
-                       #   n_frames, t_first, t_last, split/merge flags,
-                       #   track_source
+                       #   n_frames, t_first, t_last, n_branches,
+                       #   split/merge flags, track_source; branches per
+                       #   (series_id, branch_id) beside it
   meta    = <list>     # run_id (run_id_from() exists), input fingerprint,
                        #   join report, dropped columns
 ), class = "image_region")
