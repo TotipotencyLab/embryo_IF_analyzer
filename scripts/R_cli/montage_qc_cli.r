@@ -138,18 +138,25 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                                  "'other' and 'unclassified' are settable here too.",
                                  "Automatic colours when omitted"))
   p <- add_argument(p, "--force", short = "-U", flag = TRUE,
-                    help = "join --feature_table even when its run_id disagrees")
+                    help = "join --feature_table, or the tracks, even when its run_id disagrees")
   p <- add_argument(p, "--color_by", short = "-C", type = "character", default = "class",
                     help = paste("panel (iii) outline colour: class (--feature_class_by,",
-                                 "--color_map), or feature_id -- each feature of one type its own",
-                                 "colour, other types grey. The type is the first --feature,",
-                                 "or the only one present"))
+                                 "--color_map); feature_id -- each feature of one type its own",
+                                 "colour, other types grey; track_id -- one colour per lineage;",
+                                 "branch_id -- one per object through time (both need the",
+                                 "tracks, untracked features grey). The type is the first",
+                                 "--feature, or the only one present"))
+  p <- add_argument(p, "--tracks_dir", short = "-K", type = "character", default = NA,
+                    help = paste("where Make_FeatureTracks wrote <series_id>_<type>_tracks.tsv,",
+                                 "for --color_by track_id/branch_id [default: beside --features]"))
   p <- add_argument(p, "--label", short = "-L", type = "character", nargs = Inf, default = NULL,
-                    help = paste("label panel (iii) outlines of that type with their number:",
-                                 "'all', or some of them (7 0007 nucleus_0007)"))
+                    help = paste("label panel (iii) outlines of that type with the number of",
+                                 "what is coloured: 'all', or some (7 0007 nucleus_0007).",
+                                 "Track numbers under track_id/branch_id"))
   p <- add_argument(p, "--palette", short = "-P", type = "character", default = NA,
-                    help = paste("palette for --color_by feature_id [default: Tableau 10]:",
-                                 "a grDevices::palette.pals() set (cycled) or an hcl.pals() ramp"))
+                    help = paste("palette for --color_by feature_id/track_id/branch_id",
+                                 "[default: Tableau 10]: a grDevices::palette.pals() set",
+                                 "(cycled) or an hcl.pals() ramp"))
   p <- add_argument(p, "--panel_height", short = "-H", type = "integer", default = 600,
                     help = "height in px each panel is scaled to")
   p <- add_argument(p, "--no_labels", short = "-N", flag = TRUE,
@@ -275,6 +282,21 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     class_by <- .cli_resolve_arg(argv$feature_class_by, "--feature_class_by")
     if (is.null(class_by) || !length(class_by)) class_by <- "feature_type"
 
+    # Tracks are joined at use, never stored, so they are read here: over every
+    # frame of the series at once, which is also what join_tracks() checks the
+    # table against. BEFORE --feature_table: a feature_stats.tsv made with
+    # --track_type carries its own copy of these columns, and joining it first
+    # would leave join_tracks() refusing a table that "already has" them.
+    # join_feature_table() skips columns the spine already has.
+    if (qc$color_by %in% c("track_id", "branch_id")) {
+      tdir <- if (is.na(argv$tracks_dir)) dirname(argv$features) else argv$tracks_dir
+      if (!"series_id" %in% colnames(valid)) valid$series_id <- sid
+      valid <- join_tracks(valid, qc$focus, tdir, force = argv$force)
+      br <- attr(valid, "branches")
+      message("Panel (iii): ", length(unique(br$track_id)), " ", qc$focus, " track(s), ",
+              nrow(br), " branch(es) from ", basename(tracks_path(tdir, sid, qc$focus)))
+    }
+
     if (!is.na(argv$feature_table)) {
       if (!file.exists(argv$feature_table)) {
         stop("--feature_table not found: ", argv$feature_table, call. = FALSE)
@@ -297,6 +319,7 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     }
     valid$feature_class <- compose_feature_class(sf::st_drop_geometry(valid),
                                                  class_by, argv$class_sep)
+
 
     cmap <- .cli_key_values(argv$color_map, "--color_map")
     cmap <- if (length(cmap)) unlist(cmap) else NULL
@@ -321,21 +344,27 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     # ids are numbered across a series' frames, so it splits nothing.
     unioned <- union_features(valid,
                               group_cols = c("feature_id", "feature_type", "feature_class",
-                                             if (per_frame) "t"))
+                                             if (per_frame) "t",
+                                             if (qc$color_by %in% c("track_id", "branch_id"))
+                                               qc$color_by))
     if (!per_frame) {
       message("Panel (iii): ", nrow(feats), " ROIs -> ", nrow(unioned), " unioned feature(s)")
     }
 
-    if (qc$color_by == "feature_id") {
-      # Over every frame at once, so a feature keeps its colour page to page.
-      keys <- qc_id_colours(unioned$feature_id, unioned$feature_type, qc$focus, qc$palette)
+    # The id each outline is coloured and labelled by: the feature's own, or
+    # its track's or branch's (NA, and grey, where no track reaches it).
+    id_col <- if (qc$color_by == "class") "feature_id" else qc$color_by
+    if (qc$color_by != "class") {
+      # Over every frame at once, so an outline keeps its colour page to page --
+      # for a track, the visual check of tracking: a switch is a colour jump.
+      keys <- qc_id_colours(unioned[[id_col]], unioned$feature_type, qc$focus, qc$palette)
       unioned$feature_class <- keys$values
       pal <- list(palette = keys$palette, other_members = character(0), by_id = TRUE)
     } else {
       pal <- class_palette(unioned$feature_class, cmap)
       unioned$feature_class <- pal$values
     }
-    unioned$qc_label <- qc_label_select(unioned$feature_id, unioned$feature_type,
+    unioned$qc_label <- qc_label_select(unioned[[id_col]], unioned$feature_type,
                                         qc$focus, qc$label)
   }
 
@@ -373,7 +402,11 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     if (isTRUE(pal$by_id)) {
       # A hundred id=colour pairs would be a caption longer than the montage;
       # the labels, when asked for, name the outlines instead.
-      cap <- paste0(cap, " | by ", qc$focus, " id",
+      by_what <- c(feature_id = " id", track_id = " track", branch_id = " branch")[[qc$color_by]]
+      untracked <- qc$color_by != "feature_id" && !is.null(f_unioned) &&
+        any(f_unioned$feature_type == qc$focus & is.na(f_unioned[[qc$color_by]]))
+      cap <- paste0(cap, " | by ", qc$focus, by_what,
+                    if (untracked) ", untracked grey" else "",
                     if (length(setdiff(unique(as.character(f_unioned$feature_type)), qc$focus)))
                       ", rest grey" else "")
     } else if (!is.null(pal$palette)) {
@@ -568,30 +601,35 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 #' `nucleus` by default is the assumption the N-feature work removes.
 .mqc_id_options <- function(argv, feats, keep_features) {
   color_by <- argv$color_by
-  if (!color_by %in% c("class", "feature_id")) {
-    stop("--color_by takes class or feature_id; got '", color_by, "'", call. = FALSE)
+  by_id <- c("feature_id", "track_id", "branch_id")
+  if (!color_by %in% c("class", by_id)) {
+    stop("--color_by takes class, feature_id, track_id or branch_id; got '", color_by, "'",
+         call. = FALSE)
+  }
+  if (!is.na(argv$tracks_dir) && !color_by %in% c("track_id", "branch_id")) {
+    warning("--tracks_dir is used by --color_by track_id/branch_id only", call. = FALSE)
   }
   label <- .cli_resolve_arg(argv$label, "--label")
   palette <- if (is.na(argv$palette)) QC_DEFAULT_PALETTE else argv$palette
   qc_palette_colours(palette)                       # stops on an unknown name
-  if (color_by == "feature_id") {
+  if (color_by %in% by_id) {
     clash <- c(if (length(.cli_resolve_arg(argv$color_map, "--color_map"))) "--color_map",
                if (length(.cli_resolve_arg(argv$feature_class_by, "--feature_class_by")))
                  "--feature_class_by")
     if (length(clash)) {
-      stop("--color_by feature_id colours each feature by its id, so ",
+      stop("--color_by ", color_by, " colours each outline by that id, so ",
            paste(clash, collapse = " and "), " would be ignored; use one or the other",
            call. = FALSE)
     }
   } else if (!is.na(argv$palette)) {
-    warning("--palette applies to --color_by feature_id only", call. = FALSE)
+    warning("--palette applies to --color_by feature_id/track_id/branch_id only", call. = FALSE)
   }
   focus <- NA_character_
-  if (color_by == "feature_id" || length(label)) {
+  if (color_by %in% by_id || length(label)) {
     types <- sort(unique(feats$feature_type))
     focus <- if (length(keep_features)) keep_features[1] else if (length(types) == 1L) types else NA
     if (is.na(focus)) {
-      stop(if (color_by == "feature_id") "--color_by feature_id" else "--label",
+      stop(if (color_by %in% by_id) paste("--color_by", color_by) else "--label",
            " acts on one feature type, and this file holds ", paste(types, collapse = ", "),
            ": name it first in --feature (e.g. --feature ", types[1], " ",
            paste(types[-1], collapse = " "), ")", call. = FALSE)

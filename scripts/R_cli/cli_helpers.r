@@ -929,7 +929,7 @@
 .RLIB_REQUIRED <- c("read_fiji_result", "polygonize_roi_df", "define_feature_group",
                     "find_ROI_z_intersect", "assign_feature_parent",
                     "union_features", "plot_features_topView",
-                    "feature_centroids", "qc_id_colours")
+                    "feature_centroids", "qc_id_colours", "join_tracks")
 
 #' Source scripts/R/ into the global environment
 #'

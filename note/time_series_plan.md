@@ -1271,7 +1271,7 @@ segmented time-lapse exists (`note/wishlist.md`).
       movers and a division over four frames → exactly those links; `useZ`
       omitted → refused, not hung). **Not verified:** real data — none can
       validate tracking yet (below).
-- [ ] **PR 3 — `tracking-join` (R).** `join_tracks()` (above) and its callers.
+- [x] **PR 3 — `tracking-join` (R).** ✅ done. `join_tracks()` (above) and its callers.
       **Track QC lives in `montage_qc_cli.r`, not `annotate`**: `annotate`
       writes the features before any track exists, so colouring by track there
       would mean re-running it after Fiji. `montage_qc_cli.r` already reads
@@ -1285,6 +1285,41 @@ segmented time-lapse exists (`note/wishlist.md`).
       means: features per `(track_id, t)`, counted, never averaged — a track
       can hold two cells at one `t`, and averaging them would be the
       frames-summed-into-a-count mistake again.
+      **As built** (2026-10-08): `scripts/R/feature_tracks.r` —
+      `read_tracks()`, `check_track_links()`, `number_tracks()`,
+      `join_tracks()`. Joins `track_id`, `branch_id` and `branch_merged`, and
+      returns one row per branch (`parent_branch_id`, `first_t`, `last_t`,
+      `n_features`) as an attribute. Departures, all small: **the `run_id`
+      guard is shared, not called through `join_feature_table()`** — its
+      check moved into `check_run_id()` (`feature_join.r`), which both joins
+      call, because `join_tracks()`'s own completeness checks are stricter
+      than the rest of `join_feature_table()` and a second pass would only
+      repeat a forced warning; features with no `run_id` are refused too.
+      The montage option is `--color_by track_id|branch_id` (the montage's
+      existing flag, not `--qc_color_by`), with `--tracks_dir`; labels show
+      the track (`0003`) or branch (`0003b02`), and `--label 3` selects a
+      track. `feature_stat_cli.r --track_type <type>` (+ `--tracks_dir`,
+      `--force`) puts the three columns on every row and writes
+      `branches.tsv` — merged branches **included and flagged** there, since
+      it is the lineage rather than a summary; the "left out by default" rule
+      applies where a per-cell summary is made, `--group_by branch_id`
+      (`--keep_merged_branches` keeps them; untracked features are left out
+      too, counted). `--group_by track_id` is refused, pointing at the count:
+      `count_features_cli.r --feature_table feature_stats.tsv
+      --feature_class_by track_id` gives features per track per `t` with no
+      code change. A series with no tracks table, and an empty table meeting
+      features, are refused. Verified: the plan's A/A1/A2/B example to the id;
+      a merge's branch flagged with both parents; numbering independent of
+      input order and identical across joins; each refusal; the CLIs end to
+      end on a synthetic time course (montage page colours by branch and by
+      track, untracked grey, the grey shown absent under `feature_id`);
+      `Make_FeatureTracks`' own output read by both CLIs. Default outputs
+      unchanged against `tracking` 146e42a on the fixture (tables
+      byte-identical; annotate QC and both montages 0 pixels differing).
+      Code review (the workflow's step 5) found two, each reproduced and its
+      test shown failing without the fix: `--feature_table` with a
+      `--track_type` stats table was refused by the tracks join, and an empty
+      tracks table was reported with a blank `run_id`.
 - [ ] **PR 4 — `tracking-edits` (R).** `_track_edits.tsv` (the table above),
       applied by `join_tracks()`, strict, fingerprint-checked.
 - [ ] *Not in this milestone* (moved out 2026-10-08): **the overlap-core

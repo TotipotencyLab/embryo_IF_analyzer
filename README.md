@@ -443,10 +443,26 @@ and which is right depends on the data. Distances are in µm (15 by default);
 time points chosen with the batch's `frames=` are steps, so `1,10,20` gap-closes
 and divides as if consecutive. A division after the mother went undetected for
 a frame comes out as one daughter linked and the other starting a new track —
-TrackMate's behaviour, not a setting. Tracks are joined onto the features in R,
-not written into them; that, and hand edits in the `_track_edits.tsv` seeded
-beside each, are the rest of the `tracking` milestone. Details in
-`note/data_formats.md`.
+TrackMate's behaviour, not a setting.
+
+Tracks are joined onto the features in R at use, never written into them, and
+numbered there: `track_id` is a lineage (a cell and its descendants),
+`branch_id` one object through time. To see them, colour the QC montage by
+either — a tracking error shows up as a colour jump between pages:
+
+```bash
+montage_qc_cli.r --features R/feature/S_features.rds --output S_tracks.tif \
+  --color_by branch_id --label all
+```
+
+and `feature_stat_cli.r --track_type nucleus` puts both ids on every row of
+`feature_stats.tsv` and writes `branches.tsv` (one row per branch: its parent,
+first and last time point). Per-cell plots group by `branch_id`; a lineage is
+counted, never averaged (`count_features_cli.r --feature_table
+feature_stats.tsv --feature_class_by track_id`). A tracks table made before a
+re-annotation, or missing a row, is refused rather than joined. Hand edits in
+the `_track_edits.tsv` seeded beside each are the milestone's last step.
+Details in `note/data_formats.md`.
 
 [`PLA_analysis/`](PLA_analysis/) contains the proximity ligation assay analysis
 (published separately) and serves as a worked example of the R side end to end.

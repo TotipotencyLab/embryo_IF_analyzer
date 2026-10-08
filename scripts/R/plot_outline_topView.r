@@ -198,6 +198,10 @@ qc_palette_colours <- function(name = QC_DEFAULT_PALETTE, n = 1L){
 #' apart along it -- so that neighbouring ids, which are often neighbouring
 #' objects, do not get two nearly identical shades.
 #'
+#' The ids need not be feature ids: a track_id or branch_id per outline
+#' colours by lineage or by branch the same way. An NA id (a feature no track
+#' reaches) is drawn grey with the other types.
+#'
 #' @param feature_id,feature_type vectors, one per outline
 #' @param focus_type the type coloured by id
 #' @param palette    a palette name, see qc_palette_colours()
@@ -205,7 +209,7 @@ qc_palette_colours <- function(name = QC_DEFAULT_PALETTE, n = 1L){
 #'         palette = complete named colour vector over the keys)
 qc_id_colours <- function(feature_id, feature_type, focus_type,
                           palette = QC_DEFAULT_PALETTE, other_colour = QC_OTHER_GREY){
-  is_focus <- feature_type == focus_type
+  is_focus <- feature_type == focus_type & !is.na(feature_id)
   ids <- sort(unique(feature_id[is_focus]))
   pal <- qc_palette_colours(palette, n = length(ids))
   k <- length(pal$colours)
@@ -231,9 +235,13 @@ qc_id_colours <- function(feature_id, feature_type, focus_type,
 
 .gcd <- function(a, b){ while(b) { t <- b; b <- a %% b; a <- t }; a }
 
-#' The short label of a feature id: its number, `nucleus_0007` -> `0007`
+#' The short label of an id: `nucleus_0007` -> `0007`, a track
+#' `nucleus_track_0003` -> `0003`, a branch `nucleus_track_0003_b02` -> `0003b02`
 qc_short_label <- function(feature_id){
-  sub("^.*_", "", feature_id)
+  out <- sub("^.*_track_([0-9]+)_b([0-9]+)$", "\\1b\\2", feature_id)
+  plain <- !is.na(feature_id) & out == feature_id
+  out[plain] <- sub("^.*_", "", feature_id[plain])
+  out
 }
 
 #' Which outlines get a label
@@ -241,13 +249,16 @@ qc_short_label <- function(feature_id){
 #' `spec` is "all", or feature ids written as the CLI user would: `7`, `0007`
 #' or `nucleus_0007` all mean feature 7 of the focus type. Only the focus type
 #' is labelled -- labelling every nucleolus inside every nucleus would cover
-#' the picture it is meant to explain.
+#' the picture it is meant to explain. Given track or branch ids, the numbers
+#' are TRACK numbers: `3` labels every branch of track 3.
 #'
 #' @return a character vector, one per outline: the short label, or NA
 qc_label_select <- function(feature_id, feature_type, focus_type, spec){
   lab <- ifelse(feature_type == focus_type, qc_short_label(feature_id), NA_character_)
   if(is.null(spec) || !length(spec)) return(rep(NA_character_, length(feature_id)))
   if(identical(tolower(spec), "all")) return(lab)
+  # The number a spec is matched against: a branch label's track part.
+  key <- sub("b[0-9]+$", "", lab)
   want <- vapply(spec, function(s){
     tail <- sub("^.*_", "", s)
     if(!grepl("^[0-9]+$", tail)){
@@ -256,12 +267,12 @@ qc_label_select <- function(feature_id, feature_type, focus_type, spec){
     }
     sprintf("%04d", as.integer(tail))
   }, character(1))
-  absent <- setdiff(want, lab)
+  absent <- setdiff(want, key)
   if(length(absent)){
-    warning("No ", focus_type, " feature numbered ", paste(absent, collapse = ", "),
-            " to label", call. = FALSE)
+    warning("No ", focus_type, " ", if(any(grepl("_track_", feature_id))) "track" else "feature",
+            " numbered ", paste(absent, collapse = ", "), " to label", call. = FALSE)
   }
-  return(ifelse(lab %in% want, lab, NA_character_))
+  return(ifelse(key %in% want, lab, NA_character_))
 }
 
 union_features <- function(st_df, group_cols=c("feature_id", "feature_type")){
