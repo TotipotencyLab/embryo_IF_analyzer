@@ -359,45 +359,28 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
 # --- private helpers ----------------------------------------------------------
 
+#' The z step for one features file: `.cli_z_step_for()` (cli_helpers.r), with
+#' this CLI's own warning when the series in it disagree -- a volume pooled
+#' over two instruments' z steps is not in either one's units.
+#'
+#' @return a positive number, or NA_real_
+.z_step_for <- function(feats, features_path, res_dirs) {
+  z <- .cli_z_step_for(feats, features_path, res_dirs)
+  clash <- attr(z, "conflict")
+  if (!is.null(clash)) {
+    warning("Series in ", basename(features_path), " record different ",
+            "pixel_depth values (", paste(clash, collapse = ", "),
+            "); no volume inferred. Pass --z_step to choose one.", call. = FALSE)
+  }
+  return(as.numeric(z))
+}
+
 #' Find and read the Fiji measurement table matching a feature table
 #'
 #' Looked up by the ROI PREFIX, not by feature_type: after --rename the
 #' reporting name is the new one while the file on disk still carries the name
 #' Fiji wrote. The `roi` column keeps that original prefix for exactly this
 #' reason.
-#' The z step for one features file, from the Fiji config that produced it
-#'
-#' `pixel_depth` is written per image, so this is asked per file -- and a
-#' features .rds is written per series, so per file IS per series in anything
-#' the pipeline produced. A hand-built file holding several series that
-#' disagree gets no inference rather than an arbitrary one of them: pixel size
-#' varies 4x within a single .lif here, so "they are all about the same" is not
-#' a safe assumption to make quietly.
-#'
-#' @return a positive number, or NA_real_
-.z_step_for <- function(feats, features_path, res_dirs) {
-  tab <- sf::st_drop_geometry(feats)
-  here <- dirname(features_path)
-  dirs <- unique(c(res_dirs, here,
-                   file.path(here, ".."),
-                   file.path(here, "..", "segmentation")))
-  vals <- c()
-  for (sid in unique(tab$series_id)) {
-    cfg <- .cli_read_config(.cli_find_config(sid, dirs))
-    v <- .cli_config_num(cfg, "pixel_depth")
-    # Blank for a single plane, by design on the Fiji side: no z axis, no volume.
-    if (!is.na(v) && v > 0) vals[[sid]] <- v
-  }
-  if (!length(vals)) return(NA_real_)
-  if (length(unique(unlist(vals))) > 1L) {
-    warning("Samples in ", basename(features_path), " record different ",
-            "pixel_depth values (", paste(sort(unique(unlist(vals))), collapse = ", "),
-            "); no volume inferred. Pass --z_step to choose one.", call. = FALSE)
-    return(NA_real_)
-  }
-  return(unname(unlist(vals))[1])
-}
-
 .read_res_for <- function(feats, features_path, res_dirs) {
   tab <- sf::st_drop_geometry(feats)
   here <- dirname(features_path)

@@ -1049,10 +1049,11 @@ both runners give identical per-feature statistics and identical channel signals
 ### `annotate_features_cli.r`
 
 ```
-<outdir>/<series_id>_features.rds     sf, one row per ROI      <- canonical
-<outdir>/<series_id>_features_qc.png  only with --qc_plot, one frame
-<outdir>/<series_id>_features_qc.tif  only with --qc_plot, several frames: a page each
-<outdir>/<output_prefix>features.tsv  the same, geometry dropped
+<outdir>/<series_id>_features.rds           sf, one row per ROI      <- canonical
+<outdir>/<series_id>_feature_centroids.tsv  one row per feature: where it is (since 0.9.0)
+<outdir>/<series_id>_features_qc.png        only with --qc_plot, one frame
+<outdir>/<series_id>_features_qc.tif        only with --qc_plot, several frames: a page each
+<outdir>/<output_prefix>features.tsv        the same, geometry dropped
 ```
 
 The `.rds` is the canonical object; the TSV is the same table for anything that
@@ -1086,6 +1087,66 @@ clutter). Every page is drawn over the same extent and in the same colours, so
 that flicking through them shows the objects moving rather than the axes. A
 frame with no valid feature still gets its page. `--within` relates each frame on its own: the same nucleus one time
 point later sits in nearly the same place, so it would score, and could win.
+
+**Colour and labels by feature** (since 0.9.0), so a problem outline can be
+named. Both act on **one** feature type: the first `--feature`, under its
+reporting name — never `nucleus` by assumption.
+
+- `--qc_color_by feature_id` gives each feature of that type its own colour
+  and draws every other type grey, with no legend (a hundred keys would be
+  bigger than the plot). The default, `feature_type`, is the plot as before.
+- `--qc_label all`, or some numbers (`7 0007 nucleus_0007` all mean feature 7),
+  writes the short id on the outline, in the outline's colour.
+- `--qc_palette`: a `grDevices::palette.pals()` set (`Tableau 10`, the
+  default; `Okabe-Ito`, `Set 1`, `Dark 2`, `Polychrome 36`, …), **cycled**, or
+  an `hcl.pals()` ramp (`Viridis`, `Plasma`, `Blues`, …), **strided** so that
+  consecutive ids do not get near-identical shades. Grey and near-white
+  entries are dropped: grey means "another type". Base R only, no package.
+
+Colours are assigned in `feature_id` order over the **whole series**, so a
+feature keeps its colour on every page of a time course. With a qualitative
+palette, ids `k` apart share a colour; the label settles which is which. The
+same options, without the `qc_` prefix (`--color_by`, `--label`,
+`--palette`), colour panel (iii) of `montage_qc_cli.r`.
+
+#### `<series_id>_feature_centroids.tsv`
+
+One row per **real** feature (`<feature_type>_NNNN`; not `invalid_`, `failed_`
+or `NA`) — what the `tracking` milestone hands to TrackMate
+(`note/time_series_plan.md` §4). Written for every series, single frames
+included.
+
+| Column | Type | Notes |
+|---|---|---|
+| `series_id` | chr | |
+| `t` | int | the feature's frame, from 1 |
+| `feature_type` | chr | reporting name, after `--rename` |
+| `feature_id` | chr | |
+| `x`, `y` | dbl | calibrated units, like the outline tables: the **area-weighted** mean of the feature's per-slice polygon centroids |
+| `z` | dbl | calibrated: (area-weighted mean slice − 1) × `pixel_depth`, slice 1 at 0 as ImageJ calibrates it. **`0`** for a single-plane series. **Blank** when the z step is unknown — never slice numbers a reader would take for µm |
+| `n_roi` | int | ROIs that placed it |
+| `area_sum`, `area_max` | dbl | µm², over those ROIs |
+| `run_id` | chr | the annotate run, as in the features table — what a tracks table made from these is checked against |
+| `fingerprint` | chr | 10 hex characters, one per (series, feature type): see below |
+
+**Bridge ROIs are set aside**, as `feature_stat` sets them aside for every
+statistic (§5): they hold an object together but are not evidence of where it
+is. Weighting by area puts the centroid at the object's bulk, and as a
+weighted mean its z is not stuck on whole slices.
+
+**The z step** is `pixel_depth` from the `_config.txt` Fiji wrote beside the
+**input** outline tables (then beside the `.rds` and its parent). `annotate`
+needs no config and runs on data without one (`PLA_analysis/`), so a missing
+step is not an error here: `z` is left blank, the log says why, and the step
+that would use z refuses it. Series in one run whose configs disagree get no
+step rather than an arbitrary one.
+
+**`fingerprint`** is a hash of the sorted `(feature_id, t, roi)` triples of the
+type's real features, bridges included — *what the features are*. It changes
+exactly when a re-annotation regroups ROIs, needs no config to recompute, and,
+unlike `run_id`, does **not** change with `VERSION`, a parameter that moved
+nothing, or another series joining the run. That is what hand edits to tracks
+are keyed on.
 
 ### `count_features_cli.r`
 
