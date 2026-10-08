@@ -236,7 +236,7 @@ check("...and the cases that had to be divided are MinError(I) 16-bit",
 
 println ""
 println "=== overflow: the counts are divided only as far as the method needs ==="
-// What was bug 1 of note/known_bug.md, on a synthetic histogram of the kind a blurred
+// What was bug 1 of note/known_issue.md, on a synthetic histogram of the kind a blurred
 // tile merge gives: a huge dark peak and a dim tail, ~10^9 voxels. Every count
 // is a multiple of 4096, so dividing by any power of two up to that is exact,
 // and the same histogram at counts x16 (b16) is small enough for exact int

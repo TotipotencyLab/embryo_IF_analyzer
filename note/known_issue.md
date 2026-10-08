@@ -1,8 +1,10 @@
-# Known bugs
+# Known issues
 
-Open bugs found but not fixed, with the evidence and a proposed fix, so that
+Open problems found but not fixed, with the evidence and a proposed fix, so that
 whoever picks one up does not have to rediscover it. Remove an entry when its
-fix is merged.
+fix is merged. Mostly bugs; an entry that is not -- a cost rather than a wrong
+answer -- says so in its title. (This file was `known_bug.md` until `time_axis`
+PR 5.)
 
 **Bug 1** (auto-threshold methods silently wrong on large stacks: `exec()`'s
 `int` histogram and the `int` arithmetic of Huang, IsoData, Li and MinError(I))
@@ -188,3 +190,63 @@ histograms, or bin a wide 16-bit histogram down before calling Moments, which
 changes the answer by up to a bin width. Or refuse Moments on a trimmed
 histogram wider than 1,290 levels, which is loud and cheap. Check upstream first:
 a later Auto_Threshold may have widened it, as it did `Mean()`.
+
+---
+
+## 5. Not a bug: the nucleus threshold costs ~3.5 s more per frame since PR 5
+
+**Severity: performance only; results are unaffected.** Found 2026-10-08 after
+`time_axis` PR 5 replaced `exec()` with `RoiDetect.chooseThreshold()`. Deferred
+on purpose: on the Luxendo set it is ~3.5 s × 96 frames × 15 series ≈ 84 minutes
+in one run, and splitting the batch over HPC tasks reading local storage rather
+than the samba mount saves far more than that.
+
+### Evidence
+
+`fucci_s0009_fucci_pos1` (2048 × 2048 × 39 × 3, 16-bit) read as `.lux.h5` over
+samba, frames 1, 10, 20, 30, the tuned config (Triangle), `redo_all`; three arms
+run twice each, interleaved:
+
+| | wall, s | the 4 frames' seconds, summed | first pass |
+|---|---|---|---|
+| `time_axis` 75ff9be (before PR 5) | 144, 136 | 116, 106 | — |
+| PR 5, `frame` scope (default) | 158, 154 | 127, 125 | — |
+| PR 5, `series` scope | 223, 217 | 120, 120 | 73 s, 66 s |
+
+Frame scope is ~11 % slower than before, the two arms' ranges not overlapping;
+outlines, `_res.txt` and the six overview TIFFs are byte-identical between them.
+(Series scope's extra cost is its first pass, which reads every frame twice:
+expected, not this issue.)
+
+### Suspects (not profiled)
+
+The arms split it: series scope skips choosing a threshold per frame but still
+applies one, so roughly
+
+- **applying the threshold, ~2 s/frame** (series − old). `applyRanges()`'s
+  16-bit branch goes through `replaceWith8Bit()`, a dynamically dispatched
+  closure called once per pixel -- 163 M per frame -- which now does
+  `los[z - 1] != null && v >= los[z - 1] && v <= hi`: two boxed list lookups per
+  pixel. Before PR 5, `exec()` binarised the stack in Java and the closure only
+  asked `v != 0`.
+- **choosing it, ~1.5 s/frame** (frame − series; noisier). `histogramOf()` sums
+  39 × 65,536 bins in dynamic Groovy, and `chooseThreshold()` / `countDivisor()`
+  make several more passes over up to 65,536 bins, with three `List.contains`
+  per bin in `countDivisor()`. `exec()` did all of this in Java.
+
+### Proposed fix
+
+Give `applyRanges()`'s 16-bit branch its own plain loop -- the `short[]` plane
+read directly, the slice's threshold taken once outside the pixel loop, the
+`byte[]` written, the source plane still released with `setPixels(null, z)`
+(the reason `replaceWith8Bit` exists; see its comment) -- which should make it
+faster than before PR 5, since the old path paid for a per-pixel closure too.
+For the histogram, `@CompileStatic` on `histogramOf`, `countDivisor` and
+`chooseThreshold`, or the three `contains` checks lifted out of the bin loop.
+
+### Verifying the fix
+
+Output byte-identical to the current code on the fixture and on the FUCCI
+frames; `Test_BuildMask`'s in-place and stack-identity checks still pass (in
+place means the instance survives); and the interleaved 4-frame timing above
+re-run, all three arms.
