@@ -1,7 +1,8 @@
 # Implementation plan: time-series support
 
 **Status: `luxendo` done (v0.6.0, amended after it — §4); `vocab` done
-(v0.7.0, both PRs, §4); nothing after it implemented.** The design was revised on 2026-10-02 (**a series is a
+(v0.7.0, both PRs, §4); `time_axis` done (v0.8.0, all five PRs, §4); nothing
+after it implemented.** The design was revised on 2026-10-02 (**a series is a
 whole position, time included**; §3.1, §6.17) and the sections below say so
 where it changed.
 Delete this file when all milestones land — but migrate the surviving decisions
