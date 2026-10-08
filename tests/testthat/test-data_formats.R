@@ -330,6 +330,7 @@ test_that("the threshold a run used is recorded, and is provenance not a paramet
   rc_src <- paste(readLines(rc, warn = FALSE), collapse = "\n")
   expect_match(rc_src, '"nucleus_threshold_used"', fixed = TRUE)
   expect_match(rc_src, '"nucleus_mask_pct"', fixed = TRUE)
+  expect_match(rc_src, '"nucleus_histogram_divisor"', fixed = TRUE)
 
   # The batch columns, so finding the rows where it went wrong does not mean
   # opening a thousand _config.txt files.
@@ -340,6 +341,7 @@ test_that("the threshold a run used is recorded, and is provenance not a paramet
   # A ROW in each of the two field tables, not a passing mention.
   expect_length(grep("^\\|\\s*`nucleus_threshold_used`\\s*\\|", doc), 1L)
   expect_length(grep("^\\|\\s*`nucleus_mask_pct`\\s*\\|", doc), 1L)
+  expect_length(grep("^\\|\\s*`nucleus_histogram_divisor`\\s*\\|", doc), 1L)
   expect_length(grep("^\\|\\s*`threshold`\\s*\\|", doc), 1L)
   expect_length(grep("^\\|\\s*`mask_pct`\\s*\\|", doc), 1L)
   # The rule that makes it safe to feed a config forward.

@@ -14,6 +14,7 @@ nucleus_blur_sigma	8.0
 nucleus_threshold	Huang2
 nucleus_threshold_range	
 nucleus_stack_histogram	true
+nucleus_threshold_scope	frame
 nucleus_particle_size	80-Infinity
 nucleus_circularity	0.00-1.00
 nucleus_watershed	false

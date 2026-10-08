@@ -239,6 +239,12 @@ Both ends apply (`lo ≤ v ≤ hi`), so an upper bound excludes saturated pixels
 raw pixel value — meaningless on a different bit depth or exposure. Watch
 `nucleus_mask_pct`: a value above everything present reads `0.00`.
 
+For a time-lapse, **`nucleus_threshold_scope`** chooses an automatic threshold
+per frame (`frame`, the default) or one for the whole series (`series`, chosen
+from every frame's histogram at once, which means reading each frame twice).
+Per frame follows a signal that fades over the time course; per series cuts
+every frame at the same intensity.
+
 **`nucleus_stack_histogram`** (on by default) computes one threshold from the
 pooled histogram of every slice. Turn it off for a stack with strong
 illumination falloff through z, where one threshold under-segments the deep

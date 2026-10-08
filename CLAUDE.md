@@ -219,6 +219,13 @@ loop, including how to diff.
   whole. `SeriesSource.groovy` hands the batch one frame at a time: each frame is
   analysed, staged under `.staging/<series_id>/` and released before the next is
   read, and the series' files are joined from the staged frames at the end.
+  **A rerun resumes from them**: finished frames are not read again, and
+  `settings.txt` beside them makes a rerun under other settings stop rather than
+  join frames analysed two ways. The skipped frames' ROIs come back from the
+  staged zip, which is why it is staged even with `save_roi_zips` off. What a
+  rerun does with output already there — resume, also skip finished series
+  without opening them, or redo — is the batch's `existingOutput`
+  (`note/data_formats.md`).
 
   **`Make_LuxendoSheets.groovy` writes `series.tsv` + `sources.tsv`.** Two
   tables because Luxendo breaks the assumption every other format here
@@ -547,9 +554,12 @@ fourth fork.** A new assay should be a new configuration of the shared library.
   unfilled hole and shatters one object into a ring of fragments.
 - **One threshold vocabulary, two histograms.** Both features take their
   algorithms from Fiji's Auto Threshold plugin (`fiji.threshold.Auto_Threshold`).
-  The nucleus calls its `exec()`, which is the same code the macro string ran
-  **and returns the threshold it chose**; the nucleolus calls the per-algorithm
-  statics on a histogram it builds itself. Before this the nucleolus used
+  The nucleus chooses its threshold in `RoiDetect.chooseThreshold()`: the
+  plugin's per-method statics, in `exec()`'s own sequence, on a `long`
+  histogram whose counts are divided only as far as the method's `int`
+  arithmetic needs (`nucleus_histogram_divisor`). `exec()` itself overflowed on
+  large stacks and is kept as `Test_BuildMask`'s oracle. The nucleolus calls the
+  same statics on a histogram it builds itself. Before this the nucleolus used
   ImageJ's own `ij.process.AutoThresholder` enum, which has no `Huang2` — the
   nucleus default — so the same word meant something in one field and threw in
   the other. The two implementations were measured as identical on every method

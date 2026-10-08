@@ -767,6 +767,148 @@ pipe.runSource(watched(-1), rsNoZip, rsParams + [save_roi_zips: false], null, tr
 check("save_roi_zips off writes no zip",        rsNoZip.list().findAll { it.endsWith(".zip") }.toList(), [])
 check("...but the outlines",                    new File(rsNoZip, "rs_nucleus_outline.txt").isFile(), true)
 
+println ""
+println "=== nucleus_threshold_scope: one threshold for every frame of a series ==="
+// Four frames whose nuclei FADE (220, 160, 110, 70 grey on a background of
+// ~20), as a bleaching time course does: each frame's own Otsu threshold sits
+// at a different level, so `frame` and `series` must give different answers.
+def FADE = [220, 160, 110, 70]
+def makeFadeImp = { String title ->
+    def st = new ImageStack(200, 200)
+    (1..4).each { int t ->
+        (1..3).each { int z ->
+            def ip = new ByteProcessor(200, 200)
+            for (int y = 0; y < 200; y++) for (int x = 0; x < 200; x++) ip.set(x, y, 18 + ((x * y + z) % 5))
+            ip.setColor(FADE[t - 1])
+            ip.fill(new OvalRoi(30, 30, 50, 50)); ip.fill(new OvalRoi(120, 110, 50, 50))
+            st.addSlice("z:" + z + "/3 t:" + t + "/4", ip)
+        }
+    }
+    def imp = new ImagePlus(title, st)
+    imp.setDimensions(1, 3, 4); imp.setOpenAsHyperStack(true)
+    return imp
+}
+def fadeImp = makeFadeImp("fade")
+// Mean, not Otsu: background and nuclei are separated by an empty gap here, and
+// Otsu puts every frame's threshold at the gap's bottom whatever the nuclei's
+// brightness -- the same 23-255 for all four frames, which would not tell the
+// scopes apart. Mean follows each frame's brightness.
+def fParams = baseParams + [series_id: "fade", channels_measured: "1", nucleus_threshold: "Mean"]
+// A source that counts its reads, and can refuse one (failRead) or die after a
+// frame (stopAfter), as the resume section's does.
+def watchedOf = { ImagePlus img, int stopAfter, Integer failRead = null ->
+    def inner = SS.ofImage(img, "", false)
+    def read = [], failedOnce = [false]
+    def w = new Expando()
+    ["title", "whole", "nFrames", "nSlices", "nChannels", "width", "height", "calibration",
+     "frameList", "frameInterval", "frameUnit"].each { w[it] = inner[it] }
+    w.choose  = { List wanted -> inner.choose(wanted) }
+    w.frame   = { int t ->
+        read << t
+        if (failRead != null && t == failRead && !failedOnce[0]) {
+            failedOnce[0] = true; throw new java.io.IOException("simulated: frame " + t + " unreadable") }
+        inner.frame(t) }
+    w.release = { ImagePlus f ->
+        inner.release(f)
+        if (stopAfter > 0 && read && read[-1] == stopAfter && read.size() > 4)
+            throw new IllegalStateException("simulated: the run dies after frame " + stopAfter)
+    }
+    w.read = read
+    return w
+}
+def statsOf = { File out -> readTsv(new File(out, "fade_threshold_stats.tsv")).rows }
+
+// frame scope: each frame its own threshold.
+def outFr = new File(tmp, "fade_frame"); outFr.mkdirs()
+pipe.runSource(watchedOf(fadeImp, -1), outFr, fParams + [nucleus_threshold_scope: "frame"], null, false)
+def perFrame = statsOf(outFr).collect { it.nucleus_threshold_used }
+println "    frame scope: " + perFrame
+check("frame scope: the fading frames get different thresholds", perFrame.unique(false).size() > 1, true)
+
+// series scope: one threshold, read twice.
+def outSe = new File(tmp, "fade_series"); outSe.mkdirs()
+def wSe = watchedOf(fadeImp, -1)
+pipe.runSource(wSe, outSe, fParams + [nucleus_threshold_scope: "series"], null, false)
+def perSeries = statsOf(outSe).collect { it.nucleus_threshold_used }
+def cfgSe = readCfg(new File(outSe, "fade_config.txt"))
+println "    series scope: " + perSeries + ", divisor " + statsOf(outSe).collect { it.nucleus_histogram_divisor }
+check("series scope reads every frame twice (choose, then analyse)", wSe.read, [1, 2, 3, 4, 1, 2, 3, 4])
+check("...and every frame has the same threshold",  perSeries.unique(false).size(), 1)
+check("...which differs from some frame's own",     perFrame.any { it != perSeries[0] }, true)
+check("config: the threshold, not `per-frame`",     cfgSe.nucleus_threshold_used, perSeries[0])
+check("config: and its divisor",                    cfgSe.nucleus_histogram_divisor, "1")
+check("config: the scope is recorded",              cfgSe.nucleus_threshold_scope, "series")
+// The ORACLE: the series threshold is the one exec() chooses for ONE stack
+// holding every frame's DNA slices -- what "one threshold for every frame" means.
+def allSt = new ImageStack(200, 200)
+(1..4).each { int t -> (1..3).each { int z -> allSt.addSlice(fadeImp.getStack().getProcessor(fadeImp.getStackIndex(1, z, t)).duplicate()) } }
+def allImp = new ImagePlus("all", allSt)
+def oracleT = fiji.threshold.Auto_Threshold.newInstance().exec(allImp, "Mean", true, true, true, false, false, true)[0] as int
+println "    exec() on all 12 slices as one stack: " + oracleT + " -> " + (oracleT + 1) + "-255"
+check("...equals exec() on every frame's slices as one stack", perSeries[0], (oracleT + 1) + "-255")
+
+// A single frame is its own series: series and frame give the same files.
+def outOneF = new File(tmp, "one_frame"); outOneF.mkdirs()
+def outOneS = new File(tmp, "one_series"); outOneS.mkdirs()
+pipe.run(makeImp("one"), outOneF, baseParams + [series_id: "one", nucleus_threshold_scope: "frame"])
+pipe.run(makeImp("one"), outOneS, baseParams + [series_id: "one", nucleus_threshold_scope: "series"])
+def sameOne = outOneF.list().sort().every { String n ->
+    n.endsWith("_config.txt") ||
+    java.util.Arrays.equals(new File(outOneF, n).bytes, new File(outOneS, n).bytes) }
+def cfgDiff = { File a, File b ->
+    def la = a.readLines().findAll { !it.startsWith("timestamp\t") }, lb = b.readLines().findAll { !it.startsWith("timestamp\t") }
+    (la - lb) + (lb - la) }
+check("one frame: series = frame, every file but the config", sameOne, true)
+check("...and the configs differ only in the scope",
+      cfgDiff(new File(outOneF, "one_config.txt"), new File(outOneS, "one_config.txt")).sort(),
+      ["nucleus_threshold_scope\tframe", "nucleus_threshold_scope\tseries"])
+
+// Per-slice thresholds cannot be pooled over a series: refused before a read.
+def wBad = watchedOf(fadeImp, -1)
+String errScope = null
+try { pipe.runSource(wBad, new File(tmp, "fade_bad"), fParams + [nucleus_threshold_scope: "series",
+                                                                  nucleus_stack_histogram: false], null, false) }
+catch (IllegalArgumentException e) { errScope = e.getMessage() }
+check("series + per-slice thresholds is refused",   errScope?.contains("choose one"), true)
+check("...before a frame is read",                  wBad.read, [])
+
+// A frame unreadable in the first pass is left out of the threshold and
+// reported failed -- not analysed at a threshold it had no part in.
+def outPf = new File(tmp, "fade_passfail"); outPf.mkdirs()
+def resPf = pipe.runSource(watchedOf(fadeImp, -1, 3), outPf, fParams + [nucleus_threshold_scope: "series"], null, false)
+check("first-pass failure: that frame failed, with why",
+      resPf.frames.collect { [it.t, it.status] }, [[1, "ok"], [2, "ok"], [3, "failed"], [4, "ok"]])
+check("...the message",                             resPf.frames[2].message, "could not be read when the series threshold was chosen")
+check("...and the results hold the others",         readCfg(new File(outPf, "fade_config.txt")).frames_analysed, "1 2 4")
+
+// Resume: the threshold comes from the staging, so nothing is read twice --
+// and the files equal the uninterrupted series run's.
+def outSr = new File(tmp, "fade_resume"); outSr.mkdirs()
+String errSr = null
+try { pipe.runSource(watchedOf(fadeImp, 2), outSr, fParams + [nucleus_threshold_scope: "series"], null, true) }
+catch (Throwable e) { errSr = e.getMessage() }
+def setSr = new File(outSr, ".staging/fade/settings.txt").readLines()
+check("(the interrupted series run died after frame 2)", errSr?.startsWith("simulated"), true)
+check("...its settings record the threshold it chose",
+      setSr.findAll { it.startsWith("series_threshold") || it.startsWith("series_frames") ||
+                      it.startsWith("series_histogram") }.sort(),
+      ["series_frames\t1 2 3 4", "series_histogram_divisor\t1", "series_threshold\t" + oracleT,
+       "series_threshold_frames\t1 2 3 4"])
+def wSr = watchedOf(fadeImp, -1)
+pipe.runSource(wSr, outSr, fParams + [nucleus_threshold_scope: "series"], null, true)
+check("the resume read only frames 3 and 4, once",  wSr.read, [3, 4])
+def filesOf = { File o -> o.listFiles().findAll { it.isFile() && !it.getName().endsWith(".zip") }.sort { it.getName() }
+                            .collectEntries { [(it.getName()): it.getName().endsWith("_config.txt")
+                                ? it.readLines().findAll { !it.startsWith("timestamp\t") } : it.getText("ISO-8859-1")] } }
+check("...and its files equal the uninterrupted series run's (zips aside)", filesOf(outSr), filesOf(outSe))
+// Other frames are another threshold: refused, like any other setting.
+def outSo = new File(tmp, "fade_resume_other"); outSo.mkdirs()
+try { pipe.runSource(watchedOf(fadeImp, 2), outSo, fParams + [nucleus_threshold_scope: "series"], null, true) } catch (Throwable e) { }
+String errSo = null
+try { pipe.runSource(watchedOf(fadeImp, -1), outSo, fParams + [nucleus_threshold_scope: "series"], [1, 2, 3], true) }
+catch (IllegalStateException e) { errSo = e.getMessage() }
+check("a resume over other frames is refused (series_frames)", errSo?.contains("series_frames '1 2 3 4' then, '1 2 3' now"), true)
+
 def unpaired = []
 ["scripts/groovy/NucleusPipeline.groovy",
  "scripts/groovy/Overview.groovy",

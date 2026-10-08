@@ -657,7 +657,7 @@ every `(roi, t)` both hold, stops if not, and joins on `(roi, t)` only.
 | Column | Notes |
 |---|---|
 | `t` | frame, from 1 |
-| then `nucleus_threshold_used`, `nucleus_mask_pct`, `nucleus_circ_rejected`, `nucleus_count`, `nucleolus_count` | for that frame, each meaning exactly what the `_config.txt` field of the same name means (below) |
+| then `nucleus_threshold_used`, `nucleus_histogram_divisor`, `nucleus_mask_pct`, `nucleus_circ_rejected`, `nucleus_count`, `nucleolus_count` | for that frame, each meaning exactly what the `_config.txt` field of the same name means (below). `nucleus_histogram_divisor` **since v0.8.0** |
 
 **Written for every image** when `save_config` is on — one row for a single
 frame — so every results folder holds the same files; `_config.txt` keeps the
@@ -702,7 +702,8 @@ Fields that other code depends on:
 | `overview_channels`, `overview_overlay_suffix` | which overview files exist, so a results folder can be read later without guessing: PNGs for one frame, TIFFs for several (`image_frames` says which). Blank when none were written |
 | `overview_display_range` | the display range each overview channel was rendered at, `ch<c>:lo-hi`, space-separated — one per channel for a whole multi-frame series. `auto` stretches whatever is there, so a narrow range beside a wide one is how a channel of pure noise shows itself. Blank when none were written. **Since v0.8.0** |
 | `nucleus_threshold_used` | the pixel range the threshold **selected**, as `lo-hi`; `per-slice <lo>..<hi>` (note the `..`) when `nucleus_stack_histogram` is off, since there were as many thresholds as slices and none of them is the answer. Not the algorithm's bare number: for bright objects that number is the *bottom* of the range and the top is the type's maximum, so the pair is what can be copied into a manual threshold without working out which end it was. The literal **`none`** when the frame had nothing to separate (see below) — a word, not a range, so it cannot be pasted anywhere by mistake |
-| `nucleus_threshold_used`, `nucleus_mask_pct` with several frames | the literal **`per-frame`** — there is one of each per frame, in `_threshold_stats.tsv`. A word, not a number, like `none`; `nucleus_count`, `nucleolus_count` and `nucleus_circ_rejected` are then totals |
+| `nucleus_threshold_used`, `nucleus_histogram_divisor`, `nucleus_mask_pct` with several frames | the literal **`per-frame`** — there is one of each per frame, in `_threshold_stats.tsv`. A word, not a number, like `none`; `nucleus_count`, `nucleolus_count` and `nucleus_circ_rejected` are then totals. **Except** with `nucleus_threshold_scope = series`, where the threshold and its divisor are one value for every frame and are written as that value |
+| `nucleus_histogram_divisor` | what the threshold histogram's counts were divided by before the method ran, so that its `int` arithmetic could not overflow: **`1` means exact counts**. A larger power of two means the threshold is not bit-for-bit what exact arithmetic would give (usually the same, sometimes a level or two off), so it is said. Blank for `Manual` and when there was nothing to separate. The largest of the slices' with `nucleus_stack_histogram` off. **Since v0.8.0** (below) |
 | `nucleus_mask_pct` | percent of pixels the threshold selected, **before** fill holes and watershed, because the question it answers is what the threshold chose. The cheap signal that one went wrong in either direction: `0.00` selected nothing (a blank field), a number in the tens selected the frame rather than the objects in it. Neither shows up in an ROI count — the size filter turns both into "no nuclei" |
 | `nucleus_circ_rejected` | how many ROIs `nucleus_circularity` deleted. **Blank when the filter was off** — a `0` would claim a filter ran and found nothing to remove. Unlike the R side's `--min_circularity`, which marks a row and leaves it in the table, this filter drops ROIs before anything is written, so this number is the only surviving evidence that they existed |
 
@@ -932,6 +933,37 @@ list, `Huang2` (the default) through `Yen` — **or the literal `Manual`**.
 | `nucleus_threshold` | the method, or `Manual` |
 | `nucleus_threshold_range` | `lo-hi` in **raw pixel values**, read *only* when the method is `Manual`, exactly as `nucleolus_rel_fraction` is read only for `Relative`. `Infinity` as the top end means the type's maximum |
 | `nucleus_stack_histogram` | `true` (default): one threshold from the pooled histogram of every slice. `false`: one per slice |
+| `nucleus_threshold_scope` | for a multi-frame series: `frame` (default) chooses an automatic threshold per frame; `series` chooses **one for every frame**, from all of their histograms at once. A single frame is the same either way, and `Manual` has no histogram to pool. **Since v0.8.0** |
+
+**An automatic threshold is chosen from a histogram the pipeline builds**
+(since v0.8.0), by the Auto Threshold plugin's per-method functions, in the
+plugin's own sequence — the end bins zeroed (ignore black and white), the
+histogram trimmed to its occupied range, the method run, the trim added back.
+Before, the plugin's `exec()` did this, and on a large stack it was silently
+wrong: it sums the histogram in a 32-bit integer and Huang, IsoData, Li and
+MinError(I) do their arithmetic in one, so they overflowed (Huang chose 1 where
+7 was right). The counts are now held in 64 bits and divided by a power of two
+only as far as the chosen method needs, recorded as
+`nucleus_histogram_divisor`. Wherever nothing overflows the result is exactly
+`exec()`'s, which `Test_BuildMask` keeps as its reference. MinError(I) squares
+the grey level per bin, so on 16-bit data it is divided even on small images —
+and it was wrong there before. `IJDefault` and `MinErrorI`, the plugin's own
+spellings of `Default` and `MinError(I)`, now mean those methods; `exec()` did
+not recognise them and returned a meaningless threshold.
+
+**`series` reads every frame twice.** A first pass reads each frame, blurs its
+DNA channel exactly as detection will, adds its histogram to the series' and
+releases it; then every frame is analysed at the one threshold. Nothing but the
+histogram is held, so it costs reading time, not memory. A frame that cannot be
+read in the first pass is not part of the threshold, and is reported `failed`
+rather than analysed at a threshold its pixels did not help choose. A resumed
+series takes the threshold its earlier run chose and recorded in the staging,
+and which frames it was chosen over is part of the settings a resume must
+match. ⚠️ Per series is not simply better: bleaching or a fading reporter dims
+the late frames of a live time course, and one fixed threshold then
+under-segments them, where a per-frame threshold follows the drift. Per series
+is right when intensity is comparable across frames and the point is to cut
+every frame at the same level.
 
 Both ends of the manual range are applied: a pixel is object when
 `lo ≤ v ≤ hi`, so an upper bound excludes saturated pixels. An auto method
@@ -992,6 +1024,17 @@ guard against silent drift when Bio-Formats is next upgraded.
 `parameter`/`value` shape as `_config.txt`, holding only the re-feedable subset
 (no `script_name`, no results). It can be passed straight back as the config of
 another run.
+
+**`runTag` names both files apart** — `batch_summary_<tag>.tsv`,
+`batch_params_<tag>.txt` — for several runs sharing one output directory; blank
+(the default) names them as above. The tasks of a SLURM array, say, can then
+all write into one directory, so a series' files and its `.staging/` are where the next run looks for them
+whichever task it lands in, which is what resuming and `skip_finished` need. A
+series is in one task, so its own files cannot collide; these two would. The
+tag is letters, digits, `_` and `-`, and anything else is refused before a row
+runs. `Run_Overview_Batch` takes it too (it writes no `batch_params`). The
+tagged summaries have the same columns, so one `batch_summary.tsv` for the
+whole run is their concatenation.
 
 ⚠️ The `Label` column of `_res.txt` differs between the two runners, and
 harmlessly. `IJ.openImage()` and Bio-Formats build the slice label differently,

@@ -763,7 +763,7 @@ are in, with `VERSION` 0.8.0 as its last commit, and the merge commit is tagged.
 | 2 | `time_axis-features` | R grouping: the time partition, global numbering, `<feature_type>_<NNNN>` | PR 1 |
 | 3 | `time_axis-stream` | the one resolver, frames streamed, per-frame staging joined at the end, `batch_summary.tsv` per frame, the overview TIFF | PR 1; one real Luxendo position |
 | 4 | `time_axis-resume` | skip finished frames, refuse a resume under other settings, clean up, the stop-at-frame-k test | PR 3 |
-| 5 | `time_axis-threshold_scope` | `nucleus_threshold_scope`, the two-pass histogram, choosing its default on real data | PR 3; real data |
+| 5 | `time_axis-threshold_scope` | `nucleus_threshold_scope`, the two-pass histogram, choosing its default on real data; fixes known bug 1 | PR 3; real data |
 
 #### PR 1 — `time_axis-contract`  ✅ done
 
@@ -974,7 +974,7 @@ Decided 2026-10-02: record the frames that succeeded, and resume from them.
 
 #### PR 5 — `time_axis-threshold_scope`
 
-- [ ] 🔒 **`nucleus_threshold_scope = frame | series`**, a run parameter (so the
+- [x] 🔒 **`nucleus_threshold_scope = frame | series`**, a run parameter (so the
       four-place rule applies). `series` is a two-pass read — stream every frame
       into one histogram (tiny: 65,536 bins), choose, stream again — so it
       costs I/O, not memory. It needs the per-algorithm statics on a hand-built
@@ -986,6 +986,27 @@ Decided 2026-10-02: record the frames that succeeded, and resume from them.
       the drift. Compare both on real data before choosing the default. The
       existing workaround stands meanwhile: tune interactively, then batch with
       `Manual` and the range.
+      *5:* the hand-built histogram turned out to be **exactly the fix for
+      known bug 1** (`exec()`'s `int` histogram and the `int` arithmetic of
+      Huang, IsoData, Li and MinError(I)), so both scopes use it
+      (`RoiDetect.chooseThreshold`): `exec()`'s own sequence read from the
+      1.18.0 bytecode, a `long` histogram, counts divided by a power of two
+      only as far as the chosen method needs, recorded as
+      `nucleus_histogram_divisor`. `exec()` stays the oracle in
+      `Test_BuildMask` (17 methods x 8/16-bit x pooled/per-slice, identical
+      wherever nothing was divided). The first pass blurs exactly as
+      detection does; a frame unreadable in it is reported failed, not
+      analysed. A resume takes the threshold from the staging, and which
+      frames it was chosen over is a setting. On real data: the oocyte
+      survey's histograms (Huang 7 not 1, IsoData 102 not 95, Li 13 not 0 on
+      s0005), and the FUCCI 4-frame TIFF under both scopes (below).
+- [x] **The default is `frame`** — decided 2026-10-08 on the FUCCI 4-frame
+      TIFF (16-bit, Triangle). Per frame: 111, 113, 114, 115 → 82, 113, 108,
+      32 nuclei. Per series: **117** for every frame, above all four of
+      theirs (pooling changes the histogram's shape, which is what Triangle
+      reads) → 59, 109, 109, 30. One threshold cut the first frame by a
+      quarter and nothing came out better, so `series` is opt-in. It also
+      leaves every existing result unchanged.
 
 ### `tracking` — linking across time
 
@@ -1728,6 +1749,18 @@ size check (§4 `luxendo` Part 3). A minute is cheap beside a run that reads
 **Rejected: it is the setup's ordinal in text order of the stack** — 0, 1, 10,
 11, 12, 13, 2, … — and equals the stack for 6 of 42 setups.
 
+### 6.24 All of a series' overview channels in one TIFF
+
+**Rejected 2026-10-07: one file per channel, as 3b writes them.** A TIFF can
+hold channels, and one hyperstack per series would be fewer files. But
+`magick` reads a TIFF's pages flat, with no channel or frame axis, so with one
+file per channel page *k* is simply frame *k* of `frames_analysed`, and
+`montage_qc_cli.r` maps a page to a `t` with nothing else to know. Several
+channels in one file would interleave them, and the R side would need the
+hyperstack order to undo it. And the overlays are RGB, which cannot be
+channels of an ImageJ hyperstack, so they would stay separate files anyway.
+Downstream reads one channel at a time; the file layout follows that.
+
 ---
 
 ## 7. `find_overlap_roi_features()` — review, and what replaces it
@@ -1838,8 +1871,8 @@ with its sidecar, stops the scan; an *unlisted* file is caught only by
    `tracking`), and **ask rather than pick**. (`tracking`)
 2. ~~Resume granularity~~ — **settled 2026-10-02: per frame**, and its own PR
    (§4 `time_axis` PR 4).
-3. ❓ **Default `nucleus_threshold_scope`** — `frame` or `series`; compare on
-   real data first (§4 `time_axis`). (`time_axis`)
+3. ~~Default `nucleus_threshold_scope`~~ — **settled 2026-10-08: `frame`**,
+   on the FUCCI comparison (§4 `time_axis` PR 5).
 4. ❓ **Where `QoL` sits** — not before `time_axis`; decide once its absence has
    been felt. (§4 `QoL`)
 

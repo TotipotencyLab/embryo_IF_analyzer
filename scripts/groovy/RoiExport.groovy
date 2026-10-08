@@ -330,7 +330,7 @@ class RoiExport {
      * @param rows maps with the keys of THRESHOLD_STATS_COLUMNS
      */
     static final List<String> THRESHOLD_STATS_COLUMNS = [
-        "t", "nucleus_threshold_used", "nucleus_mask_pct", "nucleus_circ_rejected",
+        "t", "nucleus_threshold_used", "nucleus_histogram_divisor", "nucleus_mask_pct", "nucleus_circ_rejected",
         "nucleus_count", "nucleolus_count"]
 
     static void saveThresholdStats(List<Map> rows, String path) {

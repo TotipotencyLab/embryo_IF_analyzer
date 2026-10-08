@@ -1,159 +1,33 @@
-# Known bugs
+# Known issues
 
-Open bugs found but not fixed, with the evidence and a proposed fix, so that
+Open problems found but not fixed, with the evidence and a proposed fix, so that
 whoever picks one up does not have to rediscover it. Remove an entry when its
-fix is merged.
+fix is merged. Mostly bugs; an entry that is not -- a cost rather than a wrong
+answer -- says so in its title. (This file was `known_bug.md` until `time_axis`
+PR 5.)
 
-All entries below were found on the oocyte dataset (`rnf4_project/oocyte_count`,
-DDX4 confocal tile merges): 1 and 2 on 2026-10-05 during a threshold survey, 3
+**Bug 1** (auto-threshold methods silently wrong on large stacks: `exec()`'s
+`int` histogram and the `int` arithmetic of Huang, IsoData, Li and MinError(I))
+**was fixed in `time_axis` PR 5** and its entry removed: the threshold is now
+chosen by `RoiDetect.chooseThreshold()` from a `long` histogram, with the counts
+divided only as far as the method needs. The numbering of the others is kept.
+
+Entries 2 and 3 were found on the oocyte dataset (`rnf4_project/oocyte_count`,
+DDX4 confocal tile merges): 2 on 2026-10-05 during a threshold survey, 3
 on 2026-10-05 during nucleus-detection tuning. All are present, with identical
 code at every site, in **v0.5.1**, **`main` (`bbe02f1`, v0.7.0)** and
 **`time_axis-stream` (`0306396`)**. Line numbers below were taken from
 `time_axis-stream` and match the other two.
+
+⚠️ PR 5 moved lines in `RoiDetect.groovy` and added one dialog line to
+`Run_NucleusSelector.groovy` after the nucleus threshold, so line numbers cited
+below for those two files are off by the insertions; search for the quoted code.
 
 **Re-checked 2026-10-07 on `time_axis-overview` (`8ad4b05`, PR 3b): all three
 still present.** No PR since has touched `RoiDetect`, `NucleolusDetect` or the
 dialog's `choices`; every cited line is where it was, except
 `BatchRunner`'s `catch (Throwable)`, now line 675. Bug 1 was re-measured on the
 bundled plugin (below); bug 3 was not re-run, its code being unchanged.
-
----
-
-## 1. Auto-threshold methods give a wrong threshold on large stacks — silently
-
-**Severity: high when it applies.** The mask is wrong, the run completes, and
-nothing warns. It only applies to an auto method (anything but `Manual`) on a
-large stack; the oocyte dataset uses `Manual` and is not affected.
-
-### Context
-
-`RoiDetect.buildMask()` thresholds the nucleus channel with Fiji's
-Auto_Threshold plugin (`fiji.threshold.Auto_Threshold`, **1.18.0** as bundled
-here), through `exec()`:
-
-- `nucleus_stack_histogram = true` (the default): `RoiDetect.groovy:241`,
-  `exec(..., doIstackHistogram=true)` — one histogram pooled over every slice.
-- `false`: `RoiDetect.groovy:212`, `exec()` once per slice.
-
-### Mechanism (two overflows, both in the plugin)
-
-1. **The methods accumulate in `int`.** In the plugin source (1.18.0,
-   `src/main/java/fiji/threshold/Auto_Threshold.java`):
-   - `Huang`: `int sum_pix; ... sum_pix += ih * data[ih];`
-   - `IsoData`: `int ... l, toth, h; ... l = l + (data[i] * i); h += (data[i]*i);`
-   - `Li`: `int num_pixels, sum_back, sum_obj, num_back, num_obj;`
-
-   These overflow once Σ value × count exceeds 2³¹−1 ≈ 2.1 × 10⁹, e.g. 10⁹
-   voxels at a mean grey value of about 2. A blurred tile merge is
-   10⁸–10⁹ voxels per stack. (Upstream already widened `Mean()` to `long`;
-   these three were not.)
-
-   **Re-measured 2026-10-07**, the statics called directly on a synthetic
-   256-bin histogram of 10⁹ voxels (a dark peak at 3, a dim tail around 90;
-   Σ value × count = 3.2 × 10¹⁰), against the same counts divided by 256 and
-   by 1024:
-
-   | method | real counts | ÷256 | ÷1024 |
-   |---|---|---|---|
-   | Huang | **1** | 27 | 27 |
-   | IsoData | **−1** | 50 | 50 |
-   | Li | **0** | 27 | 27 |
-   | MinErrorI | **32** | 8 | 8 |
-   | Mean, Otsu, Triangle, Yen, IJDefault | unchanged | | |
-
-   So **MinError(I)'s own static overflows too** — which settles the open
-   question below for overflow 1, though not whether s0017 also hit
-   overflow 2 — and IsoData can return −1, which `lo = t + 1` would turn into
-   "everything from 0".
-2. **The stack histogram itself is `int[]`.** `exec()` sums each slice's
-   `getHistogram()` into an `int[] data` (confirmed in the 1.18.0 bytecode:
-   `newarray int`, `iaload`/`iastore`, no `long` anywhere in `exec`), so a single bin overflows once more
-   than 2³¹ voxels fall in it. Reached by the largest stacks here: s0017 has
-   2.39 × 10⁹ voxels, most of them near 0 after the blur.
-
-### Evidence
-
-A survey script mirrored `buildMask` up to the threshold (DDX4 channel, per
-plane `GaussianBlur.blurGaussian(ByteProcessor, 8 px)`, one pooled histogram,
-end bins zeroed as `IGNORE_BLACK`/`IGNORE_WHITE`) and ran every method on
-three versions of the same histogram:
-
-- **safe:** scaled to a 2²² total, so no sum can overflow;
-- **half:** 2²¹, to see whether rounding alone moves the threshold;
-- **full:** the real counts, i.e. what `exec()` sees.
-
-**Oracle:** on one series small enough to hold whole (WT_ovary2_s0051, 3.4 ×
-10⁸ voxels), `exec()` on the actual blurred stack agreed with **full** for 16
-of 17 methods (Intermodes off by 1). So **full** is what a batch run would
-have used.
-
-Threshold `t` (the selected range is `t+1`–255), where full departs from safe
-and half agrees with safe:
-
-| series | voxels | method | safe | half | **full = batch** |
-|---|---|---|---|---|---|
-| Rnf4_KI_ovary1_s0005 | 1.01 × 10⁹ | Huang | 7 | 7 | **1** |
-| | | Li | 14 | 14 | **0** |
-| | | IsoData | 102 | 102 | **95** |
-| Rnf4_KI_ovary1_s0017 | 2.39 × 10⁹ | Huang | 6 | 6 | **1** |
-| | | Li | 6 | 6 | **0** |
-| | | IsoData | 8 | 8 | **35** |
-| | | MinError(I) | 2 | 2 | **5** |
-
-A threshold of 0 or 1 selects essentially the entire image. At 2³⁰, an
-earlier pass of the survey already showed Huang, IsoData and Li moving when
-the counts were halved, which is the overflow signature.
-
-The survey script and its outputs are in the oocyte project on the SSD, not
-in this repo:
-
-- `oocyte_count/embryo_IF_analyzer/sandbox/biapy_trial/Survey_Threshold.groovy`
-  (with `07_threshold_survey.sh`), in the v0.5.1 checkout's ignored `sandbox/`;
-- results in `oocyte_count/biapy_trial/threshold_survey/thresholds.tsv`.
-
-### Why the tests don't catch it
-
-`Test_BuildMask` and `Test_NucleolusDetect` synthesise small stacks, orders of
-magnitude below the counts where either overflow starts.
-
-### Proposed fix
-
-Stop handing the plugin a raw stack. Build the histogram here and call the
-per-method static on it:
-
-1. Sum the per-slice histograms into a **`long[]`** (removes overflow 2).
-2. Zero the end bins as now (`IGNORE_BLACK`/`IGNORE_WHITE`).
-3. If Σ value × count exceeds `Integer.MAX_VALUE`, scale the counts down
-   uniformly, **only as far as needed** (removes overflow 1). Do not scale
-   further than that. Tail-sensitive methods move by a few levels when the
-   histogram is shrunk hard: at 2²² vs real counts on s0051, Yen gave 116 vs
-   118, RenyiEntropy 94 vs 98, Minimum 156 vs 198.
-4. Run the method through the same static dispatch `NucleolusDetect.landiniBin()`
-   uses, then select `lo = t + 1` with the existing `applyRange()`. This also
-   drops the reliance on `exec()` thresholding the image in place.
-5. Do the same for the per-slice path (`stackHistogram = false`). A single
-   0.223 µm plane is ~1.1 × 10⁸ px, close enough to the limit for a bright
-   slice.
-
-Record when scaling happened. A scaled threshold is not bit-for-bit what an
-unscaled one would be, so a provenance field in `_config.txt` (alongside
-`nucleus_threshold_used`) is the honest place. It is provenance, not a
-parameter, so it must not enter `PARAM_TYPES`; see the four-way agreement
-table in `CLAUDE.md`.
-
-### Verifying the fix
-
-- **Proves the bug and the fix:** feed the histogram path a synthetic histogram
-  whose Σ value × count exceeds 2³¹ (no need for a large image). Before the
-  fix, Huang/Li/IsoData return the overflowed values; after, they equal the
-  same histogram scaled down by a power of two.
-- **Proves nothing else moved:** on stacks small enough not to overflow, the
-  new path must equal `exec()` for every method (keep `exec()` as the oracle,
-  as `Test_BuildMask` already does for the macro call).
-- Not yet known: whether the s0017 MinError(I) shift is overflow 1 alone or
-  both (its static does overflow on its own — re-measurement above), and
-  whether a later Auto_Threshold release fixes either. Check upstream before
-  writing a workaround.
 
 ---
 
@@ -286,3 +160,93 @@ particle 50 + watershed, against 6 with the same settings and no watershed), and
 shape-based trigger (solidity) could not tell merged oocytes from large single
 ones. So the fix matters for the option's other users and for not reporting a
 misleading reason, not for the oocyte count.
+
+---
+
+## 4. Moments overflows on the grey level itself, on a wide 16-bit histogram
+
+**Severity: low-to-medium when it applies.** Found 2026-10-08 reading the
+Auto_Threshold 1.18.0 bytecode while fixing what was bug 1 (`time_axis` PR 5).
+Not measured on real data.
+
+### Mechanism
+
+`Moments(int[])` forms `i * i` and `i * i * i` in `int` (`iload; iload; imul`,
+then `i2d`), where `i` is the bin index of the histogram the method is handed,
+the one `RoiDetect.chooseThreshold()` has already trimmed to the occupied range.
+`i³` passes 2³¹ − 1 once the trimmed histogram spans more than **1,290 grey
+levels**, and `i²` once it spans more than 46,340. An 8-bit histogram can never
+reach that; a blurred 16-bit stack easily can.
+
+It is an overflow in the grey level, not the counts, so dividing the counts,
+which is what fixed bug 1, does not reach it. `exec()` has the same overflow, so
+results before PR 5 were affected the same way.
+
+### Proposed fix
+
+Either compute Moments' sums in `double` in our own code, which means
+reimplementing one method and checking it against the static on narrow
+histograms, or bin a wide 16-bit histogram down before calling Moments, which
+changes the answer by up to a bin width. Or refuse Moments on a trimmed
+histogram wider than 1,290 levels, which is loud and cheap. Check upstream first:
+a later Auto_Threshold may have widened it, as it did `Mean()`.
+
+---
+
+## 5. Not a bug: the nucleus threshold costs ~3.5 s more per frame since PR 5
+
+**Severity: performance only; results are unaffected.** Found 2026-10-08 after
+`time_axis` PR 5 replaced `exec()` with `RoiDetect.chooseThreshold()`. Deferred
+on purpose: on the Luxendo set it is ~3.5 s × 96 frames × 15 series ≈ 84 minutes
+in one run, and splitting the batch over HPC tasks reading local storage rather
+than the samba mount saves far more than that.
+
+### Evidence
+
+`fucci_s0009_fucci_pos1` (2048 × 2048 × 39 × 3, 16-bit) read as `.lux.h5` over
+samba, frames 1, 10, 20, 30, the tuned config (Triangle), `redo_all`; three arms
+run twice each, interleaved:
+
+| | wall, s | the 4 frames' seconds, summed | first pass |
+|---|---|---|---|
+| `time_axis` 75ff9be (before PR 5) | 144, 136 | 116, 106 | — |
+| PR 5, `frame` scope (default) | 158, 154 | 127, 125 | — |
+| PR 5, `series` scope | 223, 217 | 120, 120 | 73 s, 66 s |
+
+Frame scope is ~11 % slower than before, the two arms' ranges not overlapping;
+outlines, `_res.txt` and the six overview TIFFs are byte-identical between them.
+(Series scope's extra cost is its first pass, which reads every frame twice:
+expected, not this issue.)
+
+### Suspects (not profiled)
+
+The arms split it: series scope skips choosing a threshold per frame but still
+applies one, so roughly
+
+- **applying the threshold, ~2 s/frame** (series − old). `applyRanges()`'s
+  16-bit branch goes through `replaceWith8Bit()`, a dynamically dispatched
+  closure called once per pixel -- 163 M per frame -- which now does
+  `los[z - 1] != null && v >= los[z - 1] && v <= hi`: two boxed list lookups per
+  pixel. Before PR 5, `exec()` binarised the stack in Java and the closure only
+  asked `v != 0`.
+- **choosing it, ~1.5 s/frame** (frame − series; noisier). `histogramOf()` sums
+  39 × 65,536 bins in dynamic Groovy, and `chooseThreshold()` / `countDivisor()`
+  make several more passes over up to 65,536 bins, with three `List.contains`
+  per bin in `countDivisor()`. `exec()` did all of this in Java.
+
+### Proposed fix
+
+Give `applyRanges()`'s 16-bit branch its own plain loop -- the `short[]` plane
+read directly, the slice's threshold taken once outside the pixel loop, the
+`byte[]` written, the source plane still released with `setPixels(null, z)`
+(the reason `replaceWith8Bit` exists; see its comment) -- which should make it
+faster than before PR 5, since the old path paid for a per-pixel closure too.
+For the histogram, `@CompileStatic` on `histogramOf`, `countDivisor` and
+`chooseThreshold`, or the three `contains` checks lifted out of the bin loop.
+
+### Verifying the fix
+
+Output byte-identical to the current code on the fixture and on the FUCCI
+frames; `Test_BuildMask`'s in-place and stack-identity checks still pass (in
+place means the instance survives); and the interleaved 4-frame timing above
+re-run, all three arms.

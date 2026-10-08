@@ -72,6 +72,7 @@ class NucleusPipeline {
         nucleus_threshold      : "string",
         nucleus_threshold_range: "string",
         nucleus_stack_histogram: "boolean",
+        nucleus_threshold_scope: "string",
         nucleus_particle_size  : "string",
         nucleus_circularity    : "string",
         nucleus_watershed      : "boolean",
@@ -112,6 +113,10 @@ class NucleusPipeline {
         // per slice, which lets an empty slice's noise become objects -- see
         // RoiDetect.buildMask.
         nucleus_stack_histogram: true,
+        // Over what an automatic threshold is chosen in a multi-frame series:
+        // each frame on its own, or every frame at once (one threshold for the
+        // series). `frame` is how a series was analysed before this existed.
+        nucleus_threshold_scope: "frame",
         nucleus_particle_size  : "80-Infinity",
         // 0.00-1.00 is every shape, i.e. no filter -- the behaviour before this
         // existed. See the detection block for why turning it on is not free.
@@ -264,6 +269,9 @@ class NucleusPipeline {
         // early copy, not the only one.
         RD.validateThreshold(p.nucleus_threshold as String,
                              (p.nucleus_threshold_range ?: "") as String)
+        String scope = (p.nucleus_threshold_scope ?: "frame") as String
+        RD.validateScope(scope, p.nucleus_threshold as String,
+                         (p.nucleus_stack_histogram == null) ? true : (p.nucleus_stack_histogram as boolean))
 
         // --- Frames ----------------------------------------------------------
         // Every frame is analysed as an image of its own, by runFrame(), handed
@@ -324,11 +332,34 @@ class NucleusPipeline {
         // costs nothing. A single frame is not worth resuming: its overview
         // needs its pixels open anyway.
         boolean resumable = resume && multi
+        // SERIES THRESHOLD (nucleus_threshold_scope = series): one automatic
+        // threshold for every frame, chosen before the first frame is analysed
+        // from all of their histograms at once -- a first pass that reads each
+        // frame, blurs its DNA channel exactly as detection will, and keeps
+        // nothing but the histogram. It costs a second read of every frame, not
+        // memory. A single frame is its own series, so it takes the ordinary
+        // path; Manual has no histogram to pool.
+        boolean seriesThreshold = multi && scope == "series" && !RD.MANUAL.equalsIgnoreCase(p.nucleus_threshold as String)
         def settings = stagingSettings(src, p)
+        // Which frames the series threshold is over is part of what a staged
+        // frame was made with: other frames, another threshold.
+        if (seriesThreshold) settings.series_frames = frames.join(" ")
+        Map chosen = null                 // the series threshold, when there is one
+        List<Integer> inThreshold = null  // the frames whose pixels chose it
         Set<Integer> staged = new TreeSet<Integer>()
         if (stage.exists()) {
             if (resumable) {
-                staged.addAll(resumeStaging(stage, settings, seriesId))
+                def taken = resumeStaging(stage, settings, seriesId)
+                staged.addAll(taken.frames)
+                if (seriesThreshold && staged) {
+                    // Chosen by the run that staged them, recorded beside them:
+                    // the frames are not read a second time to choose it again.
+                    def then = taken.settings
+                    chosen = [t      : (then[SERIES_T] ? (then[SERIES_T] as int) : null),
+                              divisor: (then[SERIES_DIVISOR] ? (then[SERIES_DIVISOR] as long) : null)]
+                    inThreshold = (then[SERIES_IN] ?: "").tokenize(" ").collect { it as int }
+                    IJ.log("  series threshold from the earlier run: " + describeChosen(chosen, p))
+                }
                 def unwanted = staged.findAll { !frames.contains(it) }
                 if (unwanted) {
                     IJ.log("  WARNING: frame(s) " + SS.describeFrames(unwanted as List) + " staged by the " +
@@ -340,9 +371,20 @@ class NucleusPipeline {
                 stage.deleteDir()
             }
         }
+        if (seriesThreshold && chosen == null) {
+            def first = seriesThresholdOver(src, frames, p, dnaCh)
+            chosen = first.chosen
+            inThreshold = first.frames
+        }
         if (!stage.exists()) {
             stage.mkdirs()
-            RX.saveRunConfig(settings, new File(stage, STAGING_SETTINGS).getPath())
+            def record = new LinkedHashMap(settings)
+            if (seriesThreshold) {
+                record[SERIES_T]       = (chosen.t == null ? "" : chosen.t.toString())
+                record[SERIES_DIVISOR] = (chosen.divisor == null ? "" : chosen.divisor.toString())
+                record[SERIES_IN]      = inThreshold.join(" ")
+            }
+            RX.saveRunConfig(record, new File(stage, STAGING_SETTINGS).getPath())
         }
 
         // What every frame found, in memory as well: the caller gets the ROIs
@@ -354,6 +396,14 @@ class NucleusPipeline {
         ImagePlus kept = null    // a single frame, kept for its overview
         try {
             frames.each { int t ->
+                if (seriesThreshold && !inThreshold.contains(t)) {
+                    // Unreadable when the series threshold was chosen, so not
+                    // part of it: analysed now, it would be a frame thresholded
+                    // by pixels other than its series'.
+                    frameResults << [t: t, status: "failed", stats: null, seconds: null,
+                                     message: "could not be read when the series threshold was chosen"]
+                    return
+                }
                 if (staged.contains(t)) {
                     // Finished by the earlier run: what it found is read back
                     // from its staging -- the overlay draws its ROIs, the
@@ -375,7 +425,7 @@ class NucleusPipeline {
                 try {
                     frame = src.frame(t)
                     def tables = [nucleus: RX.newMeasurementTable(), nucleolus: RX.newMeasurementTable()]
-                    def fr = runFrame(frame, t, multi, p, dnaCh, channels, slices, tables)
+                    def fr = runFrame(frame, t, multi, p, dnaCh, channels, slices, tables, chosen)
                     stageFrame(stage, t, seriesId, src.calibration, fr, tables, p,
                                seriesOverview ? { File part ->
                                    OV.stageFrame(frame, slices, p.overview_method as String, ovChannels, ovOpts, part)
@@ -444,7 +494,12 @@ class NucleusPipeline {
         // frame; "per-frame" when there are several, with the numbers in
         // _threshold_stats.tsv -- a word, not a number, so it cannot be read as
         // one, the same device as the threshold's `none`.
-        def thresholdUsed = multi ? "per-frame" : frameStats[0].nucleus_threshold_used
+        // A series threshold is one value for every frame, and is written as
+        // one; so is the divisor its histogram needed.
+        def thresholdUsed = seriesThreshold ? frameStats[0].nucleus_threshold_used
+                          : multi ? "per-frame" : frameStats[0].nucleus_threshold_used
+        def histDivisor   = seriesThreshold ? (chosen.divisor ?: "")
+                          : multi ? "per-frame" : frameStats[0].nucleus_histogram_divisor
         def maskPct       = multi ? "per-frame" : frameStats[0].nucleus_mask_pct
         def rejected      = frameStats.collect { it.nucleus_circ_rejected }
         def circRejected  = (rejected.every { it == "" }) ? "" : rejected.sum { (it ?: 0) as int }
@@ -586,6 +641,7 @@ class NucleusPipeline {
                 nucleus_threshold      : p.nucleus_threshold,
                 nucleus_threshold_range: p.nucleus_threshold_range,
                 nucleus_stack_histogram: p.nucleus_stack_histogram,
+                nucleus_threshold_scope: scope,
                 nucleus_particle_size  : p.nucleus_particle_size,
                 nucleus_circularity    : p.nucleus_circularity,
                 nucleus_watershed      : p.nucleus_watershed,
@@ -643,6 +699,12 @@ class NucleusPipeline {
                 // With several frames these two read `per-frame`, and the
                 // counts here are totals: _threshold_stats.tsv has each frame.
                 nucleus_threshold_used : thresholdUsed,
+                // What the histogram's counts were divided by before the method
+                // ran, to keep its int arithmetic from overflowing: 1 = exact
+                // counts (RoiDetect.chooseThreshold). A divided threshold is not
+                // bit-for-bit what exact arithmetic would give, so it is said.
+                // Blank for Manual, which has no histogram.
+                nucleus_histogram_divisor: histDivisor,
                 nucleus_mask_pct       : maskPct,
                 nucleus_circ_rejected  : circRejected,
                 nucleus_count          : nucRois.size(),
@@ -691,6 +753,59 @@ class NucleusPipeline {
     /** batch_summary.tsv's message for a frame a resumed run did not redo. */
     static final String RESUMED_MESSAGE = "staged by an earlier run"
 
+    /** settings.txt keys holding a series threshold as it was chosen. */
+    static final String SERIES_T = "series_threshold", SERIES_DIVISOR = "series_histogram_divisor",
+                        SERIES_IN = "series_threshold_frames"
+    static final List<String> SERIES_CHOSEN_KEYS = [SERIES_T, SERIES_DIVISOR, SERIES_IN]
+
+    /**
+     * The first pass of a series threshold: every frame read, its DNA channel
+     * blurred exactly as buildMask() will blur it, its histogram added to the
+     * series', and the frame released. Nothing but the histogram is kept --
+     * 65,536 longs for 16-bit -- so the cost is reading the frames twice.
+     *
+     * A frame that cannot be read here is left out of the threshold, and
+     * reported by the caller as failed rather than analysed with a threshold
+     * its pixels were not part of.
+     *
+     * @return [chosen: chooseThreshold's result, frames: the frames it was chosen over]
+     */
+    Map seriesThresholdOver(Object src, List<Integer> frames, Map p, int dnaCh) {
+        long[] hist = null
+        def read = []
+        long t0 = System.currentTimeMillis()
+        frames.each { int t ->
+            ImagePlus frame = null, ch = null
+            try {
+                frame = src.frame(t)
+                ch = RD.blurredChannel(frame, dnaCh, p.nucleus_blur_sigma as double)
+                hist = RD.addHistogram(hist, RD.histogramOf(ch))
+                read << t
+            } catch (Throwable e) {
+                IJ.log("  t" + t + ": not readable for the series threshold -- " +
+                       e.getClass().getSimpleName() + ": " + (e.getMessage() ?: "(no message)"))
+            } finally {
+                if (ch != null) { ch.close(); ch.flush() }   // close() alone frees nothing
+                if (frame != null) src.release(frame)
+            }
+        }
+        if (hist == null) {
+            throw new IllegalStateException("no frame could be read to choose the series threshold")
+        }
+        def chosen = RD.chooseThreshold(hist, p.nucleus_threshold as String)
+        IJ.log("  series threshold over " + read.size() + " frame(s) (" +
+               String.format("%.0f", (System.currentTimeMillis() - t0) / 1000d) + " s): " +
+               describeChosen(chosen, p))
+        return [chosen: chosen, frames: read]
+    }
+
+    /** "Otsu -> 113-65535", with the divisor when the counts had to be divided. */
+    static String describeChosen(Map chosen, Map p) {
+        if (chosen.t == null) return p.nucleus_threshold + " -> nothing to separate"
+        return p.nucleus_threshold + " -> " + ((chosen.t as int) + 1) + "-max" +
+               ((chosen.divisor != null && (chosen.divisor as long) > 1L) ? (" (counts divided by " + chosen.divisor + ")") : "")
+    }
+
     /**
      * Everything that decides what a staged frame holds: every run parameter,
      * the code, and which image it is. Two runs that agree on all of it stage
@@ -730,7 +845,7 @@ class NucleusPipeline {
      * @return the frames already finished; none means the staging was
      *         discarded and the run starts afresh
      */
-    List<Integer> resumeStaging(File stage, Map<String, String> settings, String seriesId) {
+    Map resumeStaging(File stage, Map<String, String> settings, String seriesId) {
         def entries = (stage.listFiles() ?: []) as List<File>
         int parts = 0
         entries.findAll { it.getName().endsWith(".part") }.each { it.deleteDir(); parts++ }
@@ -739,7 +854,7 @@ class NucleusPipeline {
         if (!done) {
             IJ.log("  discarding the staging of an earlier run, which finished no frame")
             stage.deleteDir()
-            return []
+            return [frames: [], settings: [:]]
         }
         def fix = "Rerun with the settings it used to resume it, or with existingOutput=redo_all to discard it " +
                   "(" + stage.getPath() + ")."
@@ -754,7 +869,10 @@ class NucleusPipeline {
             int tab = l.indexOf("\t")
             if (tab > 0) then[l.substring(0, tab)] = l.substring(tab + 1)
         }
-        def differ = (settings.keySet() + then.keySet()).findAll { settings[it] != then[it] }
+        // The series threshold is what the run CHOSE, not what it was asked;
+        // it is taken from here, never compared.
+        def differ = (settings.keySet() + then.keySet()).findAll {
+            !(it in SERIES_CHOSEN_KEYS) && settings[it] != then[it] }
         if (differ) {
             def show = { v -> v == null ? "(absent)" : ("'" + v + "'") }
             throw new IllegalStateException(seriesId + ": an earlier, unfinished run staged frame(s) " +
@@ -764,7 +882,7 @@ class NucleusPipeline {
         }
         IJ.log("  resuming: frame(s) " + SS.describeFrames(done) + " staged by an earlier run" +
                (parts ? (", " + parts + " half-written one(s) discarded") : ""))
-        return done
+        return [frames: done, settings: then]
     }
 
     /**
@@ -855,7 +973,7 @@ class NucleusPipeline {
      *         frame's _threshold_stats.tsv row]
      */
     Map runFrame(ImagePlus frame, int t, boolean multi, Map p, int dnaCh,
-                 List<Integer> channels, Collection<Integer> slices, Map tables) {
+                 List<Integer> channels, Collection<Integer> slices, Map tables, Map chosen = null) {
         String tag   = multi ? ("t" + t + " ") : ""
         String tPart = multi ? String.format("%04d-", t) : ""
         def measure = { String feature, List rois, List names, List sls ->
@@ -870,7 +988,9 @@ class NucleusPipeline {
                                  p.nucleus_watershed as boolean,
                                  [range         : (p.nucleus_threshold_range ?: ""),
                                   stackHistogram: (p.nucleus_stack_histogram == null)
-                                                  ? true : (p.nucleus_stack_histogram as boolean)])
+                                                  ? true : (p.nucleus_stack_histogram as boolean),
+                                  // A series threshold, chosen over every frame.
+                                  chosen        : chosen])
         def dna = built.mask
         // The threshold is reported as the RANGE it selected, and the coverage
         // beside it. Both were previously thrown away, which left a run unable
@@ -962,6 +1082,7 @@ class NucleusPipeline {
                 nucleolus: [rois: nuclRois, names: nuclNames, slices: nuclSlices],
                 stats    : [t                     : t,
                             nucleus_threshold_used: thresholdUsed,
+                            nucleus_histogram_divisor: (built.divisor == null ? "" : built.divisor),
                             nucleus_mask_pct      : maskPct,
                             nucleus_circ_rejected : circRejected,
                             nucleus_count         : nucRois.size(),

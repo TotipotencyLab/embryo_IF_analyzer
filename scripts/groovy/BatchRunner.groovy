@@ -187,6 +187,29 @@ class BatchRunner {
         return s
     }
 
+    /**
+     * The name of one of the batch's own files -- batch_summary.tsv,
+     * batch_params.txt -- for a run tagged `tag`; blank names it as always.
+     *
+     * For several batches sharing ONE output directory: a SLURM array splits a
+     * sheet into tasks that all write there, so a series' files and its staging
+     * are where any later run looks for them, whichever task it lands in next time -- which is
+     * what resume and skip_finished need. A series' own files cannot collide,
+     * each series being in one task; these two would, every task overwriting
+     * the others' as it finished, and a merged summary missing tasks would read
+     * as tasks that never ran. Refused rather than sanitised: a tag is part of
+     * a file name a script will go looking for.
+     */
+    static String runFileName(String stem, String ext, Object tag) {
+        String t = (tag == null) ? "" : tag.toString().trim()
+        if (!t) return stem + ext
+        if (!(t ==~ /[A-Za-z0-9_-]+/)) {
+            throw new IllegalArgumentException(
+                "runTag may hold only letters, digits, '_' and '-'; got >>>" + tag + "<<<")
+        }
+        return stem + "_" + t + ext
+    }
+
     /** batch_summary.tsv's message for the frames of a series skip_finished did not open. */
     static final String FINISHED_MESSAGE = "finished by an earlier run"
 
@@ -631,7 +654,7 @@ class BatchRunner {
         // The parameters actually used, as a file that can be fed straight back
         // in -- provenance for the batch as a whole, beside the per-image config.
         RC.writeParams(params.findAll { k, v -> NP.PARAM_TYPES.containsKey(k) },
-                       new File(outdir, "batch_params.txt"))
+                       new File(outdir, runFileName("batch_params", ".txt", params.run_tag)))
         return res
     }
 
@@ -665,6 +688,8 @@ class BatchRunner {
      */
     Map runEach(List<Map> rows, File imageRoot, Map params, File outdir,
                 List<String> extraCols, Closure log = null, Closure finished = null, Closure work) {
+        // Named before anything runs, so a bad tag costs one message.
+        def summaryFile = new File(outdir, runFileName("batch_summary", ".tsv", params.run_tag))
         outdir.mkdirs()
         def blanks = extraCols.collectEntries { [(it): ""] }
         def say = { String m -> log?.call(m) }
@@ -830,7 +855,7 @@ class BatchRunner {
         // frames. Blank where no frame was reached (excluded, failed to open).
         def cols = ["series_id", "t", "path", "series_index", "status", "open_method"] +
                    extraCols + ["seconds", "message"]
-        TSV.write(summary, new File(outdir, "batch_summary.tsv"), cols)
+        TSV.write(summary, summaryFile, cols)
 
         // A series whose frames partly failed is an ok ROW -- its files hold
         // the frames that worked -- so the failed frames are counted apart.
@@ -839,7 +864,8 @@ class BatchRunner {
             ", " + failed + " failed, " +
             (rows.size() - included.size()) + " excluded" +
             (framesFailed ? (", " + framesFailed + " frame(s) failed") : ""))
-        return [summary: summary, ok: ok, skipped: skipped, failed: failed, frames_failed: framesFailed,
+        return [summary: summary, summary_file: summaryFile,
+                ok: ok, skipped: skipped, failed: failed, frames_failed: framesFailed,
                 excluded: rows.size() - included.size(), warnings: warnings]
     }
 

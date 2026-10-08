@@ -11,6 +11,7 @@
 #@ String  (persist=false, label="Image opening method", value="auto", choices={"auto","importer","reader"}) openMode
 #@ File    (persist=false, label="Sources table (sources.tsv; Luxendo only, blank = none)", style="file", required=false) sourcesFile
 #@ String  (persist=false, label="Time points (blank = all)", description="Which frames of a multi-frame series to draw: 1, or 2,11,21, or 1-4 -- counted from 1. A series of one frame is drawn whatever this says.", value="") frames
+#@ String  (persist=false, label="Run tag (blank = none)", description="Names this run's batch_summary_<tag>.tsv (and batch_params_<tag>.txt), so several runs can share one output directory -- the tasks of a SLURM array, say. Letters, digits, _ and - only.", value="") runTag
 
 // Run_Overview_Batch.groovy
 //
@@ -93,7 +94,8 @@ def wanted = (channelsCsv?.trim()) ? channelsCsv.trim().split(",").collect {
 def rows = TSV.read(sheetFile)
 def root = (imageRoot?.trim()) ? new File(imageRoot.trim()) : null
 def runner = BR.load(LIBDIR)
-def params = [open_mode: openMode]
+// run_tag names batch_summary.tsv apart when several runs share outdir.
+def params = [open_mode: openMode, run_tag: runTag]
 // LUXENDO, as in the nucleus batch: a series whose series_id has rows in the
 // sources table is read from its .lux.h5 files, one frame at a time.
 if (sourcesFile != null && sourcesFile.isFile()) {
@@ -214,7 +216,7 @@ def perRow = { src, seriesId, si, openMethod, row ->
 def res = runner.runEach(rows, root, params, outdir, cols,
                          { IJ.log(it) }, perRow)
 
-IJ.log("Summary: " + new File(outdir, "batch_summary.tsv").getAbsolutePath())
+IJ.log("Summary: " + res.summary_file.getAbsolutePath())
 if (res.failed > 0) {
     IJ.log("")
     IJ.log(res.failed + " row(s) FAILED -- the rest completed. In batch_summary.tsv:")
