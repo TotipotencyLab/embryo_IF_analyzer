@@ -28,17 +28,27 @@ sharing a common library, not one program.
    - Never report a pass that could not have failed. Print the value observed,
      not the word "OK".
    - Say which R ran; the suite's counts differ between 4.4 and 4.6.
-5. **Commit** with the reasoning, not the diff. Why it was wrong and how the
+5. **Review** before calling it done: read the change cold, as if someone else
+   wrote it. Tests written with the code share its blind spots — they check the
+   cases its author already had in mind — so trace each claim through the real
+   code path, and ask what the code will actually be handed rather than what it
+   was written for: malformed, empty, unexpected or hand-edited input.
+   **Reproduce each finding on the code as it stands before fixing it, and show
+   that the fix's test fails without the fix** — otherwise a fix and its test
+   can be wrong together. Spend effort in proportion to what a mistake would
+   cost: a change that writes a file people edit, or a format another step
+   reads, gets a full pass; a one-line fix gets one look.
+6. **Commit** with the reasoning, not the diff. Why it was wrong and how the
    failure showed up is what is worth reading in a year. Note explicitly what
    was *not* verified.
-6. **PR, squash merge**, tag if releasing (bump `VERSION` in the tagged commit).
+7. **PR, squash merge**, tag if releasing (bump `VERSION` in the tagged commit).
    A milestone that changes the contract over several PRs may have a **home
    branch** instead (`time_axis`): its PRs are `<home>-<what>` branches
    squash-merged into it, it carries `VERSION` `<next>-dev` so its output cannot
    pass for the last release, and it is merged into `main` — a normal merge —
    once all of them are in, with the release `VERSION` as its last commit and
    the merge commit tagged. `main` then never holds a half-changed contract.
-7. **Doc-sync.** Two different things, and they are not handled the same way.
+8. **Doc-sync.** Two different things, and they are not handled the same way.
 
    **a. Format documentation travels with the change — write it, do not
    propose it.** If the work altered any table this repo reads or writes — a

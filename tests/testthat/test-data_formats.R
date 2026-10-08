@@ -638,6 +638,40 @@ test_that("annotate writes the documented feature centroid columns", {
   expect_identical(written, documented)
 })
 
+test_that("the tracks tables are documented as FeatureTracks.groovy writes them", {
+  # Groovy writes these and R will read them, so neither language's tests run
+  # the other: the column lists are read out of the Groovy source and held
+  # against the doc's tables. The reader's side too -- what FeatureTracks needs
+  # from a centroid table must be columns the centroid table documents (and the
+  # centroid test above holds those to what annotate writes).
+  ft <- file.path(repo_root(), "scripts", "groovy", "FeatureTracks.groovy")
+  skip_if_not(file.exists(ft), "FeatureTracks.groovy not found")
+  src <- paste(readLines(ft, warn = FALSE), collapse = "\n")
+  groovy_list <- function(name){
+    m <- regmatches(src, regexpr(paste0(name, "\\s*=\\s*\\[[^]]*\\]"), src))
+    expect_length(m, 1L)
+    unlist(regmatches(m, gregexpr('(?<=")[a-z_]+(?=")', m, perl = TRUE)))
+  }
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  doc_columns <- function(heading){
+    start <- grep(paste0("^#### `", heading, "`"), doc, fixed = FALSE)
+    expect_length(start, 1L)
+    body <- doc[(start + 1):length(doc)]
+    body <- body[seq_len(which(grepl("^#{2,4} ", body))[1] - 1)]
+    first <- sub("^\\| ([^|]*)\\|.*$", "\\1", grep("^\\| `", body, value = TRUE))
+    unlist(regmatches(first, gregexpr("(?<=`)[a-z_]+(?=`)", first, perl = TRUE)))
+  }
+  expect_identical(groovy_list("TRACK_COLUMNS"),
+                   doc_columns("<series_id>_<feature_type>_tracks.tsv"))
+  expect_identical(groovy_list("EDIT_COLUMNS"),
+                   doc_columns("<series_id>_<feature_type>_track_edits.tsv"))
+  need <- groovy_list("CENTROID_NEED")
+  expect_true(length(need) > 5L)
+  expect_identical(setdiff(need, doc_columns("<series_id>_feature_centroids.tsv")), character(0))
+  # The suffix the Groovy side looks for is the name annotate writes.
+  expect_match(src, 'CENTROID_SUFFIX = "_feature_centroids.tsv"', fixed = TRUE)
+})
+
 test_that("feature_id uses the documented vocabulary", {
   skip_if_no_sf()
   skip_if_no_pkg(c("argparser", "ggplot2"))

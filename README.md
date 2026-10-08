@@ -425,6 +425,29 @@ silently — unless `--drop_orphan_feature` — it is evidence about where the b
 wrong. `class` is an ordinary column, so `--group_by class` and
 `feature_scatter_cli.r --color_by class` both work.
 
+**Linking features across time** is a Fiji step that runs *after* `annotate`,
+because features exist only once R has grouped the ROIs, and the tracker
+(TrackMate) is Java. `Make_FeatureTracks.groovy` reads the
+`<series_id>_feature_centroids.tsv` files `annotate` wrote and writes, beside
+each, `<series_id>_<type>_tracks.tsv` — one row per link, a division being two
+features with the same `prev_feature_id`:
+
+```bash
+ImageJ-macosx --headless --console --run scripts/groovy/Make_FeatureTracks.groovy \
+  "inputDir='R/feature',featureType='nucleus',useZ='false'"
+```
+
+`useZ` has no default — `true` uses the 3-D distance, `false` x-y only — because
+with a coarse z step a nucleus's z centroid wobbles by more than it moves in x-y,
+and which is right depends on the data. Distances are in µm (15 by default);
+time points chosen with the batch's `frames=` are steps, so `1,10,20` gap-closes
+and divides as if consecutive. A division after the mother went undetected for
+a frame comes out as one daughter linked and the other starting a new track —
+TrackMate's behaviour, not a setting. Tracks are joined onto the features in R,
+not written into them; that, and hand edits in the `_track_edits.tsv` seeded
+beside each, are the rest of the `tracking` milestone. Details in
+`note/data_formats.md`.
+
 [`PLA_analysis/`](PLA_analysis/) contains the proximity ligation assay analysis
 (published separately) and serves as a worked example of the R side end to end.
 

@@ -140,7 +140,7 @@ one (position, time point), and that is what §6.17 records reversing.
 | `series_id` | one series — one row of the series table | the series table | `Make_SeriesSheet` / `Make_LuxendoSheets` |
 | `t` | which time point, within a series | a `series_id` | the frame index, written by Fiji into the output tables (`time_axis`) |
 | `feature_id` | one object **at one time point** | a `series_id` | `define_feature_group()` |
-| `track_id` | a **lineage**: features connected by links, divisions and merges included | a `series_id` | `tracking`: computed from `<series_id>_tracks.tsv` at use (§4) |
+| `track_id` | a **lineage**: features connected by links, divisions and merges included | a `series_id` | `tracking`: computed from `<series_id>_<feature_type>_tracks.tsv` at use (§4) |
 | `branch_id` | one object **through time**: a stretch of a track with no division or merge in it, at most one feature per `t` | a `series_id` | `tracking`, computed alongside `track_id` (§4) |
 
 🔒 `feature_id` = `<feature_type>_<NNNN>`, numbered **globally within a series**
@@ -1033,15 +1033,16 @@ home branch is for provenance — output from half-built tracking must not claim
 
 **The data flow gains a Fiji step**, accepted by the user: Fiji detection → R
 `annotate` (features, and their centroids) → Fiji `Make_FeatureTracks`
-(TrackMate) → `<series_id>_tracks.tsv` → R joins it at use. Features exist only
+(TrackMate) → `<series_id>_<feature_type>_tracks.tsv` → R joins it at use. Features exist only
 after R's grouping, and TrackMate is Java, so the round trip is inherent.
 
 **Files**, one of each per series, beside the feature table:
 
 ```
 <series_id>_feature_centroids.tsv   annotate      what TrackMate links
-<series_id>_tracks.tsv              Fiji          the links it made, one row per link
-<series_id>_track_edits.tsv         a person      corrections; seeded empty, never overwritten
+<series_id>_<type>_tracks.tsv       Fiji          the links it made, one row per link
+<series_id>_<type>_track_edits.tsv  a person      corrections; seeded empty, kept once it holds edits
+<series_id>_<type>_track_params.txt Fiji          the tracker settings used
 ```
 
 🔒 **`_tracks.tsv` is the only store of tracks, joined at use — never copied
@@ -1225,7 +1226,7 @@ segmented time-lapse exists (`note/wishlist.md`).
       (`features.tsv`, `.rds`, QC PNG byte-identical; montage pixel-identical,
       the PNG differing in its write-time chunk only) and on a synthetic
       2-frame series (QC TIFF pixel-identical, both pages); R 4.6.1 1127/0.
-- [ ] **PR 2 — `tracking-trackmate` (Groovy).** `Make_FeatureTracks.groovy`:
+- [x] **PR 2 — `tracking-trackmate` (Groovy).** ✅ done. `Make_FeatureTracks.groovy`:
       a series' centroid table → `SparseLAPTrackerFactory` (§5.2) →
       `_tracks.tsv`, the settings used, and the seeded `_track_edits.tsv`.
       Calibrated units, never pixels (§5.4); `useZ` required, and `true`
@@ -1239,6 +1240,37 @@ segmented time-lapse exists (`note/wishlist.md`).
       so in the log. Tracks one feature
       type, named by the caller, never `nucleus` by assumption (the N-feature
       refactor, `note/wishlist.md`); after `--rename`, the renamed name.
+      **As built** (2026-10-08): `scripts/groovy/FeatureTracks.groovy` (the
+      library) and `Make_FeatureTracks.groovy` (`#@` block + one call).
+      **Two departures from the text above, both from tracking one type at a
+      time:** the files are `<series_id>_<feature_type>_tracks.tsv`,
+      `_track_edits.tsv` and `_track_params.txt` — with the type in the name,
+      as the outline tables have it, so tracking a second type writes beside
+      the first instead of over it (R's join takes the type); and the edits
+      table's fingerprint is a **column on every edit row**, the seed being a
+      header, explanatory comments and one commented-out template row carrying
+      it — "seeded empty with the fingerprint filled in" and "an edit row
+      without it is refused" read literally, and a person copies the line
+      rather than typing a hash. `_tracks.tsv` columns are `series_id`, `t`,
+      `feature_id`, `prev_feature_id`, `run_id`. **Time points are passed to
+      TrackMate as their rank** in the series, `t` restored on the way out:
+      TrackMate counts gaps and splits in frame numbers, so a batch run with
+      `frames=1,10,20` would otherwise never gap-close and never record a
+      division (a split must span one frame) — measured, and held by a raw-`t`
+      control in the test. Every input is read and checked before anything is
+      written. Settings default to TrackMate's (15 µm, `MAX_FRAME_GAP` 2 =
+      one missing time point). TrackMate facts measured on the way, now in the
+      library's header and `note/data_formats.md`: a time point holding no
+      spot is not a gap, it is absent; distances must be strictly below the
+      maximum; a feature linked to nothing frame to frame is never gap-closed
+      or split onto; results do not depend on thread count or input order.
+      Verified: `Test_FeatureTracks` (every case in the verification list
+      below, the refusals, the edits seeding, determinism, the front end
+      through a `Binding`); end to end on synthetic outlines through
+      `annotate_features_cli.r` and the real headless command line (two
+      movers and a division over four frames → exactly those links; `useZ`
+      omitted → refused, not hung). **Not verified:** real data — none can
+      validate tracking yet (below).
 - [ ] **PR 3 — `tracking-join` (R).** `join_tracks()` (above) and its callers.
       **Track QC lives in `montage_qc_cli.r`, not `annotate`**: `annotate`
       writes the features before any track exists, so colouring by track there
@@ -1266,7 +1298,11 @@ nucleus may go undetected for a frame or two (mitotic DNA fails a circularity
 filter) before two daughters appear. Whether TrackMate's LAP tracker records
 that as a split, or gap-closes one daughter and starts the other as a new
 track, is **not known** — it decides whether such divisions need PR 4's hand
-edits. PR 2's synthetic tests find out rather than assume.
+edits. PR 2's synthetic tests find out rather than assume. **Answered by PR 2
+(2026-10-08): not a split.** One daughter is gap-closed onto the mother, the
+other starts a track of its own — TrackMate splits only across adjacent
+frames. Such divisions need a `link` edit (PR 4), and `Test_FeatureTracks`
+pins the behaviour so a TrackMate upgrade that changes it is noticed.
 
 **Verification.** Synthesised, PR 2: two objects moving apart over four frames
 → two tracks, not one and not four; a dividing object → two features sharing a
