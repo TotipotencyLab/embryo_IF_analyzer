@@ -18,14 +18,164 @@
 # A feature linked to nothing, in either direction, has neither: NA, not a
 # track of one.
 #
-# Depends on feature_join.r for check_run_id().
+# Hand corrections (<series_id>_<feature_type>_track_edits.tsv) are applied to
+# the links before anything is numbered, so an edit is written in feature_ids
+# and stays valid while track and branch ids move.
+#
+# Depends on feature_join.r for check_run_id(), and feature_centroids.r for
+# feature_fingerprint().
 
 TRACK_COLUMNS <- c("series_id", "t", "feature_id", "prev_feature_id", "run_id")
+EDIT_COLUMNS <- c("action", "from_feature_id", "to_feature_id", "fingerprint", "note")
+EDIT_ACTIONS <- c("link", "cut", "join")
 
 
 #' Where a series' tracks are: beside annotate's output, named by series and type
 tracks_path <- function(dir, series_id, feature_type){
   file.path(dir, paste0(series_id, "_", feature_type, "_tracks.tsv"))
+}
+
+
+#' Where a series' hand edits are: beside its tracks table
+track_edits_path <- function(dir, series_id, feature_type){
+  file.path(dir, paste0(series_id, "_", feature_type, "_track_edits.tsv"))
+}
+
+
+#' Read one edits table: its edit rows, each with the line it is on
+#'
+#' Comments (`#`) and blank lines are skipped -- the seed Make_FeatureTracks
+#' writes is a header, comments and a commented-out template. An absent file,
+#' or one holding no edit rows, is no edits; it is never a reason to refuse.
+#' A file that holds lines but cannot be read as an edits table is refused:
+#' it is a person's work, and guessing at it would apply something they did
+#' not write.
+#'
+#' @return a data frame of the EDIT_COLUMNS plus `line`, possibly with no rows
+read_track_edits <- function(path){
+  empty <- as.data.frame(stats::setNames(rep(list(character(0)), length(EDIT_COLUMNS)),
+                                         EDIT_COLUMNS), stringsAsFactors = FALSE)
+  empty$line <- integer(0)
+  if(!file.exists(path)) return(empty)
+  lines <- readLines(path, warn = FALSE, encoding = "UTF-8")
+  lines <- sub("\r$", "", lines)
+  # A spreadsheet saving "UTF-8" may put a byte-order mark first. Left on, it
+  # hides the first comment's `#` and that comment is taken for the header.
+  if(length(lines)) lines[1] <- sub("^\ufeff", "", lines[1])
+  keep <- which(nzchar(trimws(lines)) & !startsWith(trimws(lines), "#"))
+  if(!length(keep)) return(empty)
+  name <- basename(path)
+  header <- trimws(strsplit(lines[keep[1]], "\t", fixed = FALSE)[[1]])
+  if(anyDuplicated(header)){
+    stop(name, " has duplicate column(s): ", paste(unique(header[duplicated(header)]), collapse = ", "),
+         ". Mend the header; the columns are ", paste(EDIT_COLUMNS, collapse = " "), call. = FALSE)
+  }
+  absent <- setdiff(EDIT_COLUMNS, header)
+  if(length(absent)){
+    stop(name, ": line ", keep[1], " is not the header (no ", paste(absent, collapse = ", "),
+         "). The first line that is not a comment must name the columns: ",
+         paste(EDIT_COLUMNS, collapse = " "), call. = FALSE)
+  }
+  rows <- keep[-1]
+  raw <- strsplit(lines[rows], "\t")
+  # Up to the fingerprint every cell is needed; a row with fewer was almost
+  # always typed with spaces, and would otherwise be refused for a missing
+  # fingerprint that is plainly there on the line.
+  need <- max(match(setdiff(EDIT_COLUMNS, "note"), header))
+  short <- which(lengths(raw) < need)
+  if(length(short)){
+    stop(name, ": line ", rows[short[1]], " has ", length(raw[[short[1]]]), " column(s) where ",
+         need, " are needed (", paste(header[seq_len(need)], collapse = " "), "). Are they ",
+         "separated by tabs? Spaces are not a column break.", call. = FALSE)
+  }
+  cells <- lapply(raw, function(x){
+    x <- trimws(x); length(x) <- length(header); x[is.na(x)] <- ""; x
+  })
+  out <- if(length(rows)){
+    m <- do.call(rbind, cells)
+    colnames(m) <- header
+    as.data.frame(m[, EDIT_COLUMNS, drop = FALSE], stringsAsFactors = FALSE)
+  } else empty[, EDIT_COLUMNS]
+  out$line <- as.integer(rows)
+  return(out)
+}
+
+
+#' Apply one series' hand edits to its links, in file order
+#'
+#' Strict, all of it. A row made on another annotation -- its fingerprint not
+#' the features' own -- is refused, never applied to whichever features now
+#' hold those ids; so is a row with no fingerprint. Then each row in turn,
+#' against the links as the rows above it left them:
+#'   link X Y  Y follows X. Refused unless t(X) < t(Y), and if already linked.
+#'   cut  X Y  remove the link X -> Y. Refused if there is none.
+#'   join X Y  X ends a branch, Y starts one, and they are one object: a link,
+#'             refused unless X has no successor, Y has no predecessor and
+#'             t(X) < t(Y). Branch ENDS, not whole tracks: a daughter whose
+#'             track broke shares t's with her sister, and a whole-track check
+#'             would refuse the commonest repair.
+#' A link must go forward in time, which also makes a cycle impossible.
+#'
+#' @param links       feature_id, prev_feature_id (non-blank only)
+#' @param edits       read_track_edits() output
+#' @param feat        the series' tracked features: feature_id, t
+#' @param fingerprint the features' own (feature_fingerprint())
+#' @param name        the edits file's name, for messages
+#' @return list(links, touched = every feature an edit named)
+apply_track_edits <- function(links, edits, feat, fingerprint, name){
+  if(!nrow(edits)) return(list(links = links, touched = character(0)))
+  at <- function(i) paste0(name, " line ", edits$line[i], " (", edits$action[i], " ",
+                           edits$from_feature_id[i], " ", edits$to_feature_id[i], "): ")
+  blank <- which(!nzchar(edits$fingerprint))
+  if(length(blank)){
+    stop(at(blank[1]), "no fingerprint. Copy it from the template line, which names the ",
+         "annotation the edit is made on.", call. = FALSE)
+  }
+  stale <- which(edits$fingerprint != fingerprint)
+  if(length(stale)){
+    stop(name, ": ", length(stale), " of ", nrow(edits), " edit(s) were made on another ",
+         "annotation (fingerprint ", paste(unique(edits$fingerprint[stale]), collapse = ", "),
+         "; these features are ", fingerprint, "), so their feature_ids may now name other ",
+         "nuclei. Redo them on these features, restore the annotation they were made on, ",
+         "or move the file aside to track without them.", call. = FALSE)
+  }
+  t_of <- stats::setNames(feat$t, feat$feature_id)
+  from <- links$prev_feature_id; to <- links$feature_id
+  for(i in seq_len(nrow(edits))){
+    a <- edits$action[i]; x <- edits$from_feature_id[i]; y <- edits$to_feature_id[i]
+    if(!a %in% EDIT_ACTIONS){
+      stop(at(i), "the action must be one of ", paste(EDIT_ACTIONS, collapse = ", "), call. = FALSE)
+    }
+    gone <- setdiff(c(x, y), feat$feature_id)
+    if(length(gone)){
+      stop(at(i), paste(ifelse(nzchar(gone), gone, "(blank)"), collapse = ", "),
+           " is not a tracked feature of this series", call. = FALSE)
+    }
+    linked <- from == x & to == y
+    if(a == "cut"){
+      if(!any(linked)) stop(at(i), "there is no link ", x, " -> ", y, " to cut", call. = FALSE)
+      from <- from[!linked]; to <- to[!linked]
+      next
+    }
+    if(!(t_of[[x]] < t_of[[y]])){
+      stop(at(i), "a link must go forward in time; t(", x, ") = ", t_of[[x]], ", t(", y,
+           ") = ", t_of[[y]], call. = FALSE)
+    }
+    if(any(linked)) stop(at(i), x, " -> ", y, " is already linked", call. = FALSE)
+    if(a == "join"){
+      if(any(from == x)){
+        stop(at(i), x, " does not end a branch: it leads to ", paste(to[from == x], collapse = ", "),
+             ". join links branch ends; use link to add a daughter", call. = FALSE)
+      }
+      if(any(to == y)){
+        stop(at(i), y, " does not start a branch: ", paste(from[to == y], collapse = ", "),
+             " leads to it. cut that link first, or use link for a merge", call. = FALSE)
+      }
+    }
+    from <- c(from, x); to <- c(to, y)
+  }
+  return(list(links = data.frame(feature_id = to, prev_feature_id = from, stringsAsFactors = FALSE),
+              touched = unique(c(edits$from_feature_id, edits$to_feature_id))))
 }
 
 
@@ -144,10 +294,12 @@ check_track_links <- function(tr, feat, name){
 #' @param feat         the series' tracked features: feature_id, t
 #' @param links        its links: feature_id, prev_feature_id (non-blank only)
 #' @param feature_type for the id prefix
+#' @param edited       feature_ids a hand edit named: their tracks are `edited`
 #' @return list(features = feature_id, track_id, branch_id, branch_merged;
-#'              branches = one row per branch: track_id, branch_id,
-#'              parent_branch_id, branch_merged, first_t, last_t, n_features)
-number_tracks <- function(feat, links, feature_type){
+#'              branches = one row per branch: track_id, track_source,
+#'              branch_id, parent_branch_id, branch_merged, first_t, last_t,
+#'              n_features)
+number_tracks <- function(feat, links, feature_type, edited = character(0)){
   o <- order(feat$t, feat$feature_id)
   ids <- feat$feature_id[o]
   tt <- feat$t[o]
@@ -198,8 +350,12 @@ number_tracks <- function(feat, links, feature_type){
                          branch_merged = merged, stringsAsFactors = FALSE)
 
   b_start <- sort(unique(stats::na.omit(start)))
+  # A track an edit touched anywhere -- a cut that split one makes both halves
+  # edited, since the cut names a feature in each.
+  edited_tracks <- unique(stats::na.omit(track_id[ids %in% edited]))
   branches <- data.frame(
     track_id = track_id[b_start],
+    track_source = ifelse(track_id[b_start] %in% edited_tracks, "edited", "auto"),
     branch_id = branch_id[b_start],
     # The branch(es) its first feature was linked from: one for a daughter,
     # two for a merged branch, none for a track's first branch.
@@ -222,8 +378,9 @@ number_tracks <- function(feat, links, feature_type){
 #' For every series holding features of `feature_type`, its tracks table is
 #' read from `tracks_dir`, checked against the run that made the features
 #' (check_run_id(), the guard every per-feature join uses) and against the
-#' features themselves (check_track_links()), numbered, and joined on
-#' series_id + feature_id. Rows of other types, and invalid or failed rows, get
+#' features themselves (check_track_links()), corrected by its hand edits
+#' (apply_track_edits(), when the edits file beside it holds any), numbered,
+#' and joined on series_id + feature_id. Rows of other types, and invalid or failed rows, get
 #' NA; so does a feature linked to nothing.
 #'
 #' A series with no tracks table stops the join: a time course quietly coming
@@ -289,8 +446,22 @@ join_tracks <- function(st_df, feature_type, tracks_dir, force = FALSE){
            call. = FALSE)
     }
     check_track_links(tr, feat, name)
-    num <- number_tracks(feat, tr[nzchar(tr$prev_feature_id), c("feature_id", "prev_feature_id")],
-                         feature_type)
+    links <- tr[nzchar(tr$prev_feature_id), c("feature_id", "prev_feature_id")]
+    epath <- track_edits_path(tracks_dir, sid, feature_type)
+    edits <- read_track_edits(epath)
+    touched <- character(0)
+    if(nrow(edits)){
+      if(!"roi" %in% colnames(tab)){
+        stop("Hand edits need the per-ROI feature table (a roi column) to check their ",
+             "fingerprint", call. = FALSE)
+      }
+      fp <- feature_fingerprint(tab[tab$series_id == sid, , drop = FALSE])
+      fp <- fp$fingerprint[fp$feature_type == feature_type]
+      ed <- apply_track_edits(links, edits, feat, fp, basename(epath))
+      links <- ed$links; touched <- ed$touched
+      message(basename(epath), ": ", nrow(edits), " hand edit(s) applied")
+    }
+    num <- number_tracks(feat, links, feature_type, edited = touched)
     per_feature[[sid]] <- cbind(series_id = sid, num$features, stringsAsFactors = FALSE)
     if(nrow(num$branches)){
       per_branch[[sid]] <- cbind(series_id = sid, feature_type = feature_type, num$branches,
@@ -311,7 +482,7 @@ join_tracks <- function(st_df, feature_type, tracks_dir, force = FALSE){
   for(cl in new) out[[cl]] <- ids[[cl]][m]
   branches <- if(length(per_branch)) do.call(rbind, per_branch) else
     data.frame(series_id = character(0), feature_type = character(0), track_id = character(0),
-               branch_id = character(0), parent_branch_id = character(0),
+               track_source = character(0), branch_id = character(0), parent_branch_id = character(0),
                branch_merged = logical(0), first_t = integer(0), last_t = integer(0),
                n_features = integer(0))
   rownames(branches) <- NULL

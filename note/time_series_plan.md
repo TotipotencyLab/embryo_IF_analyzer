@@ -1320,8 +1320,39 @@ segmented time-lapse exists (`note/wishlist.md`).
       test shown failing without the fix: `--feature_table` with a
       `--track_type` stats table was refused by the tracks join, and an empty
       tracks table was reported with a blank `run_id`.
-- [ ] **PR 4 — `tracking-edits` (R).** `_track_edits.tsv` (the table above),
+- [x] **PR 4 — `tracking-edits` (R).** ✅ done. `_track_edits.tsv` (the table above),
       applied by `join_tracks()`, strict, fingerprint-checked.
+      **As built** (2026-10-09): `read_track_edits()` and
+      `apply_track_edits()` in `scripts/R/feature_tracks.r`, called by
+      `join_tracks()` between the completeness checks and numbering, so both
+      CLIs apply edits with no new option. Two things the table above left
+      open, settled: edits apply **in file order**, each against the links the
+      rows above left (`cut X Y` then `join X Z`), and the first bad row stops
+      the join, named by its line in the file. A wrong fingerprint on any row
+      refuses the whole file, with no `--force` (strict, as decided); moving
+      the file aside tracks without it. The fingerprint is recomputed from the
+      per-ROI features with PR 1's `feature_fingerprint()` -- the same
+      function that wrote it into the centroid table the seed copies it from.
+      `track_source` is a column of `branches.tsv`, after `track_id`: `edited`
+      for every track an edit named a feature of (both halves of a cut), else
+      `auto`. A feature an edit leaves linked to nothing has no track, by the
+      existing rule. Code review (step 5) found two, each reproduced on
+      `Make_FeatureTracks`' own seed and its test shown failing without the
+      fix: a row typed with spaces was refused as having "no fingerprint",
+      and a spreadsheet's UTF-8 byte-order mark hid the first comment's `#`,
+      so the file was refused (R) or reported unreadable (Groovy). Rows short
+      of the fingerprint column now say "separated by tabs?"; the mark is
+      dropped in R and in `Tsv.read()`, which every Groovy table reader uses.
+      Verified: each action; file order; a merge and a division by hand; a
+      `join` undoing a `cut` to the same ids; the daughter's-break `join`
+      accepted with her sister sharing its `t`s, and `join` refused off a
+      branch end in either direction; a backwards and a same-`t` `link`
+      refused; an empty edits file accepted, a stale or blank fingerprint
+      refused, a regrouping re-annotation refused, a `VERSION` bump accepted;
+      the centroid table's fingerprint accepted end to end through
+      `feature_stat_cli.r`, and `Make_FeatureTracks`' own seed, uncommented
+      by hand, applied by both CLIs. With only the seed present, output is
+      identical to PR 3's but for the new column.
 - [ ] *Not in this milestone* (moved out 2026-10-08): **the overlap-core
       refactor** (§7) — with the in-house frame-to-frame linker out of scope,
       it has one caller and nothing above needs it; a standalone cleanup, any

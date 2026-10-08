@@ -343,6 +343,18 @@ def lgHdr = damaged("header deleted",
 check("damaged edits, header deleted: warned, naming the header", lgHdr.any { it.contains("no header naming") }, true)
 damaged("header with an extra column, no rows", H + "\twho\n", "kept")
 damaged("header alone, no comments", H + "\n", "reseeded")
+// A spreadsheet's UTF-8 byte-order mark before the first comment (code review,
+// PR 4): it hid the `#`, the comment was read as a header, and an edits file
+// holding a good edit was reported unreadable.
+def bomCase = writeCase("edits_bom", [["A1",1,0,0,0],["A2",2,1,0,0]])
+def bomFile = FTC.editsFile(bomCase.file, "nucleus")
+def bomText = "\uFEFF# my notes\n" + H + "\nlink\tnucleus_0001\tnucleus_0002\tfp00000001\tmine\n"
+bomFile.setText(bomText, "UTF-8")
+def bomRes = FT.trackDirectory(bomCase.dir, [feature_type: "nucleus", use_z: "false"])
+check("edits with a byte-order mark: read, and kept", bomRes.series[0].edits, "kept")
+check("...byte for byte", bomFile.getText("UTF-8") == bomText, true)
+def bomTsv = new File(tmp, "bom.tsv"); bomTsv.setText("\uFEFFa\tb\n1\t2\n", "UTF-8")
+check("Tsv.read drops a byte-order mark from the first column's name", TSV.read(bomTsv)[0].keySet().toList(), ["a", "b"])
 damaged("comments alone", "# nothing yet\n\n", "reseeded")
 
 println "\n--- 12c. what the directory listing takes for a centroid table (code review, PR 2)"

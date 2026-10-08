@@ -460,9 +460,18 @@ and `feature_stat_cli.r --track_type nucleus` puts both ids on every row of
 first and last time point). Per-cell plots group by `branch_id`; a lineage is
 counted, never averaged (`count_features_cli.r --feature_table
 feature_stats.tsv --feature_class_by track_id`). A tracks table made before a
-re-annotation, or missing a row, is refused rather than joined. Hand edits in
-the `_track_edits.tsv` seeded beside each are the milestone's last step.
-Details in `note/data_formats.md`.
+re-annotation, or missing a row, is refused rather than joined.
+
+**Correcting a track by hand** is a row in the `<series_id>_<type>_track_edits.tsv`
+seeded beside each tracks table: copy its commented template line, remove the
+`# `, and fill in the action and two `feature_id`s (the montage's `--color_by
+feature_id --label all` shows which is which). `join X Y` rejoins a track that
+broke (X its last feature before the break, Y the first after), `cut X Y`
+removes a wrong link, `link X Y` adds one — a missed division is two `link`s
+from the mother. The edits are applied every time R reads the tracks, and
+`branches.tsv` marks the tracks they touched as `edited`. They are tied to the
+annotation they were made on: re-annotating refuses them rather than applying
+them to whichever nuclei now hold those ids. Details in `note/data_formats.md`.
 
 [`PLA_analysis/`](PLA_analysis/) contains the proximity ligation assay analysis
 (published separately) and serves as a worked example of the R side end to end.

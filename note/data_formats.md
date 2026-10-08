@@ -941,8 +941,10 @@ which.
 
 #### `<series_id>_<feature_type>_track_edits.tsv`
 
-Corrections a person makes to the links, applied by R when it joins the tracks
-(the milestone's PR 4). **Make_FeatureTracks writes it only while it holds
+Corrections a person makes to the links, applied by R's `join_tracks()` every
+time it joins the tracks — before anything is numbered, so an edit written in
+`feature_id`s stays valid while track and branch ids move. **Make_FeatureTracks
+writes it only while it holds
 nothing**: absent, it is seeded; holding nothing but comments, blank lines and
 exactly the header below, it is rewritten with the current fingerprint.
 Anything else is left exactly as it is — judged by what the file holds, not by
@@ -960,6 +962,32 @@ removed.
 | `to_feature_id` | chr | the later feature |
 | `fingerprint` | chr | the centroid table's `fingerprint`: the annotation the edit was made on. A row whose fingerprint is not the current one is **refused**, never applied to whichever features now hold those ids |
 | `note` | chr | free text |
+
+Columns are separated by **tabs**; `#` lines and blank lines are skipped, a
+spreadsheet's UTF-8 byte-order mark and Windows line endings are fine.
+
+**Applied in file order**, each row against the links as the rows above it left
+them — so `cut X Y` then `join X Z` works, X having no successor by then:
+
+| action | does | refused when |
+|---|---|---|
+| `link X Y` | Y follows X. A division by hand is two `link`s from one X, a merge two into one Y | `t(X) ≥ t(Y)` (a link goes forward in time, which also rules out a cycle), or X → Y is already linked |
+| `cut X Y` | removes the link X → Y | there is no such link |
+| `join X Y` | X ends a branch and Y starts one, and they are one object: a link | X already leads somewhere, Y is already led to, or `t(X) ≥ t(Y)`. Branch **ends**, not whole tracks: a daughter whose track broke shares `t`s with her sister, and a whole-track check would refuse the commonest repair |
+
+**Strict, all of it.** Any row whose `fingerprint` is not the features' own —
+the edits were made on another annotation, whose `feature_id`s may name other
+nuclei — refuses the **whole file**, as does a row with none; there is no
+`--force` for it. So does an unknown action, a `feature_id` that is not a
+tracked feature of the series, or a row with fewer columns than up to
+`fingerprint` (typed with spaces). Each refusal names the file's line. A
+`VERSION` bump changes `run_id` but not the fingerprint, so the tracks are
+regenerated and the edits still apply. To track without them, move the file
+aside.
+
+A feature an edit leaves linked to nothing has no track, as always. Every
+track an edit named a feature of is `track_source = edited` in `branches.tsv`
+(§3) — both halves, when a `cut` splits one.
 
 #### `<series_id>_<feature_type>_track_params.txt`
 
@@ -1445,6 +1473,7 @@ with no statistic averaged over time. Sorted by series, track, branch.
 | `series_id` | |
 | `feature_type` | the tracked type |
 | `track_id` | `<feature_type>_track_NNNN` |
+| `track_source` | `edited` when a hand edit named any feature of its track (§2, the edits table), else `auto` |
 | `branch_id` | `<track_id>_bNN` |
 | `parent_branch_id` | the branch its first feature was linked from: blank for a track's first branch, two ids joined by `;` for a merged branch |
 | `branch_merged` | `TRUE` when its first feature has two predecessors |
