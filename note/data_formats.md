@@ -870,6 +870,115 @@ convincing picture of nothing. A narrow range beside a wide one on another
 channel is the tell — but only if it is written down, and opening every PNG to
 find the few that went wrong is what this column exists to avoid.
 
+### Feature tracks — `Make_FeatureTracks.groovy`
+
+Links `annotate`'s features across time with TrackMate's LAP tracker, driven
+without an image (`note/time_series_plan.md` §4 `tracking`, §5.2). It reads
+every `<series_id>_feature_centroids.tsv` (§3) in `annotate`'s output
+directory — one series per file, each tracked on its own — and writes, beside
+each, for the **one feature type** the run names:
+
+```
+<series_id>_<feature_type>_tracks.tsv        the links: one row per link, a start row per feature nothing leads to
+<series_id>_<feature_type>_track_edits.tsv   hand corrections: seeded empty, kept once it holds edits
+<series_id>_<feature_type>_track_params.txt  the settings used, and what they made
+```
+
+The feature type is in the name, as in the outline tables, so tracking a
+second type writes beside the first rather than over it. (`<series_id>` is
+strictly the centroid file's stem, which `annotate` names after the series id.)
+
+**Tracks are not copied into the feature table.** `_tracks.tsv` is the only
+store of them, and R joins it at use, which is also where track and branch ids
+are numbered (the `tracking` milestone's `join_tracks()`). Nothing here holds
+a `track_id`: TrackMate's own are internal integers.
+
+#### `<series_id>_<feature_type>_tracks.tsv`
+
+One row per **link**, and every feature of the type has at least one row. A
+feature with no predecessor has one row with `prev_feature_id` blank (the
+start of a track, or a feature linked to nothing at all); a feature with two
+predecessors — a merge, only with `allowMerging` — has two. A **division** is
+two features sharing one `prev_feature_id`; a link whose `prev_feature_id` is
+more than one time point back is **gap-closed**. No `(feature_id,
+prev_feature_id)` pair repeats. Sorted by `t`, `feature_id`,
+`prev_feature_id`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `series_id` | chr | from the centroid table's content |
+| `t` | int | the feature's time point, from 1 |
+| `feature_id` | chr | `<feature_type>_NNNN`, as in the feature table |
+| `prev_feature_id` | chr | the feature it was linked from, always at an earlier `t`; blank when nothing leads to it |
+| `run_id` | chr | the annotate run of the centroids — what R checks the table against before joining it |
+
+A series with one time point has nothing to link and gets start rows only; a
+series holding no feature of the type gets the header alone. The log says
+which.
+
+#### `<series_id>_<feature_type>_track_edits.tsv`
+
+Corrections a person makes to the links, applied by R when it joins the tracks
+(the milestone's PR 4). **Make_FeatureTracks writes it only while it holds no
+edit rows**: absent, it is seeded; holding only comments, it is rewritten with
+the current fingerprint; holding edits, it is left exactly as it is, and any
+row made against another annotation is reported in the log. The seed is a
+header, comment lines explaining the actions, and one commented-out template
+row carrying the fingerprint — an edit is that line copied with its leading
+`# ` removed.
+
+| Column | Type | Notes |
+|---|---|---|
+| `action` | chr | `link` (the second follows the first), `cut` (remove that link), `join` (the first ends a branch, the second starts one: one object) |
+| `from_feature_id` | chr | the earlier feature |
+| `to_feature_id` | chr | the later feature |
+| `fingerprint` | chr | the centroid table's `fingerprint`: the annotation the edit was made on. A row whose fingerprint is not the current one is **refused**, never applied to whichever features now hold those ids |
+| `note` | chr | free text |
+
+#### `<series_id>_<feature_type>_track_params.txt`
+
+`parameter` / `value`, like `_config.txt`: `repo_version`,
+`trackmate_version`, the centroid table and its `run_id` and `fingerprint`,
+every tracker setting (below, plus `allow_gap_closing` and
+`allow_track_splitting`, always `true`), the `frames` tracked, and the
+counts — `n_features`, `n_links`, `n_gap_closed`, `n_divisions`, `n_merges`.
+
+#### The settings
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `featureType` | — | the type to track, **required**; after `--rename`, the new name |
+| `useZ` | — | `true` (calibrated 3-D distance) or `false` (x-y only). **Required, no default**: with a 5 µm z step one slice of centroid wobble costs 5 µm, which can break the track of a nucleus that never moved (plan §5.4). `true` is refused on a table with blank `z` |
+| `linkingMaxDistance` | 15.0 | frame to frame, in the centroid table's units (µm). A link must be **strictly shorter** |
+| `maxFrameGap` | 2 | how far a link may reach when a feature goes missing: **2 bridges one missing time point, 1 bridges none** |
+| `gapClosingMaxDistance` | 15.0 | for those links |
+| `splittingMaxDistance` | 15.0 | mother to daughter, at a division |
+| `allowMerging` | false | off: two features becoming one ends one track there. On: both lead into it — the record when two objects really are segmented as one for a while, as pronuclei are |
+| `mergingMaxDistance` | 15.0 | for those links |
+
+Gap closing and splitting are always on. Defaults are TrackMate's own.
+
+**What a "frame" is to the tracker.** The time points the series' table
+holds, in order — not frame numbers. TrackMate counts gaps and splits in frame
+numbers, so time points sampled `1,10,20` (a batch run with `frames=`) would be
+nine frames apart to it: nothing gap-closed, no division recorded. Each time
+point is given to it as its rank and `t` restored afterwards, so one step is one
+sampled time point. A time point with no feature of the type is not a step.
+
+**What TrackMate does that the settings do not say**, measured on synthetic
+features (`tests/groovy/Test_FeatureTracks.groovy` pins each):
+
+- A feature linked to nothing frame to frame is never gap-closed or split onto:
+  a daughter seen at one time point only starts a track of its own.
+- **A division after a gap is not recorded as one.** When the mother is lost
+  for a time point (envelope breakdown) before two daughters appear, one
+  daughter is gap-closed onto the mother and the other starts a new track. A
+  `link` edit repairs it.
+- With merging off, the merged feature keeps one predecessor and the other
+  track ends; the object splits again on the far side either way.
+- Two stationary nuclei stacked in z, tracked with `useZ=false`, are linked
+  across each other every frame: x-y cannot tell them apart.
+
 ### Group montage — `group_montage_cli.r` writes two things
 
 `<prefix><group>_montage.png`, one per group, and one index describing all of
@@ -1112,9 +1221,8 @@ same options, without the `qc_` prefix (`--color_by`, `--label`,
 #### `<series_id>_feature_centroids.tsv`
 
 One row per **real** feature (`<feature_type>_NNNN`; not `invalid_`, `failed_`
-or `NA`) — what the `tracking` milestone hands to TrackMate
-(`note/time_series_plan.md` §4). Written for every series, single frames
-included.
+or `NA`) — what `Make_FeatureTracks.groovy` hands to TrackMate (§2, Feature
+tracks). Written for every series, single frames included.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -1543,7 +1651,8 @@ alone, one object's frames would join into a single feature — and numbered on
 from the last frame: if frame 1 ends at `nucleus_0006`, frame 2 starts at
 `nucleus_0007`. So a `feature_id` names one object at one time point, and is
 unique in the series. It does **not** follow an object through time: that is a
-track, which is a separate column (the `tracking` milestone).
+track, which lives in its own table, `<series_id>_<feature_type>_tracks.tsv`
+(§2), joined at use rather than written into the feature table.
 
 `<feature>` here is the **reporting** name, which `--rename 'nucleus=oocyte'`
 changes. The `roi` column keeps Fiji's original prefix either way, because that
