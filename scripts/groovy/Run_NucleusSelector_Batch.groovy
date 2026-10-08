@@ -6,6 +6,7 @@
 #@ String  (persist=false, label="Image opening method", value="auto", choices={"auto","importer","reader"}) openMode
 #@ File    (persist=false, label="Sources table (sources.tsv; Luxendo only, blank = none)", style="file", required=false) sourcesFile
 #@ String  (persist=false, label="Time points (blank = all)", description="Which frames of a multi-frame series to analyse: 1, or 2,11,21, or 1-4 -- counted from 1, and reported as themselves (t = 11 is time point 11). A series of one frame is analysed whatever this says.", value="") frames
+#@ String  (persist=false, label="Output already in the output directory", description="resume_unfinished: a series an interrupted run left unfinished carries on from the frames it finished (refused if it was run with other settings); a finished series is analysed again. skip_finished: the same, and a finished series whose settings match is skipped without being opened. redo_all: every series is analysed again from scratch.", value="resume_unfinished", choices={"resume_unfinished","skip_finished","redo_all"}) existingOutput
 
 // Run_NucleusSelector_Batch.groovy
 //
@@ -101,6 +102,10 @@ if (sourcesFile != null && sourcesFile.isFile()) {
 // like include, not about how an image is analysed. _config.txt records the
 // frames each series' results hold (frames_analysed).
 params.frames = frames
+// Also a choice about this batch, not a run parameter: what to do with output
+// an earlier run left. BatchRunner owns the vocabulary and refuses anything
+// else -- choices= is not enforced on the command line.
+params.existing_output = existingOutput
 
 def res = BR.load(LIBDIR).run(rows, root, params, outdir) { IJ.log(it) }
 

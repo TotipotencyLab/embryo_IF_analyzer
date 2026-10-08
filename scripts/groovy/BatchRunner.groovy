@@ -158,6 +158,101 @@ class BatchRunner {
     }
 
     /**
+     * What the nucleus batch does with output an earlier run left in outdir,
+     * in order of how much of it is reused:
+     *
+     *   resume_unfinished  a series a run left unfinished carries on from the
+     *                      frames it finished; a finished one is analysed again
+     *   skip_finished      as resume_unfinished, and a finished series whose
+     *                      settings match is not opened at all
+     *   redo_all           nothing is reused: every series is analysed again
+     *
+     * One choice rather than two switches, because two give four combinations
+     * and one of them ("redo everything, but skip what is finished") means
+     * nothing. resume_unfinished is the default rather than skip_finished: the
+     * settings compared include VERSION, which does not move between commits on
+     * a development branch, so skipping by default would quietly keep the
+     * output of code that has since been fixed.
+     */
+    static final List<String> EXISTING_OUTPUT = ["resume_unfinished", "skip_finished", "redo_all"]
+
+    /** Resolve existingOutput. Absent means the default; anything unknown is refused, as for saveOverview. */
+    static String existingOutput(Object v) {
+        if (v == null) return EXISTING_OUTPUT[0]
+        String s = v.toString().trim()
+        if (!EXISTING_OUTPUT.contains(s)) {
+            throw new IllegalArgumentException(
+                "existingOutput must be one of " + EXISTING_OUTPUT.join(", ") + "; got >>>" + v + "<<<")
+        }
+        return s
+    }
+
+    /** batch_summary.tsv's message for the frames of a series skip_finished did not open. */
+    static final String FINISHED_MESSAGE = "finished by an earlier run"
+
+    /**
+     * Whether an earlier run already wrote this series' results with the
+     * settings this run would use -- decided from outdir alone, BEFORE the image
+     * is opened, because opening is what a skip is for: up to minutes a row on a
+     * many-series .lif.
+     *
+     * Finished means `_config.txt` and `_threshold_stats.tsv` (written last) are
+     * there and nothing is staged for the series (staging is deleted last; a
+     * series with staging left is unfinished, and resumes). The settings are
+     * the config's: every PARAM_TYPES value, VERSION, ImageJ's version, and
+     * which image -- path, series index and name, as the sheet gives them --
+     * and the frames: the results must hold exactly the frames this run would
+     * analyse, so a series with a failed frame, or analysed over other frames,
+     * is done again. The image's dimensions and pixel size are not compared;
+     * they need it opened.
+     *
+     * @return null to analyse the series; otherwise [open_method, frames], the
+     *         summary rows, from its _threshold_stats.tsv
+     */
+    Map finishedSeries(File outdir, String seriesId, int si, Map row, Map params, List<Integer> wanted,
+                       Closure say = null) {
+        def cfgFile = new File(outdir, seriesId + "_config.txt")
+        def tsFile  = new File(outdir, seriesId + "_threshold_stats.tsv")
+        if (!cfgFile.isFile() || !tsFile.isFile()) return null
+        if (new File(new File(outdir, NP.STAGING_DIR), seriesId).exists()) return null
+        def differ = []
+        Map<String, String> cfg
+        Map<String, Object> then
+        try {
+            cfg  = RC.read(cfgFile)
+            then = RC.params(cfg, NP.PARAM_TYPES, cfgFile.getName())
+        } catch (Throwable e) {
+            say?.call("  " + seriesId + ": its _config.txt cannot be read back (" + e.getMessage() +
+                      ") -- analysed again")
+            return null
+        }
+        // saveRunConfig writes a blank z_spec as "(all)"; NP.fromConfig maps it back.
+        if (then.z_spec == "(all)") then.z_spec = ""
+        def str = { v -> v == null ? "" : v.toString() }
+        NP.PARAM_TYPES.keySet().each { k -> if (str(then[k]) != str(params[k])) differ << k }
+        def version = (cfg.script ?: "").tokenize(" ")
+        if ((version ? version[-1] : "") != RX.repoVersion(libDir)) differ << "code version"
+        if (cfg.imagej_version != ij.IJ.getVersion()) differ << "imagej_version"
+        if (str(cfg.source_file) != str(row.path))          differ << "source_file"
+        if (str(cfg.series_index) != str(si))               differ << "series_index"
+        if (str(cfg.series_name) != str(row.series_name))   differ << "series_name"
+        int n = (cfg.image_frames ?: "1") as int
+        def expect = (n <= 1) ? [1] : (wanted == null ? (1..n).toList() : wanted.findAll { it >= 1 && it <= n })
+        def got = (cfg.frames_analysed ?: "").tokenize(" ").collect { it as int }
+        if (got != expect) differ << "frames"
+        if (differ) {
+            say?.call("  " + seriesId + ": earlier results differ in " + differ.join(", ") + " -- analysed again")
+            return null
+        }
+        def frames = TSV.read(tsFile).collect { Map r ->
+            [t: r.t, status: "ok", message: FINISHED_MESSAGE, seconds: "",
+             threshold: r.nucleus_threshold_used ?: "", mask_pct: r.nucleus_mask_pct ?: "",
+             n_nucleus: r.nucleus_count ?: "", n_nucleolus: r.nucleolus_count ?: ""]
+        }
+        return [open_method: cfg.open_method ?: "", frames: frames]
+    }
+
+    /**
      * Above this many series in the FILE, `auto` stops using the importer.
      *
      * The cost is (rows x series-in-file), not series alone, so no single number
@@ -485,9 +580,25 @@ class BatchRunner {
         // Which time points of a multi-frame series to analyse; parsed ONCE,
         // so a typo costs one message rather than one per row.
         def wanted = TA.parseFrames(params.frames)
+        // What to do with output an earlier run left (EXISTING_OUTPUT). Not a
+        // run parameter: like `frames`, a choice about this batch. Resolved
+        // before any row, so an unknown value costs one message.
+        def existing = existingOutput(params.existing_output)
+        boolean resume = existing != "redo_all"
+        Closure finished = null
+        if (existing == "skip_finished") {
+            if (params.save_config) {
+                finished = { String sid, int si, Map row ->
+                    finishedSeries(outdir, sid, si, row, params, wanted, log) }
+            } else {
+                log?.call("WARNING: skip_finished needs save_config: without a _config.txt nothing " +
+                          "says what a result was made with, so every series is analysed")
+            }
+        }
+        log?.call("existing output: " + existing)
         def res = runEach(rows, imageRoot,
                           params + [pixel_size_note: PIXEL_SIZE_NOTE_NUCLEUS],
-                          outdir, cols, log) {
+                          outdir, cols, log, finished) {
                       src, seriesId, si, method, row ->
             // The sheet's series_id is authoritative: an id taken from the image
             // title would be "Series001", which recurs in every file.
@@ -500,7 +611,7 @@ class BatchRunner {
                                                  source_file : row.path,
                                                  series_index: si,
                                                  series_name : (row.series_name ?: "")],
-                                       wanted)
+                                       wanted, resume)
             // What the threshold chose, per FRAME. Every _config.txt and
             // _threshold_stats.tsv carries it too, but finding the handful of
             // frames where it went wrong should not mean opening a thousand
@@ -509,7 +620,8 @@ class BatchRunner {
             return [frames: r.frames.collect { fr ->
                 def st = fr.stats ?: [:]
                 [t: fr.t, status: fr.status, message: fr.message ?: "",
-                 seconds: fmtSeconds(fr.seconds as long),
+                 // Blank for a frame an earlier run analysed: not redone.
+                 seconds: (fr.seconds == null ? "" : fmtSeconds(fr.seconds as long)),
                  threshold: st.nucleus_threshold_used ?: "", mask_pct: st.nucleus_mask_pct ?: "",
                  n_nucleus: (st.nucleus_count == null ? "" : st.nucleus_count),
                  n_nucleolus: (st.nucleolus_count == null ? "" : st.nucleolus_count)]
@@ -541,12 +653,18 @@ class BatchRunner {
      *                  per frame, each with its own t, status, seconds, message
      *                  and extraCols.
      *
+     * @param finished  optional, called as (seriesId, seriesIndex, row) BEFORE
+     *                  the image is opened: null to go on, or [open_method,
+     *                  frames] -- the summary rows of a series an earlier run
+     *                  finished, which is then not opened at all
+     *                  (finishedSeries).
+     *
      * params.sources, when given, is the sources table's rows: a row whose
      * series_id has rows there is read from them (Luxendo), any other from
      * its file.
      */
     Map runEach(List<Map> rows, File imageRoot, Map params, File outdir,
-                List<String> extraCols, Closure log = null, Closure work) {
+                List<String> extraCols, Closure log = null, Closure finished = null, Closure work) {
         outdir.mkdirs()
         def blanks = extraCols.collectEntries { [(it): ""] }
         def say = { String m -> log?.call(m) }
@@ -614,7 +732,7 @@ class BatchRunner {
         }
 
         def summary = []
-        int ok = 0, failed = 0
+        int ok = 0, failed = 0, skipped = 0
         try {
         rows.each { row ->
             def seriesId = (row.series_id ?: "").toString()
@@ -638,6 +756,21 @@ class BatchRunner {
                 // not hold -- see RoiExport.checkSeriesId.
                 RX.checkSeriesId(seriesId)
                 int si = (row.series_index ?: "0").toString() as Integer
+                def done = finished?.call(seriesId, si, row)
+                if (done != null) {
+                    // Results already there, made exactly as this run would make
+                    // them: reported from what they recorded, and not opened.
+                    method = done.open_method ?: ""
+                    say("--- " + seriesId + "  skipped: " + FINISHED_MESSAGE + ", with the same settings")
+                    done.frames.each { Map fr ->
+                        summary << ([series_id: seriesId, t: fr.t, path: row.path, series_index: row.series_index,
+                                     status: fr.status, open_method: method] +
+                                    extraCols.collectEntries { [(it): (fr[it] == null ? "" : fr[it])] } +
+                                    [seconds: fr.seconds ?: "", message: oneLine(fr.message as String)])
+                    }
+                    ok++; skipped++
+                    return
+                }
                 src = openSource(row, imageRoot, openMode, sources)
                 method = src.method
                 say("--- " + seriesId + "  (" + new File(row.path.toString()).getName() + " series " + si +
@@ -702,10 +835,11 @@ class BatchRunner {
         // A series whose frames partly failed is an ok ROW -- its files hold
         // the frames that worked -- so the failed frames are counted apart.
         int framesFailed = summary.count { it.status == "failed" && it.t != "" }
-        say("Done: " + ok + " ok, " + failed + " failed, " +
+        say("Done: " + ok + " ok" + (skipped ? (" (" + skipped + " skipped as finished)") : "") +
+            ", " + failed + " failed, " +
             (rows.size() - included.size()) + " excluded" +
             (framesFailed ? (", " + framesFailed + " frame(s) failed") : ""))
-        return [summary: summary, ok: ok, failed: failed, frames_failed: framesFailed,
+        return [summary: summary, ok: ok, skipped: skipped, failed: failed, frames_failed: framesFailed,
                 excluded: rows.size() - included.size(), warnings: warnings]
     }
 

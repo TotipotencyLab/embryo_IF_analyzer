@@ -231,6 +231,133 @@ check("...and so does the outline table",
 check("nothing left staged after a partial series", new File(outF, ".staging").exists(), false)
 bad.delete(); keep.renameTo(bad)
 
+println "\n=== a rerun resumes a series an earlier batch left unfinished ==="
+// The earlier batch dies at the JOIN, after every frame is staged -- the way a
+// heap too small for the overview TIFFs ends one. Provoked by a directory where
+// the join writes its temporary file.
+def lxRows = sheet.findAll { it.series_id == sid }
+def outR = new File(tmp, "batch_ref")
+runner.run(lxRows, null, params, outR) { }
+def dieAtJoin = { File o, Map ps ->
+    def block = new File(o, sid + "_nucleus_outline.txt.part"); block.mkdirs()
+    new File(block, "x").setText("x")
+    def r = runner.run(lxRows, null, ps, o) { }
+    block.deleteDir()
+    return r
+}
+def outJ = new File(tmp, "batch_resume")
+def resJ = dieAtJoin(outJ, params)
+def sumJ = TSV.read(new File(outJ, "batch_summary.tsv"))
+check("the first batch's row failed at the join",  [resJ.failed, sumJ[0].status], [1, "failed"])
+check("...leaving all three frames staged",
+      new File(outJ, ".staging/" + sid).list().findAll { it ==~ /t\d{4}/ }.sort(), ["t0001", "t0002", "t0003"])
+def resJ2 = runner.run(lxRows, null, params, outJ) { }
+def sumJ2 = TSV.read(new File(outJ, "batch_summary.tsv"))
+check("the rerun resumed them: ok, no time, and why",
+      sumJ2.collect { [it.t, it.status, it.seconds, it.message] },
+      (1..3).collect { [it.toString(), "ok", "", NP.RESUMED_MESSAGE] })
+check("...with the counts the frames recorded",    sumJ2.collect { it.n_nucleus }, ["6", "6", "6"])
+def tables = { File o -> ["_nucleus_outline.txt", "_nucleus_res.txt", "_threshold_stats.tsv"]
+                         .collect { new File(o, sid + it).getText("UTF-8") } }
+check("...and wrote the uninterrupted batch's tables", tables(outJ) == tables(outR), true)
+check("...nothing left staged",                    new File(outJ, ".staging").exists(), false)
+
+// redo_all: the same leftover, analysed again.
+def outK = new File(tmp, "batch_restart")
+dieAtJoin(outK, params)
+runner.run(lxRows, null, params + [existing_output: "redo_all"], outK) { }
+def sumK = TSV.read(new File(outK, "batch_summary.tsv"))
+check("redo_all analyses every frame again",
+      sumK.collect { [it.status, it.message, it.seconds != ""] }, (1..3).collect { ["ok", "", true] })
+check("...to the same tables",                     tables(outK) == tables(outR), true)
+
+// Other settings: the row is refused, the batch goes on, the staging is kept.
+def outL = new File(tmp, "batch_other")
+dieAtJoin(outL, params)
+def resL = runner.run(lxRows, null, params + [nucleus_particle_size: "6-Infinity"], outL) { }
+def sumL = TSV.read(new File(outL, "batch_summary.tsv"))
+println "  message: " + sumL[0].message
+check("other settings fail the row",               [resL.failed, sumL[0].status, sumL[0].t], [1, "failed", ""])
+check("...saying what differs",
+      sumL[0].message.contains("nucleus_particle_size '5-Infinity' then, '6-Infinity' now"), true)
+check("...and keep the staged frames",
+      new File(outL, ".staging/" + sid).list().findAll { it ==~ /t\d{4}/ }.size(), 3)
+// skip_finished resumes an unfinished series too: it is not finished.
+def resL2 = runner.run(lxRows, null, params + [nucleus_particle_size: "6-Infinity", existing_output: "skip_finished"], outL) { }
+check("skip_finished refuses the same leftover",   resL2.failed, 1)
+// choices= is not enforced on the command line: a value the option does not
+// have is refused before any row, rather than read as some other choice.
+throwsWith("an unknown existingOutput is refused",
+           "existingOutput must be one of resume_unfinished, skip_finished, redo_all; got >>>restart<<<",
+           { runner.run(lxRows, null, params + [existing_output: "restart"], new File(tmp, "batch_bad")) { } })
+
+println "\n=== skip_finished: a finished series is not opened again ==="
+def readCfgS = { File f -> def m = [:]; f.eachLine { l -> def q = l.split("\t", 2); if (q.size() == 2) m[q[0]] = q[1] }; m }
+// The Luxendo series (3 frames) and the single-frame TIFF, finished once.
+def outS = new File(tmp, "batch_skip")
+def resS0 = runner.run(sheet, null, params, outS) { }
+def sumS0 = TSV.read(new File(outS, "batch_summary.tsv"))
+def written = { File o -> o.listFiles().findAll { it.isFile() && it.getName() != "batch_summary.tsv" &&
+                                                  it.getName() != "batch_params.txt" }
+                          .sort { it.getName() }.collectEntries { [(it.getName()): [it.lastModified(), it.getText("ISO-8859-1")]] } }
+def before = written(outS)
+// Proof that a skipped series is not OPENED, not merely that its files came
+// out the same: the TIFF is moved away and a Luxendo frame made unreadable.
+// Either would fail its row if anything tried to read it.
+def tifFile = new File(tifRow.path), tifAway = new File(tifRow.path + ".away")
+tifFile.renameTo(tifAway)
+bad.renameTo(keep); bad.setText("not an HDF5 file")
+Thread.sleep(1100)   // so a rewritten file would carry a later lastModified
+def resS = runner.run(sheet, null, params + [existing_output: "skip_finished"], outS) { }
+def sumS = TSV.read(new File(outS, "batch_summary.tsv"))
+check("both rows skipped, neither failed",         [resS.ok, resS.skipped, resS.failed], [2, 2, 0])
+check("...summary: every frame, ok, no time, and why",
+      sumS.collect { [it.series_id, it.t, it.status, it.seconds, it.message] },
+      sumS0.collect { [it.series_id, it.t, "ok", "", runner.FINISHED_MESSAGE] })
+check("...with the earlier run's numbers and open method",
+      sumS.collect { [it.threshold, it.mask_pct, it.n_nucleus, it.n_nucleolus, it.open_method] },
+      sumS0.collect { [it.threshold, it.mask_pct, it.n_nucleus, it.n_nucleolus, it.open_method] })
+check("...and no result file touched",             written(outS) == before, true)
+bad.delete(); keep.renameTo(bad); tifAway.renameTo(tifFile)
+
+// Other settings: analysed again, not refused -- nothing is being mixed.
+def logS2 = []
+def resS2 = runner.run(sheet, null, params + [existing_output: "skip_finished", nucleus_particle_size: "6-Infinity"], outS) { logS2 << it }
+println "  log: " + logS2.find { it.contains("earlier results differ") }
+check("...the log names what differs",
+      logS2.count { it.contains("earlier results differ in nucleus_particle_size -- analysed again") }, 2)
+def sumS2 = TSV.read(new File(outS, "batch_summary.tsv"))
+check("other settings: both analysed again",       [resS2.ok, resS2.skipped, sumS2.count { it.seconds != "" }], [2, 0, 4])
+check("...and the config says so",                 readCfgS(new File(outS, sid + "_config.txt")).nucleus_particle_size, "6-Infinity")
+
+// Other frames: the Luxendo results hold 1-3, this run asks for 2-3, so it is
+// analysed again; the single-frame TIFF ignores `frames` and is still finished.
+def resS3 = runner.run(sheet, null, params + [existing_output: "skip_finished", nucleus_particle_size: "6-Infinity",
+                                              frames: "2-3"], outS) { }
+def sumS3 = TSV.read(new File(outS, "batch_summary.tsv"))
+check("other frames: Luxendo redone, the TIFF skipped",
+      sumS3.collect { [it.series_id, it.t, it.message] },
+      [[sid, "2", ""], [sid, "3", ""], ["tif1", "1", runner.FINISHED_MESSAGE]])
+
+// A failed frame: the results lack it, so the series is not finished.
+def outSF = new File(tmp, "batch_skip_failed")
+bad.renameTo(keep); bad.setText("not an HDF5 file")
+runner.run(lxRows, null, params, outSF) { }
+bad.delete(); keep.renameTo(bad)
+check("(the earlier run lost frame 3)",            readCfgS(new File(outSF, sid + "_config.txt")).frames_analysed, "1 2")
+def resSF = runner.run(lxRows, null, params + [existing_output: "skip_finished"], outSF) { }
+def sumSF = TSV.read(new File(outSF, "batch_summary.tsv"))
+check("a series with a failed frame is done again", [resSF.skipped, sumSF.collect { [it.t, it.status, it.message] }],
+      [0, [["1", "ok", ""], ["2", "ok", ""], ["3", "ok", ""]]])
+
+// No _config.txt, nothing to go on: everything is analysed, and it says why.
+def outSN = new File(tmp, "batch_skip_noconfig")
+runner.run(lxRows, null, params + [save_config: false], outSN) { }
+def logSN = []
+def resSN = runner.run(lxRows, null, params + [save_config: false, existing_output: "skip_finished"], outSN) { logSN << it }
+check("save_config off: nothing skipped",          resSN.skipped, 0)
+check("...and a warning says why",                 logSN.any { it.startsWith("WARNING: skip_finished needs save_config") }, true)
+
 println "\n=== membership decides, never the look of a path ==="
 // The Luxendo row WITHOUT the sources table: its path is a directory, which is
 // not an image file -- and the message says so, rather than trying to open it.

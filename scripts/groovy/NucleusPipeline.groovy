@@ -207,10 +207,14 @@ class NucleusPipeline {
      * @param src    the series, handed over frame by frame
      * @param wanted the frames to analyse (TiffAssembler.parseFrames), null = all.
      *               A series of one frame is analysed whatever this says.
+     * @param resume what to do with what an earlier, unfinished run of this
+     *               series staged: true keeps its finished frames and analyses
+     *               only the rest -- refusing if it was run with other settings
+     *               -- false discards it. Only a multi-frame series resumes.
      * @return as run(), plus `frames`: one entry per frame attempted -- t,
      *         status, the frame's threshold stats, seconds, message
      */
-    Map runSource(Object src, File outdir, Map p, List<Integer> wanted = null) {
+    Map runSource(Object src, File outdir, Map p, List<Integer> wanted = null, boolean resume = false) {
         IJ.run("Set Measurements...", MEASUREMENTS + " redirect=None decimal=3")
 
         def channels = ((String) p.channels_measured).split(",").collect { it.trim() as Integer }
@@ -309,16 +313,37 @@ class NucleusPipeline {
         // into a directory renamed into place only once all of them are
         // written: a frame is finished exactly when <stage>/t<TTTT>/ exists. A
         // crash at frame 90 of 96 then costs one frame, not 90 -- and resuming
-        // (time_axis PR 4) is skipping the frames already there. The series'
-        // files are the frames joined in t order at the end.
+        // is skipping the frames already there. The series' files are the
+        // frames joined in t order at the end.
         def stage = new File(new File(outdir, STAGING_DIR), seriesId)
+        // RESUME. A leftover is a run that died. Its finished frames are kept
+        // only if they were made exactly as this run would make them: joined
+        // otherwise, one series' files would hold frames analysed two ways and
+        // nothing in them would say so. Hence the settings, written before the
+        // first frame and compared before this run's first frame -- a refusal
+        // costs nothing. A single frame is not worth resuming: its overview
+        // needs its pixels open anyway.
+        boolean resumable = resume && multi
+        def settings = stagingSettings(src, p)
+        Set<Integer> staged = new TreeSet<Integer>()
         if (stage.exists()) {
-            // Until resume exists, a leftover is a run that died: start over
-            // rather than join frames whose settings nobody can vouch for.
-            IJ.log("  discarding the staged frames of an earlier, unfinished run")
-            stage.deleteDir()
+            if (resumable) {
+                staged.addAll(resumeStaging(stage, settings, seriesId))
+                def unwanted = staged.findAll { !frames.contains(it) }
+                if (unwanted) {
+                    IJ.log("  WARNING: frame(s) " + SS.describeFrames(unwanted as List) + " staged by the " +
+                           "earlier run are not among the frames asked for: they are not joined, and are " +
+                           "discarded with the staging when this run finishes")
+                }
+            } else {
+                IJ.log("  discarding the staged frames of an earlier, unfinished run")
+                stage.deleteDir()
+            }
         }
-        stage.mkdirs()
+        if (!stage.exists()) {
+            stage.mkdirs()
+            RX.saveRunConfig(settings, new File(stage, STAGING_SETTINGS).getPath())
+        }
 
         // What every frame found, in memory as well: the caller gets the ROIs
         // back (the interactive runner fills the ROI Manager from them), and a
@@ -329,6 +354,22 @@ class NucleusPipeline {
         ImagePlus kept = null    // a single frame, kept for its overview
         try {
             frames.each { int t ->
+                if (staged.contains(t)) {
+                    // Finished by the earlier run: what it found is read back
+                    // from its staging -- the overlay draws its ROIs, the
+                    // config counts them -- and the frame is not read at all.
+                    def fr = loadStagedFrame(stagedFrame(stage, t))
+                    ["nucleus", "nucleolus"].each { String feature ->
+                        def got = fr[feature]
+                        found[feature].rois.addAll(got.rois)
+                        found[feature].names.addAll(got.names)
+                        found[feature].slices.addAll(got.slices)
+                        found[feature].ts.addAll(got.rois.collect { t })
+                    }
+                    frameResults << [t: t, status: "ok", stats: fr.stats, message: RESUMED_MESSAGE,
+                                     seconds: null]
+                    return
+                }
                 long t0 = System.currentTimeMillis()
                 ImagePlus frame = null
                 try {
@@ -365,12 +406,17 @@ class NucleusPipeline {
                 }
             }
         } catch (Throwable e) {
-            stage.deleteDir()
+            // What ends a series here is not a frame's failure -- those are
+            // caught above -- and the frames it finished are exactly what a
+            // resume is for, so they stay.
+            if (!resumable) stage.deleteDir()
             throw e
         }
         def okFrames = frameResults.findAll { it.status == "ok" }
         if (!okFrames) {
-            stage.deleteDir()
+            // Resumable, it may still hold frames an earlier run finished
+            // that this one did not ask for; a later run can take them.
+            if (!resumable) stage.deleteDir()
             throw new IllegalStateException("every frame failed; first: t" + frameResults[0].t + " " +
                                             frameResults[0].message)
         }
@@ -388,7 +434,9 @@ class NucleusPipeline {
             def part = { String suffix -> okTs.collect { new File(stagedFrame(stage, it), feature + suffix) } }
             def stem = outDirPath + seriesId + "_" + feature
             RX.joinTables(part("_outline.txt"), new File(stem + "_outline.txt"), false)
-            RX.joinRoiZips(part("_outline_ROIs.zip"), new File(stem + "_outline_ROIs.zip"))
+            // Staged whatever save_roi_zips says (a resume reads them back);
+            // written out only when it asks.
+            if (p.save_roi_zips) RX.joinRoiZips(part("_outline_ROIs.zip"), new File(stem + "_outline_ROIs.zip"))
             RX.joinTables(part("_res.txt"), new File(stem + "_res.txt"), true)
         }
 
@@ -637,6 +685,115 @@ class NucleusPipeline {
         return new File(stage, String.format("t%04d", t))
     }
 
+    /** The settings a series' staged frames were made with, beside them. */
+    static final String STAGING_SETTINGS = "settings.txt"
+
+    /** batch_summary.tsv's message for a frame a resumed run did not redo. */
+    static final String RESUMED_MESSAGE = "staged by an earlier run"
+
+    /**
+     * Everything that decides what a staged frame holds: every run parameter,
+     * the code, and which image it is. Two runs that agree on all of it stage
+     * the same bytes for a frame, so their frames can be joined. Which frames
+     * is not here -- a resume may ask for more or fewer than the run it
+     * continues -- and nor is how the image was opened, which
+     * Test_BatchRunner holds to identical bytes either way.
+     */
+    Map<String, String> stagingSettings(Object src, Map p) {
+        def s = new LinkedHashMap<String, String>()
+        def str = { v -> v == null ? "" : v.toString() }
+        s.code_version   = RX.repoVersion(libDir)
+        // The thresholds and the particle analysis are ImageJ's: an update
+        // between two runs can move them.
+        s.imagej_version = IJ.getVersion()
+        s.source_file    = str(p.source_file)
+        s.series_index   = str(p.series_index)
+        s.series_name    = str(p.series_name)
+        s.image_width    = str(src.width)
+        s.image_height   = str(src.height)
+        s.image_slices   = str(src.nSlices)
+        s.image_channels = str(src.nChannels)
+        s.image_frames   = str(src.nFrames)
+        s.pixel_width    = str(src.calibration.pixelWidth)
+        s.pixel_height   = str(src.calibration.pixelHeight)
+        s.pixel_depth    = str(src.calibration.pixelDepth)
+        PARAM_TYPES.keySet().each { k -> s[k] = str(p[k]) }
+        return s
+    }
+
+    /**
+     * Take over what an earlier, unfinished run of this series staged: its
+     * finished frames stay, its half-written ones (`.part`) go. Refused when
+     * the earlier run's settings differ from `settings`, or were never
+     * recorded -- frames nobody can vouch for are not joined into anything.
+     *
+     * @return the frames already finished; none means the staging was
+     *         discarded and the run starts afresh
+     */
+    List<Integer> resumeStaging(File stage, Map<String, String> settings, String seriesId) {
+        def entries = (stage.listFiles() ?: []) as List<File>
+        int parts = 0
+        entries.findAll { it.getName().endsWith(".part") }.each { it.deleteDir(); parts++ }
+        def done = entries.findAll { it.isDirectory() && it.getName() ==~ /t\d{4}/ }
+                          .collect { it.getName().substring(1) as int }.sort()
+        if (!done) {
+            IJ.log("  discarding the staging of an earlier run, which finished no frame")
+            stage.deleteDir()
+            return []
+        }
+        def fix = "Rerun with the settings it used to resume it, or with existingOutput=redo_all to discard it " +
+                  "(" + stage.getPath() + ")."
+        def f = new File(stage, STAGING_SETTINGS)
+        if (!f.isFile()) {
+            throw new IllegalStateException(seriesId + ": an earlier, unfinished run staged frame(s) " +
+                SS.describeFrames(done) + " without recording its settings, so they cannot be joined " +
+                "to frames analysed now. " + fix)
+        }
+        def then = [:]
+        f.readLines("UTF-8").drop(1).each { String l ->
+            int tab = l.indexOf("\t")
+            if (tab > 0) then[l.substring(0, tab)] = l.substring(tab + 1)
+        }
+        def differ = (settings.keySet() + then.keySet()).findAll { settings[it] != then[it] }
+        if (differ) {
+            def show = { v -> v == null ? "(absent)" : ("'" + v + "'") }
+            throw new IllegalStateException(seriesId + ": an earlier, unfinished run staged frame(s) " +
+                SS.describeFrames(done) + " with other settings -- " +
+                differ.collect { it + " " + show(then[it]) + " then, " + show(settings[it]) + " now" }.join("; ") +
+                ". Joined, the series' files would hold frames analysed two ways. " + fix)
+        }
+        IJ.log("  resuming: frame(s) " + SS.describeFrames(done) + " staged by an earlier run" +
+               (parts ? (", " + parts + " half-written one(s) discarded") : ""))
+        return done
+    }
+
+    /**
+     * A finished frame back from its staging: its ROIs, as the zip saved them
+     * -- name, slice and frame included -- and its threshold-stats row.
+     * Checked against the counts that row recorded, so a staging that lost a
+     * file fails here rather than joining short.
+     */
+    Map loadStagedFrame(File dir) {
+        def lines = new File(dir, "threshold_stats.tsv").readLines("UTF-8")
+        def head = lines[0].split("\t", -1), vals = lines[1].split("\t", -1)
+        def stats = [:]
+        head.eachWithIndex { String h, int i -> stats[h] = (i < vals.length ? vals[i] : "") }
+        def out = [stats: stats]
+        ["nucleus", "nucleolus"].each { String feature ->
+            def zip = new File(dir, feature + "_outline_ROIs.zip")
+            def rois = zip.isFile() ? RX.loadRoiZip(zip.getPath()) : []
+            def want = stats[feature + "_count"]
+            if (want != null && want != "" && (want as int) != rois.size()) {
+                throw new IllegalStateException(dir.getPath() + ": " + rois.size() + " " + feature +
+                    " ROI(s) staged where the frame found " + want)
+            }
+            out[feature] = [rois  : rois,
+                            names : rois.collect { it.getName() },
+                            slices: rois.collect { it.getZPosition() }]
+        }
+        return out
+    }
+
     /**
      * Write one finished frame's tables into the staging, as the series' files
      * would hold them, then rename the frame's directory into place. A frame
@@ -654,7 +811,9 @@ class NucleusPipeline {
             def stem = new File(part, feature).getPath()
             def ts = f.rois.collect { t }
             if (p.save_outlines)     RX.saveOutlineCoords(cal, f.rois, f.names, f.slices, ts, seriesId, stem + "_outline.txt")
-            if (p.save_roi_zips)     RX.saveRoiZip(f.rois, f.names, stem + "_outline_ROIs.zip")
+            // Always: the zip is how a resumed run gets this frame's ROIs back
+            // (loadStagedFrame). The join writes it out only for save_roi_zips.
+            RX.saveRoiZip(f.rois, f.names, stem + "_outline_ROIs.zip")
             if (p.save_measurements) RX.saveMeasurements(tables[feature], stem + "_res.txt")
         }
         RX.saveThresholdStats([fr.stats], new File(part, "threshold_stats.tsv").getPath())
