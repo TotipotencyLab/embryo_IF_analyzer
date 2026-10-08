@@ -37,7 +37,7 @@ class RunConfig {
         "pixel_width", "pixel_height", "pixel_depth", "pixel_unit",
         "series_id", "output_basename", "z_slices_analysed", "measurements",
         "overview_saved", "overview_channels", "overview_overlay_suffix", "overview_display_range",
-        "nucleus_threshold_used", "nucleus_mask_pct", "nucleus_circ_rejected",
+        "nucleus_threshold_used", "nucleus_histogram_divisor", "nucleus_mask_pct", "nucleus_circ_rejected",
         "nucleus_count", "nucleolus_count",
     ]
 

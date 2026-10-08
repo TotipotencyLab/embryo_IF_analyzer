@@ -219,6 +219,13 @@ loop, including how to diff.
   whole. `SeriesSource.groovy` hands the batch one frame at a time: each frame is
   analysed, staged under `.staging/<series_id>/` and released before the next is
   read, and the series' files are joined from the staged frames at the end.
+  **A rerun resumes from them**: finished frames are not read again, and
+  `settings.txt` beside them makes a rerun under other settings stop rather than
+  join frames analysed two ways. The skipped frames' ROIs come back from the
+  staged zip, which is why it is staged even with `save_roi_zips` off. What a
+  rerun does with output already there — resume, also skip finished series
+  without opening them, or redo — is the batch's `existingOutput`
+  (`note/data_formats.md`).
 
   **`Make_LuxendoSheets.groovy` writes `series.tsv` + `sources.tsv`.** Two
   tables because Luxendo breaks the assumption every other format here
