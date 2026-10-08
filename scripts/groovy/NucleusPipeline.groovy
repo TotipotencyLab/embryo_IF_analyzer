@@ -741,7 +741,7 @@ class NucleusPipeline {
             stage.deleteDir()
             return []
         }
-        def fix = "Rerun with the settings it used to resume it, or with restart to discard it " +
+        def fix = "Rerun with the settings it used to resume it, or with existingOutput=redo_all to discard it " +
                   "(" + stage.getPath() + ")."
         def f = new File(stage, STAGING_SETTINGS)
         if (!f.isFile()) {

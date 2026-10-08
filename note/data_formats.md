@@ -766,8 +766,8 @@ a frame (excluded, or it failed to open) is one row with `t` blank.
 | `threshold` | the pixel range the nucleus threshold **selected**, `lo-hi`, same syntax the manual threshold takes; `none` when the frame had nothing to separate. Blank when the row did not run |
 | `mask_pct` | percent of pixels inside that range, measured **before** fill holes and watershed. Blank when the row did not run |
 | `n_nucleus`, `n_nucleolus` | counts, blank when the row did not run |
-| `seconds` | wall time for that frame (for a single frame, the image, opening included); blank for a frame an earlier run staged and this one resumed from |
-| `message` | for `failed`, the exception, flattened to one line; `staged by an earlier run` for an `ok` frame this run did not redo (below) |
+| `seconds` | wall time for that frame (for a single frame, the image, opening included); blank for a frame this run did not analyse (below) |
+| `message` | for `failed`, the exception, flattened to one line. For an `ok` frame this run did not analyse (below): `staged by an earlier run` (resumed) or `finished by an earlier run` (skipped) |
 
 A row or a frame failing does not stop the batch. On a long run this file, not
 the log, is what says which images need attention.
@@ -777,20 +777,41 @@ the log, is what says which images need attention.
 those frames joined in `t` order when it finishes — byte for byte what one pass
 would have written. The staging is deleted after the join.
 
-**A rerun resumes a multi-frame series a run left unfinished** (since v0.8.0).
-A staging left behind is a run that died — killed, or failed at the join — and
-the next batch run of that series keeps its finished frames, reads only the
-others, and discards half-written ones (`t<TTTT>.part`). Its files are the same
-bytes an uninterrupted run writes. Beside the frames, `settings.txt` records
-what decides their contents: every run parameter, the code version (`VERSION`)
-and ImageJ's, and the image (source, series, dimensions, pixel size). A rerun under any other
+**What a rerun does with output already there** is the batch's
+**`existingOutput`** (since v0.8.0), in order of how much it reuses:
+
+| value | a finished series | a series a run left unfinished |
+|---|---|---|
+| `resume_unfinished` (default) | analysed again | carries on from its finished frames |
+| `skip_finished` | **not opened**, if its settings match; analysed again otherwise | carries on from its finished frames |
+| `redo_all` | analysed again | its staged frames discarded; analysed again |
+
+*Resuming.* A staging left behind is a run that died — killed, or failed at the
+join. A multi-frame series keeps its finished frames, reads only the others,
+and discards half-written ones (`t<TTTT>.part`); its files are the same bytes an
+uninterrupted run writes. Beside the frames, `settings.txt` records what decides
+their contents: every run parameter, the code version (`VERSION`) and ImageJ's,
+and the image (source, series, dimensions, pixel size). A rerun under any other
 value is **refused** before it reads a frame — the row fails, naming each
 difference — because one series' files would otherwise hold frames analysed two
-ways. Staged frames with no `settings.txt` are refused the same way. The batch's
-**`restart`** discards the staging and analyses every frame again. Which frames
-is not a setting: a resume may ask for others, and staged frames it does not ask
-for are not joined. A frame that failed is not staged, so a rerun tries it again.
-A single-frame series, and the interactive runner, always start afresh.
+ways; `redo_all` is the way past it. Staged frames with no `settings.txt` are
+refused the same way. Which frames is not a setting: a resume may ask for
+others, and staged frames it does not ask for are not joined. A frame that
+failed is not staged, so a rerun tries it again. A single-frame series, and the
+interactive runner, always start afresh.
+
+*Skipping.* A series is finished when its `_config.txt` and
+`_threshold_stats.tsv` are there and nothing of it is staged. It is skipped
+when that `_config.txt` matches this run: every run parameter, `VERSION` and
+ImageJ's version, `path`/`series_index`/`series_name` as the sheet gives them,
+and `frames_analysed` equal to the frames this run would analyse — so a series
+with a failed frame, or analysed over other frames, is done again. Unlike a
+resume, other settings are not refused: the series is analysed again and its
+files replaced, as any rerun replaces them; the log says which settings
+differed. The image's dimensions and pixel size are not compared — that would
+mean opening it, which is what skipping avoids. Without `save_config` nothing is
+recognised as finished. A skipped series' rows in `batch_summary.tsv` come from
+its `_threshold_stats.tsv`, with `open_method` from its `_config.txt`.
 
 The batch's **`frames`** chooses time points of a multi-frame series (`1`,
 `2,11,21`, `1-4`, from 1; blank = all), as `Make_LuxendoTiff`'s does — but here

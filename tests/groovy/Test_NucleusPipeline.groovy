@@ -723,7 +723,7 @@ check("...the overlay TIFFs among what was compared",
       ref.keySet().findAll { it.endsWith("_overlay.tif") }.size(), 2)
 
 // Other settings: refused before a frame is read, the staging untouched. Then
-// restart discards it.
+// resume=false (the batch's redo_all) discards it.
 def rsOther = new File(tmp, "rs_other"); rsOther.mkdirs()
 interrupt(rsOther, rsParams, 2)
 def wOther = watched(-1)
@@ -737,7 +737,7 @@ check("...before a frame is read",              wOther.read, [])
 check("...leaving the staged frames alone",     stageOf(rsOther).list().sort().toList(), ["settings.txt", "t0001", "t0002"])
 def wRestart = watched(-1)
 pipe.runSource(wRestart, rsOther, rsParams + [nucleus_blur_sigma: 1.0d], null, false)
-check("restart reads every frame",              wRestart.read, [1, 2, 3, 4])
+check("resume=false reads every frame",         wRestart.read, [1, 2, 3, 4])
 check("...and its config has the new setting",  readCfg(new File(rsOther, "rs_config.txt")).nucleus_blur_sigma, "1.0")
 
 // Frames staged with no record of their settings -- as 0.8.0-dev before this

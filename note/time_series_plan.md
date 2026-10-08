@@ -950,7 +950,8 @@ Decided 2026-10-02: record the frames that succeeded, and resume from them.
 - [x] ⚠️ **Refuse to resume under different settings**: a fingerprint of the
       run's parameters is kept with the staging, and a rerun whose parameters
       differ stops — otherwise one series' results mix frames analysed two ways.
-      A `restart` option discards the staging instead. *4:* `settings.txt`,
+      A `restart` option discards the staging instead (*4:* `existingOutput=redo_all`,
+      below). `settings.txt`,
       readable rather than a hash so the refusal names each difference: every
       `PARAM_TYPES` key, `VERSION` and ImageJ's, and the image's identity and geometry. Not
       the frame selection, nor `open_method` (held to identical bytes). Staged
@@ -960,6 +961,16 @@ Decided 2026-10-02: record the frames that succeeded, and resume from them.
       *4:* `Test_NucleusPipeline` (stopped after frame 2 of 4, a half-written
       frame 3 planted; zips compared by entry, configs without the timestamp);
       `Test_SeriesSource` through the batch, on a run that died at the join.
+- [x] **Skip finished series** — added 2026-10-08, folded into this PR because
+      it settles the same option: `restart` became **`existingOutput`** =
+      `resume_unfinished` (default) | `skip_finished` | `redo_all`, one choice
+      rather than two switches whose fourth combination meant nothing.
+      `skip_finished` decides from `outdir` alone, before opening — the cost it
+      avoids is the open (minutes a row on a many-series `.lif`) — against the
+      `_config.txt`: parameters, versions, path/series, and `frames_analysed`
+      equal to this run's frames. A mismatch is analysed again, not refused.
+      Not the default: `VERSION` does not move between commits on a dev
+      branch, so skip-by-default would keep output of since-fixed code.
 
 #### PR 5 — `time_axis-threshold_scope`
 
