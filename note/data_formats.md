@@ -1025,6 +1025,17 @@ guard against silent drift when Bio-Formats is next upgraded.
 (no `script_name`, no results). It can be passed straight back as the config of
 another run.
 
+**`runTag` names both files apart** — `batch_summary_<tag>.tsv`,
+`batch_params_<tag>.txt` — for several runs sharing one output directory; blank
+(the default) names them as above. The tasks of a SLURM array, say, can then
+all write into one directory, so a series' files and its `.staging/` are where the next run looks for them
+whichever task it lands in, which is what resuming and `skip_finished` need. A
+series is in one task, so its own files cannot collide; these two would. The
+tag is letters, digits, `_` and `-`, and anything else is refused before a row
+runs. `Run_Overview_Batch` takes it too (it writes no `batch_params`). The
+tagged summaries have the same columns, so one `batch_summary.tsv` for the
+whole run is their concatenation.
+
 ⚠️ The `Label` column of `_res.txt` differs between the two runners, and
 harmlessly. `IJ.openImage()` and Bio-Formats build the slice label differently,
 so the text after the roi id is not the same — but the **roi id itself is**, and

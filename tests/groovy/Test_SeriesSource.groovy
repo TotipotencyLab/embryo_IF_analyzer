@@ -452,7 +452,7 @@ def srcF = new File(tmp, "sources_ov.tsv"); TSV.write(params.sources, srcF, para
 def outB = new File(tmp, "overview_batch"); outB.mkdirs()
 def bind = new Binding([sheetFile: sheetF, outdir: outB, imageRoot: "", zSpec: "", channelsCsv: "1,2",
                         method: "max", contrast: "auto", saturated: 0.35d, outWidth: 0, outHeight: 0,
-                        openMode: "auto", sourcesFile: srcF, frames: "1-3",
+                        openMode: "auto", sourcesFile: srcF, frames: "1-3", runTag: "",
                         "javax.script.filename": ovScript.getAbsolutePath()])
 new GroovyShell(this.class.classLoader, bind).evaluate(
     ovScript.readLines().findAll { !it.startsWith("#@") }.join("\n"), "Run_Overview_Batch.groovy")

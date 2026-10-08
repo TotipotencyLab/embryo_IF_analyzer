@@ -7,6 +7,7 @@
 #@ File    (persist=false, label="Sources table (sources.tsv; Luxendo only, blank = none)", style="file", required=false) sourcesFile
 #@ String  (persist=false, label="Time points (blank = all)", description="Which frames of a multi-frame series to analyse: 1, or 2,11,21, or 1-4 -- counted from 1, and reported as themselves (t = 11 is time point 11). A series of one frame is analysed whatever this says.", value="") frames
 #@ String  (persist=false, label="Output already in the output directory", description="resume_unfinished: a series an interrupted run left unfinished carries on from the frames it finished (refused if it was run with other settings); a finished series is analysed again. skip_finished: the same, and a finished series whose settings match is skipped without being opened. redo_all: every series is analysed again from scratch.", value="resume_unfinished", choices={"resume_unfinished","skip_finished","redo_all"}) existingOutput
+#@ String  (persist=false, label="Run tag (blank = none)", description="Names this run's batch_summary_<tag>.tsv (and batch_params_<tag>.txt), so several runs can share one output directory -- the tasks of a SLURM array, say. Letters, digits, _ and - only.", value="") runTag
 
 // Run_NucleusSelector_Batch.groovy
 //
@@ -106,12 +107,14 @@ params.frames = frames
 // an earlier run left. BatchRunner owns the vocabulary and refuses anything
 // else -- choices= is not enforced on the command line.
 params.existing_output = existingOutput
+// Names the batch's own two files apart when several runs share outdir.
+params.run_tag = runTag
 
 def res = BR.load(LIBDIR).run(rows, root, params, outdir) { IJ.log(it) }
 
 // The summary is the deliverable when a batch is large: it says which rows to
 // look at, and it exists whether or not any of them failed.
-IJ.log("Summary: " + new File(outdir, "batch_summary.tsv").getAbsolutePath())
+IJ.log("Summary: " + res.summary_file.getAbsolutePath())
 if (res.failed > 0 || res.frames_failed > 0) {
     IJ.log("")
     IJ.log(res.failed + " row(s) and " + res.frames_failed + " frame(s) FAILED -- the rest completed. " +
