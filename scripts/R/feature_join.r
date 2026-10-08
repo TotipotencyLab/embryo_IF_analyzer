@@ -51,6 +51,37 @@ run_input_fingerprint <- function(paths){
 }
 
 
+#' Refuse a table made from a different annotate run
+#'
+#' The one run_id guard: join_feature_table() and join_tracks() both call it,
+#' so "made from these features" means the same thing for a statistics table
+#' and a tracks table.
+#'
+#' @param rid_x  the features' run_id(s)
+#' @param rid_t  the other table's run_id(s)
+#' @param what   the other table's name, for the message
+#' @param force  warn instead of stopping
+#' @param remedy what to re-run, for the message
+check_run_id <- function(rid_x, rid_t, what, force = FALSE,
+                         remedy = "Re-run the statistics against these features"){
+  if(identical(sort(as.character(rid_x)), sort(as.character(rid_t)))){
+    return(invisible(TRUE))
+  }
+  msg <- paste0(
+    what, " was produced by a different annotate run.\n",
+    "  features:   ", paste(rid_x, collapse = ", "), "\n",
+    "  ", what, ": ", paste(rid_t, collapse = ", "), "\n",
+    "  feature_id is sequential per image, so these tables describe ",
+    "different objects under the same names.\n",
+    "  ", remedy, ", or pass --force if you are certain.")
+  if(!force){
+    stop(msg, call. = FALSE)
+  }
+  warning(msg, call. = FALSE)
+  return(invisible(FALSE))
+}
+
+
 #' Join a per-feature table onto a feature-keyed table, refusing a mismatch
 #'
 #' @param x        the spine -- the annotation, one row per ROI, or any table
@@ -85,20 +116,7 @@ join_feature_table <- function(x, tbl, cols = NULL, by = c("series_id", "feature
   rid_x <- unique(stats::na.omit(x$run_id))
   rid_t <- unique(stats::na.omit(tbl$run_id))
   if(length(rid_x) && length(rid_t)){
-    if(!identical(sort(as.character(rid_x)), sort(as.character(rid_t)))){
-      msg <- paste0(
-        what, " was produced by a different annotate run.\n",
-        "  features:   ", paste(rid_x, collapse = ", "), "\n",
-        "  ", what, ": ", paste(rid_t, collapse = ", "), "\n",
-        "  feature_id is sequential per image, so these tables describe ",
-        "different objects under the same names.\n",
-        "  Re-run the statistics against these features, or pass --force if ",
-        "you are certain.")
-      if(!force){
-        stop(msg, call. = FALSE)
-      }
-      warning(msg, call. = FALSE)
-    }
+    check_run_id(rid_x, rid_t, what = what, force = force)
   }else{
     # Not an error: tables written before run_id existed are still usable, but
     # the one guard that would catch a cross-run join is absent and saying so

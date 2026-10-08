@@ -133,6 +133,17 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = "any of box, violin, quasirandom [default: box quasirandom]")
   p <- add_argument(p, "--colour_by", short = "-C", type = "character",
                     help = "column mapped to point colour")
+  p <- add_argument(p, "--track_type", short = "-y", type = "character", default = NA,
+                    help = paste("join the tracks Make_FeatureTracks wrote for this feature type:",
+                                 "adds track_id, branch_id, branch_merged to every row and",
+                                 "writes <prefix>branches.tsv"))
+  p <- add_argument(p, "--tracks_dir", short = "-K", type = "character", default = NA,
+                    help = "where the tracks tables are [default: beside each features file]")
+  p <- add_argument(p, "--force", short = "-U", flag = TRUE,
+                    help = "join the tracks even when their run_id disagrees")
+  p <- add_argument(p, "--keep_merged_branches", short = "-M", flag = TRUE,
+                    help = paste("with --group_by branch_id, plot merged branches too",
+                                 "(they describe two objects, so they are left out by default)"))
   p <- add_argument(p, "--output_prefix", short = "-X", type = "character", default = "",
                     help = "prefix for the output files")
   p <- add_argument(p, "--plot_width", short = "-W", type = "double", default = 8,
@@ -171,6 +182,24 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   want_stats <- .cli_resolve_arg(argv$stat, "--stat")
   res_dirs <- .cli_resolve_arg(argv$res_dir, "--res_dir")
 
+  track_type <- if (is.na(argv$track_type)) NA_character_ else argv$track_type
+  if (is.na(track_type)) {
+    for (o in c("tracks_dir", "force", "keep_merged_branches")) {
+      if (!identical(argv[[o]], NA) && !identical(argv[[o]], FALSE)) {
+        warning("--", o, " does nothing without --track_type", call. = FALSE)
+      }
+    }
+  }
+  # A track can hold two cells at one t (a mother's daughters), so a statistic
+  # pooled over it averages different objects -- the frames-summed-into-a-count
+  # mistake again. What a lineage supports is a count, which count_features does.
+  if ("track_id" %in% group_by) {
+    stop("--group_by track_id would pool a lineage's cells into one distribution. ",
+         "Group by branch_id (one object through time), or count features per track ",
+         "and t: count_features_cli.r --feature_table <this feature_stats.tsv> ",
+         "--feature_class_by track_id", call. = FALSE)
+  }
+
   files <- .cli_resolve_input_path(argv$input, "_features\\.rds$")
   message("Summarising ", length(files), " feature file(s)")
 
@@ -186,6 +215,7 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   # --- summarise ---------------------------------------------------------------
   per_file <- list()
   rejects <- list()
+  branches <- list()
   # Say why a column is absent, rather than leaving the reader to hunt for it in
   # --show_avail_stats and find nothing. area_med only stands in for size while
   # the object is a sphere, so the volume route matters for irregular ones.
@@ -203,6 +233,14 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     if (length(keep_features)) {
       feats <- feats[feats$feature_type %in% keep_features, , drop = FALSE]
       if (!nrow(feats)) next
+    }
+
+    # Joined before summarising, so the three columns ride through as
+    # per-feature metadata like any sheet column.
+    if (!is.na(track_type)) {
+      tdir <- if (is.na(argv$tracks_dir)) dirname(path) else argv$tracks_dir
+      feats <- join_tracks(feats, track_type, tdir, force = argv$force)
+      branches[[path]] <- attr(feats, "branches")
     }
 
     res <- .read_res_for(feats, path, res_dirs)
@@ -314,6 +352,17 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   utils::write.table(stats, tsv, sep = "\t", quote = FALSE, row.names = FALSE)
   message("  -> ", basename(tsv))
 
+  if (!is.na(track_type)) {
+    br <- dplyr::bind_rows(branches)
+    br_path <- file.path(outdir, paste0(argv$output_prefix, "branches.tsv"))
+    utils::write.table(br, br_path, sep = "\t", quote = FALSE, row.names = FALSE, na = "")
+    n_untracked <- sum(stats$feature_type == track_type & is.na(stats$track_id))
+    message("  ", length(unique(paste(br$series_id, br$track_id))), " ", track_type,
+            " track(s), ", nrow(br), " branch(es), ", sum(br$branch_merged),
+            " of them merged; ", n_untracked, " feature(s) linked to nothing")
+    message("  -> ", basename(br_path))
+  }
+
   rej <- dplyr::bind_rows(rejects)
   if (nrow(rej)) {
     rej_path <- file.path(outdir, paste0(argv$output_prefix, "feature_rejects.tsv"))
@@ -342,8 +391,23 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
     plots <- list()
     for (g in group_by) {
+      data_g <- stats
+      if (g == "branch_id") {
+        # A per-branch distribution is a per-cell summary: a merged branch is
+        # two objects, and an untracked feature is in no branch at all.
+        drop <- is.na(data_g$branch_id) |
+          (!argv$keep_merged_branches & data_g$branch_merged %in% TRUE)
+        if (any(drop)) {
+          message("  --group_by branch_id: left out ", sum(drop), " feature(s) -- ",
+                  sum(is.na(data_g$branch_id)), " in no branch, ",
+                  sum(data_g$branch_merged %in% TRUE & !is.na(data_g$branch_id)),
+                  " on merged branches",
+                  if (argv$keep_merged_branches) " (kept: --keep_merged_branches)" else "")
+        }
+        data_g <- data_g[!drop, , drop = FALSE]
+      }
       pl <- plot_feature_stat_list(
-        stats, value_cols = if (length(want_stats)) want_stats else NULL,
+        data_g, value_cols = if (length(want_stats)) want_stats else NULL,
         group_col = g, types = plot_types,
         colour_by = if (is.na(argv$colour_by)) NULL else argv$colour_by,
         log_cols = log_cols)

@@ -891,8 +891,30 @@ strictly the centroid file's stem, which `annotate` names after the series id.)
 
 **Tracks are not copied into the feature table.** `_tracks.tsv` is the only
 store of them, and R joins it at use, which is also where track and branch ids
-are numbered (the `tracking` milestone's `join_tracks()`). Nothing here holds
-a `track_id`: TrackMate's own are internal integers.
+are numbered — `join_tracks()` in `scripts/R/feature_tracks.r`, called by
+`feature_stat_cli.r --track_type` and `montage_qc_cli.r --color_by
+track_id|branch_id` (§3). Nothing here holds a `track_id`: TrackMate's own are
+internal integers.
+
+**What R refuses before it numbers anything**, each naming what it found and
+saying to re-run `Make_FeatureTracks`, because each is a tracks table that
+would otherwise join cleanly onto the wrong nuclei or shrink a track without a
+word: a `run_id` other than the features' (the guard every per-feature join
+uses; `--force` warns instead); no `run_id` column, or a blank one; a row naming
+a feature that does not exist, or linking from one; a feature with no row; a
+repeated row; a feature with both a start row and a link; a row whose `t` is
+not its feature's; a link that does not go forward in time; a series with no
+tracks table at all.
+
+**How the ids are numbered**, deterministically — identical links give
+identical ids. A **track** is everything connected by links, numbered
+`<feature_type>_track_NNNN` in order of its first feature by `t`, then
+`feature_id`. A **branch** starts at a track's first feature, at each daughter
+of a division, and at a merged feature, and runs on while each feature has one
+successor and that successor one predecessor — so it holds at most one feature
+per `t`. Branches are numbered `<track_id>_bNN` within their track, the same
+way. A feature linked to nothing has neither id. An edit can renumber both, so
+an id noted down holds for one set of links.
 
 #### `<series_id>_<feature_type>_tracks.tsv`
 
@@ -1325,6 +1347,7 @@ genuinely has few objects.
 <outdir>/<output_prefix>feature_stats.tsv     one row per detected FEATURE
 <outdir>/<output_prefix>feature_rejects.tsv   what did not become one
 <outdir>/<output_prefix>feature_stats.pdf     one page per statistic, unless --no_plot
+<outdir>/<output_prefix>branches.tsv          one row per branch, only with --track_type
 ```
 
 The unit is the feature, not the ROI: adjacent z-slices of one object share
@@ -1347,6 +1370,7 @@ rejects table instead of being folded in.
 | `circ_med`, `circ_min` | only when the `_res.txt` was found |
 | `ch<N>_signal` | one column per channel measured; only when the `_res.txt` was found |
 | `class` | the `--class` a feature matched, or `unclassified`; only when `--class` was given |
+| `track_id`, `branch_id`, `branch_merged` | only with `--track_type`: the feature's lineage, its object-through-time, and whether that branch was formed by a merge (§2, Feature tracks). Blank for a feature of another type or linked to nothing |
 | *metadata* | every non-`series_id` series-table column, when supplied. `is_bridge` is **not** carried through: it is an ROI-level fact that varies within a feature, and `n_bridge` / `frac_bridge` are the feature-level answer |
 
 ⚠️ Every statistic above **excludes bridge ROIs** (`n_roi` and `n_z`
@@ -1392,6 +1416,40 @@ whose span is wide enough that a log axis may help, restricted to the
 statistics that actually get a panel. A logged panel says `(log10)` on its
 axis, and one that would have to drop a zero falls back to linear **with a
 warning**.
+
+#### `--track_type` — statistics per object through time
+
+`--track_type nucleus` joins the tracks `Make_FeatureTracks.groovy` wrote for
+that type (beside each features file, or `--tracks_dir`) onto every feature
+before summarising, refusing a stale or broken tracks table as §2 describes
+(`--force` overrides a `run_id` mismatch only). Each row is still one object at
+one time point; `branch_id` is what strings a cell's rows together over `t`.
+
+**The branch is the unit for anything per cell.** `--group_by branch_id` plots
+each branch's distribution over its time points, and leaves out the features
+on **merged** branches (they describe two objects; `--keep_merged_branches`
+draws them) and those **in no branch**, saying how many. `--group_by track_id`
+is **refused**: a lineage holds two cells at one `t` once it divides, and a
+distribution pooled over it is the frames-summed-into-a-count mistake again.
+What a lineage supports is a count — `count_features_cli.r --feature_table
+<this feature_stats.tsv> --feature_class_by track_id` counts features per
+track per `t`.
+
+##### `<output_prefix>branches.tsv`
+
+One row per branch, merged ones included and flagged — the lineage itself,
+with no statistic averaged over time. Sorted by series, track, branch.
+
+| Column | Notes |
+|---|---|
+| `series_id` | |
+| `feature_type` | the tracked type |
+| `track_id` | `<feature_type>_track_NNNN` |
+| `branch_id` | `<track_id>_bNN` |
+| `parent_branch_id` | the branch its first feature was linked from: blank for a track's first branch, two ids joined by `;` for a merged branch |
+| `branch_merged` | `TRUE` when its first feature has two predecessors |
+| `first_t`, `last_t` | its first and last time point; a gap-closed branch has fewer features than the span |
+| `n_features` | features in it, at most one per `t` |
 
 #### `--class` — naming the kinds of object, from their own statistics
 
@@ -1546,6 +1604,15 @@ the series', the same on every page; each page's title adds `t = <t>`.
 Panel (iii) takes the same `--feature_table` / `--feature_class_by` /
 `--class_sep` as `count_features_cli.r`, so an outline can be coloured by
 `class` rather than by `feature_type`.
+
+**`--color_by track_id` or `branch_id`** colours panel (iii) by lineage or by
+object-through-time, over every page of the series, so a nucleus keeps its
+colour from frame to frame and **a tracking error shows as a colour jump** —
+the visual check of tracking. The tracks are read from beside `--features`
+(or `--tracks_dir`) and checked as §2 describes; features linked to nothing
+are grey, as are other types. `--label` then writes the track number (`0003`)
+or the branch (`0003b02`), and its numbers select tracks: `--label 3` labels
+every branch of track 3.
 
 `--color_map 'growing=red' 'small=blue'` highlights the classes under
 inspection. Everything else — including orphans — is drawn as a single `other`

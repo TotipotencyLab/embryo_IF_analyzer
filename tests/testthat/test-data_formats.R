@@ -672,6 +672,35 @@ test_that("the tracks tables are documented as FeatureTracks.groovy writes them"
   expect_match(src, 'CENTROID_SUFFIX = "_feature_centroids.tsv"', fixed = TRUE)
 })
 
+test_that("branches.tsv and the track columns are documented as join_tracks() makes them", {
+  source_r_scripts(c("feature_join.r", "feature_tracks.r"))
+  d <- withr::local_tempdir()
+  feats <- data.frame(series_id = "S", feature_id = sprintf("nucleus_%04d", 1:3),
+                      feature_type = "nucleus", t = c(1L, 2L, 2L), run_id = "r1")
+  utils::write.table(data.frame(series_id = "S", t = c(1L, 2L, 2L),
+                                feature_id = sprintf("nucleus_%04d", 1:3),
+                                prev_feature_id = c("", "nucleus_0001", "nucleus_0001"),
+                                run_id = "r1"),
+                     tracks_path(d, "S", "nucleus"), sep = "\t", quote = FALSE, row.names = FALSE)
+  out <- join_tracks(feats, "nucleus", d)
+  written <- colnames(attr(out, "branches"))
+
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  start <- grep("^##### `<output_prefix>branches.tsv`", doc)
+  expect_length(start, 1L)
+  body <- doc[(start + 1):length(doc)]
+  body <- body[seq_len(which(grepl("^#{2,5} ", body))[1] - 1)]
+  first <- sub("^\\| ([^|]*)\\|.*$", "\\1", grep("^\\| `", body, value = TRUE))
+  documented <- unlist(regmatches(first, gregexpr("(?<=`)[a-z_]+(?=`)", first, perl = TRUE)))
+  expect_identical(written, documented)
+
+  # The three columns join_tracks() adds are the ones feature_stats.tsv documents.
+  added <- setdiff(colnames(out), colnames(feats))
+  row <- grep("^\\| `track_id`, `branch_id`, `branch_merged` \\|", doc, value = TRUE)
+  expect_length(row, 1L)
+  expect_identical(added, c("track_id", "branch_id", "branch_merged"))
+})
+
 test_that("feature_id uses the documented vocabulary", {
   skip_if_no_sf()
   skip_if_no_pkg(c("argparser", "ggplot2"))
