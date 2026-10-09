@@ -1353,6 +1353,18 @@ segmented time-lapse exists (`note/wishlist.md`).
       `feature_stat_cli.r`, and `Make_FeatureTracks`' own seed, uncommented
       by hand, applied by both CLIs. With only the seed present, output is
       identical to PR 3's but for the new column.
+- [x] **PR 5 — `tracking-rename` (R, docs).** ✅ done. Added 2026-10-09, after
+      PR 4: `montage_qc_cli.r` → **`feature_outline_cli.r`**. Colouring by
+      track made the old name mislead — "QC" never said what was checked, and
+      a track check was not where anyone would look for one. The name now says
+      what it draws; class, id, track and branch are `--color_by` modes of one
+      picture. A separate track-QC script was rejected: it would duplicate the
+      panels, scale bar and labels for the sake of one flag. No behaviour
+      change: the montage of a real time course, by class and by branch with
+      labels, is byte-identical before and after. README gains "Tracking a
+      time course", the five steps in order, since the workflow crosses the
+      README's Fiji/R split. Entries above keep the old name: they record what
+      was built then.
 - [ ] *Not in this milestone* (moved out 2026-10-08): **the overlap-core
       refactor** (§7) — with the in-house frame-to-frame linker out of scope,
       it has one caller and nothing above needs it; a standalone cleanup, any

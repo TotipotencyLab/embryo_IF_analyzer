@@ -77,7 +77,7 @@ class Overview {
     /**
      * File-name suffix for the copy with outlines drawn on it; the bare
      * projection takes "". Lives here so the two runners cannot drift apart --
-     * montage_qc_cli.r is handed these names by hand, so a mismatch would only
+     * feature_outline_cli.r is handed these names by hand, so a mismatch would only
      * show up as a missing file much later.
      */
     static final String OVERLAY_SUFFIX = "_overlay"

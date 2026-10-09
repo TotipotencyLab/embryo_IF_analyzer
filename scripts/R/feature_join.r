@@ -167,7 +167,7 @@ join_feature_table <- function(x, tbl, cols = NULL, by = c("series_id", "feature
 
 #' Join several columns into one class label
 #'
-#' Shared by count_features_cli.r and montage_qc_cli.r so --feature_class_by
+#' Shared by count_features_cli.r and feature_outline_cli.r so --feature_class_by
 #' means the same thing in both.
 #'
 #' The components are kept as their own columns beside the composite, so

@@ -65,7 +65,7 @@ R reads those, merges per-slice ROIs into 3D objects, and does the analysis.
        --threshold 'area_med=400' --color_by series_id
 
    # eyeball it: raw projection | Fiji outline | R union
-   scripts/R_cli/montage_qc_cli.r \
+   scripts/R_cli/feature_outline_cli.r \
        --features results/GRV_Position010_features.rds \
        --projection results/GRV_Position010_overview_ch1.png \
        --overlay results/GRV_Position010_overview_ch1_overlay.png \
@@ -154,16 +154,16 @@ GRV_Position010_overview_ch1_overlay.png   with outlines
 They are written for the DNA channel plus every channel being measured, since
 the outlines come from DNA and drawing them over the other channels is how you
 check a signal against the compartment it should be in. Both are wanted at once
-by `montage_qc_cli.r`, which is why they are separate files.
+by `feature_outline_cli.r`, which is why they are separate files.
 
 A **time-lapse** gets a TIFF per channel instead — `_overview_ch1.tif` and
 `_overview_ch1_overlay.tif`, a page per frame analysed — drawn at **one display
 range per channel across all the frames**, so a cell does not seem to brighten
-just because each frame was stretched on its own. `montage_qc_cli.r` then writes
+just because each frame was stretched on its own. `feature_outline_cli.r` then writes
 a page per frame too (`--output ….tif`; `--t` to choose frames), and
 `annotate_features_cli.r --qc_plot` writes `<series_id>_features_qc.tif`.
 
-The QC montage is **titled with the series id** by default (`--title` to
+`feature_outline_cli.r`'s montage is **titled with the series id** by default (`--title` to
 override, `--no_title` to omit) — three panels and their captions say what each
 panel is, but nothing in the picture says which series it belongs to once it is
 open in a viewer or pasted into a note.
@@ -171,7 +171,7 @@ open in a viewer or pasted into a note.
 To **name a problem outline**, colour each feature of one type differently and
 write its number on it: `annotate_features_cli.r --qc_plot --qc_color_by
 feature_id --qc_label all`, or the same without the `qc_` prefix on
-`montage_qc_cli.r`. The type is the first `--feature`; others are drawn grey.
+`feature_outline_cli.r`. The type is the first `--feature`; others are drawn grey.
 `--qc_palette` picks the colours (`Tableau 10` by default; `Okabe-Ito`, `Set 1`,
 `Viridis`, …). `annotate_features_cli.r` also writes
 `<series_id>_feature_centroids.tsv`, one point per feature in calibrated units —
@@ -310,7 +310,7 @@ analysis script:
 
 [`scripts/R_cli/`](scripts/R_cli/) wraps these as command-line entry points —
 `annotate_features_cli.r`, `count_features_cli.r`, `feature_stat_cli.r`,
-`feature_scatter_cli.r`, `montage_qc_cli.r` and `group_montage_cli.r`. Each
+`feature_scatter_cli.r`, `feature_outline_cli.r` and `group_montage_cli.r`. Each
 takes `--help`.
 
 `feature_stat_cli.r` is the one to run **before** choosing any size or signal
@@ -425,7 +425,25 @@ silently — unless `--drop_orphan_feature` — it is evidence about where the b
 wrong. `class` is an ordinary column, so `--group_by class` and
 `feature_scatter_cli.r --color_by class` both work.
 
-**Linking features across time** is a Fiji step that runs *after* `annotate`,
+[`PLA_analysis/`](PLA_analysis/) contains the proximity ligation assay analysis
+(published separately) and serves as a worked example of the R side end to end.
+
+## Tracking a time course
+
+Tracking goes back and forth between R and Fiji, so the steps are gathered here
+in the order they run, for one feature type at a time:
+
+1. **Annotate** — `annotate_features_cli.r` as for any series; it also writes
+   `<series_id>_feature_centroids.tsv`.
+2. **Link** — `Make_FeatureTracks.groovy` (Fiji) turns the centroids into
+   `<series_id>_<type>_tracks.tsv`.
+3. **Check** — `feature_outline_cli.r --color_by branch_id --label all`, a page
+   per frame.
+4. **Correct** — rows in `<series_id>_<type>_track_edits.tsv`, then step 3
+   again. Step 2 is not re-run.
+5. **Measure** — `feature_stat_cli.r --track_type <type>`.
+
+**Linking** is a Fiji step that runs *after* `annotate`,
 because features exist only once R has grouped the ROIs, and the tracker
 (TrackMate) is Java. `Make_FeatureTracks.groovy` reads the
 `<series_id>_feature_centroids.tsv` files `annotate` wrote and writes, beside
@@ -445,36 +463,36 @@ and divides as if consecutive. A division after the mother went undetected for
 a frame comes out as one daughter linked and the other starting a new track —
 TrackMate's behaviour, not a setting.
 
-Tracks are joined onto the features in R at use, never written into them, and
-numbered there: `track_id` is a lineage (a cell and its descendants),
-`branch_id` one object through time. To see them, colour the QC montage by
+**Checking.** Tracks are joined onto the features in R at use, never written
+into them, and numbered there: `track_id` is a lineage (a cell and its
+descendants), `branch_id` one object through time. Colour the outlines by
 either — a tracking error shows up as a colour jump between pages:
 
 ```bash
-montage_qc_cli.r --features R/feature/S_features.rds --output S_tracks.tif \
+feature_outline_cli.r --features R/feature/S_features.rds --output S_tracks.tif \
   --color_by branch_id --label all
 ```
 
-and `feature_stat_cli.r --track_type nucleus` puts both ids on every row of
-`feature_stats.tsv` and writes `branches.tsv` (one row per branch: its parent,
-first and last time point). Per-cell plots group by `branch_id`; a lineage is
-counted, never averaged (`count_features_cli.r --feature_table
-feature_stats.tsv --feature_class_by track_id`). A tracks table made before a
-re-annotation, or missing a row, is refused rather than joined.
+A tracks table made before a re-annotation, or missing a row, is refused rather
+than joined.
 
 **Correcting a track by hand** is a row in the `<series_id>_<type>_track_edits.tsv`
 seeded beside each tracks table: copy its commented template line, remove the
-`# `, and fill in the action and two `feature_id`s (the montage's `--color_by
-feature_id --label all` shows which is which). `join X Y` rejoins a track that
-broke (X its last feature before the break, Y the first after), `cut X Y`
-removes a wrong link, `link X Y` adds one — a missed division is two `link`s
-from the mother. The edits are applied every time R reads the tracks, and
-`branches.tsv` marks the tracks they touched as `edited`. They are tied to the
-annotation they were made on: re-annotating refuses them rather than applying
-them to whichever nuclei now hold those ids. Details in `note/data_formats.md`.
+`# `, and fill in the action and two `feature_id`s (`feature_outline_cli.r
+--color_by feature_id --label all` shows which is which). `join X Y` rejoins a
+track that broke (X its last feature before the break, Y the first after),
+`cut X Y` removes a wrong link, `link X Y` adds one — a missed division is two
+`link`s from the mother. The edits are applied every time R reads the tracks,
+and `branches.tsv` marks the tracks they touched as `edited`. They are tied to
+the annotation they were made on: re-annotating refuses them rather than
+applying them to whichever nuclei now hold those ids.
 
-[`PLA_analysis/`](PLA_analysis/) contains the proximity ligation assay analysis
-(published separately) and serves as a worked example of the R side end to end.
+**Measuring.** `feature_stat_cli.r --track_type nucleus` puts both ids on every
+row of `feature_stats.tsv` and writes `branches.tsv` (one row per branch: its
+parent, first and last time point). Per-cell plots group by `branch_id`; a
+lineage is counted, never averaged (`count_features_cli.r --feature_table
+feature_stats.tsv --feature_class_by track_id`). Details in
+`note/data_formats.md`.
 
 ## Tests
 

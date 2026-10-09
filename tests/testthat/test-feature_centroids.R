@@ -261,18 +261,18 @@ test_that("a time course keeps each feature's colour: ids coloured over the whol
   expect_true(has(2, "#F28E2B")); expect_false(has(2, "#4E79A7"))
 })
 
-test_that("montage_qc: colour by id needs one type and no class colouring", {
+test_that("feature_outline: colour by id needs one type and no class colouring", {
   skip_if_no_sf()
   skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
   skip_if_no_fixture(fixture_file("nucleus", "outline"))
-  source_cli(c("annotate_features_cli.r", "montage_qc_cli.r"))
+  source_cli(c("annotate_features_cli.r", "feature_outline_cli.r"))
   out <- withr::local_tempdir()
   suppressMessages(annotate_features_cli(c(
     "--input", fixture_dir(), "--feature", "nucleus", "nucleolus", "--outdir", out,
     "--min_z_span", "default=5", "nucleolus=2")))
   rds <- file.path(out, "GRV_Position010_features.rds")
   cfg <- file.path(fixture_dir(), "GRV_Position010_config.txt")
-  run <- function(...) suppressWarnings(suppressMessages(montage_qc_cli(c(
+  run <- function(...) suppressWarnings(suppressMessages(feature_outline_cli(c(
     "--features", rds, "--config", cfg, ...))))
 
   expect_error(run("--output", file.path(out, "a.png"), "--color_by", "feature_id"),

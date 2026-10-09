@@ -73,7 +73,7 @@ suppressPackageStartupMessages({
   # The test suite could not have caught this. It pre-sources the whole of
   # scripts/R/, so the name was always bound there; only the CLI's own,
   # deliberately narrower sourcing was short. Hence the subprocess test in
-  # test-count_montage_cli.R, which runs this file the way a user does.
+  # test-count_outline_cli.R, which runs this file the way a user does.
   dir <- if (is.na(rlib)) file.path(.THIS_DIR, "..", "R") else rlib
   needed <- c(feature_join.r = "join_feature_table",
               classify_features.r = "CLASS_UNCLASSIFIED")

@@ -327,7 +327,7 @@ test_that("feature_stat --group_by branch_id leaves out merged branches and untr
 test_that("montage --color_by branch_id: one colour per branch over every page, untracked grey", {
   skip_if_no_sf()
   skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
-  source_cli(c("annotate_features_cli.r", "montage_qc_cli.r"))
+  source_cli(c("annotate_features_cli.r", "feature_outline_cli.r"))
   d <- withr::local_tempdir(); out <- withr::local_tempdir()
   .time_course(d)
   suppressMessages(annotate_features_cli(c("--input", d, "--feature", "nucleus", "--outdir", out,
@@ -335,7 +335,7 @@ test_that("montage --color_by branch_id: one colour per branch over every page, 
   .tracks_for(out)
   rds <- file.path(out, "TC_features.rds")
   cfg <- file.path(d, "TC_config.txt")
-  run <- function(...) suppressWarnings(suppressMessages(montage_qc_cli(c(
+  run <- function(...) suppressWarnings(suppressMessages(feature_outline_cli(c(
     "--features", rds, "--config", cfg, "--no_title", "--no_labels", ...))))
   pages_by <- function(mode){
     tif <- file.path(out, paste0(mode, ".tif"))

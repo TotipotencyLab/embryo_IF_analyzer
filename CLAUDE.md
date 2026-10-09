@@ -105,7 +105,7 @@ dangerous. Two things depend on it and break silently if changed:
 these are what lets the R side reconstruct the image frame — the bounding box of
 the detected objects is not the frame, and a QC panel drawn without them is
 cropped differently from the Fiji overview PNG it is meant to sit beside.
-`montage_qc_cli.r` warns loudly rather than producing a misaligned montage.
+`feature_outline_cli.r` warns loudly rather than producing a misaligned montage.
 `pixel_depth` is blank for a single plane rather than ImageJ's default 1.0 — a
 z step that does not exist must not arrive as a usable-looking number. The file
 is also **readable back in** as a run's parameters (`RunConfig.groovy`), which
@@ -340,8 +340,8 @@ loop, including how to diff.
   (outlines → features, containment, + QC plot), `count_features_cli.r`
   (features → tidy counts, the oocyte deliverable), `feature_stat_cli.r`
   (per-feature statistics and their distributions), `feature_scatter_cli.r`
-  (two statistics against each other) and `montage_qc_cli.r` (the 3-panel
-  check).
+  (two statistics against each other) and `feature_outline_cli.r` (one series'
+  features outlined on its image, by class, id or track).
 
   **`feature_stat_cli.r` is the threshold-finding step**, and the unit is the
   feature, not the ROI — adjacent z-slices of one object share signal through
@@ -366,7 +366,7 @@ loop, including how to diff.
   cell, grid, title, scale bar, and `mg_write()`. Two things it settles. Its
   `full_width` is *given*, never inferred from the first cell: the group montage
   passes `cell * ncol` so a group of one still comes out the width of a full
-  grid, while `montage_qc_cli.r` passes nothing, because its three panels are
+  grid, while `feature_outline_cli.r` passes nothing, because its three panels are
   three renderings of one image scaled to a common height and padding them apart
   would put gaps into a strip meant to be read across. And `mg_write()` states
   the bit depth, because magick composes in 16 bits and appending a title band
