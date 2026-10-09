@@ -235,7 +235,8 @@ This means the Groovy scripts may have to defined into different levels:
   the partition keys (`z`, `t`) as an argument -- and retire the old one. The
   review, R1-R5, and the callers (`test-spatial.R` and PLA scripts; PLA is
   published, so edit those for future work only) are in
-  `time_series_plan.md` §7.
+  `time_series_plan.md` §7. Two of those findings give wrong pairs today (R1,
+  R5); their reproduction is `known_issue.md` entry 6.
   - Its second caller was to be a frame-to-frame linker matching features by
     how much their outlines overlap: the in-house alternative to TrackMate.
     With TrackMate doing the linking, that is worth building only as a
