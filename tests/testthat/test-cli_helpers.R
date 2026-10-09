@@ -365,3 +365,12 @@ test_that("the fixture predates pixel_depth, so no volume is inferred from it", 
   expect_false(is.null(cfg))
   expect_true(is.na(.cli_config_num(cfg, "pixel_depth")))
 })
+
+test_that(".cli_read_table drops a spreadsheet's byte-order mark from the first column name", {
+  # Review, PR 6: R refused such a series sheet with "no 'series_id' column.
+  # Found: series_id, ..." -- the mark invisible in the message -- while
+  # Groovy's Tsv.read() accepts it.
+  f <- withr::local_tempfile(fileext = ".tsv")
+  writeBin(c(as.raw(c(0xef, 0xbb, 0xbf)), charToRaw("series_id\tinclude\nS1\ttrue\n")), f)
+  expect_identical(colnames(.cli_read_table(f)), c("series_id", "include"))
+})

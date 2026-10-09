@@ -20,6 +20,12 @@ sharing a common library, not one program.
    plausible and is wrong.
    - Changing anything that writes the output files ⇒ re-run a reference and
      **diff**. The ROI counts agreeing is not the check; the files agreeing is.
+     **Known exception: multi-page TIFFs that R writes through magick** (the
+     `feature_outline` montage, `annotate`'s QC TIFF). They are not
+     byte-reproducible: the same code run twice differs in 2–3 bytes of padding
+     the TIFF writer leaves uninitialised, outside every strip and directory.
+     Compare them **page by page on pixels** (`image_data()`), and check that the
+     differing bytes are padding, never pixels.
    - A new option that should change nothing when off ⇒ prove it changes nothing
      when off, and *separately* prove it does something when on. Identical
      output can mean "correctly did nothing" or "silently never ran" — those
@@ -207,6 +213,20 @@ loop, including how to diff.
 
   The line between `Make_` and `Run_` is judgement, not rule. Do not invent a
   fifth verb without adding it here.
+- **`Make_FeatureTracks.groovy` links annotate's features across time**, with
+  TrackMate's LAP tracker driven without an image. The round trip is R → Fiji →
+  R because features exist only after R's grouping and the tracker is Java. It
+  writes **links, not ids**: `join_tracks()` (`scripts/R/feature_tracks.r`)
+  numbers lineages (`track_id`) and branches (`branch_id`) every time R reads
+  them, so no id is stored where it could go stale, and applies the hand edits
+  in `_track_edits.tsv` there too — refused, never applied to other nuclei,
+  when they were made on another annotation. ⚠️ **The tracker's time axis is
+  the run's `frames_analysed`**, stamped on the centroid table by `annotate`,
+  not the time points that hold a feature: TrackMate skips a frame with no
+  spots, so a frame where nothing was found would vanish and a link across it
+  look adjacent — a division across it recorded as a split or not depending on
+  whether some *other* nucleus was found that frame. Such a frame gets a
+  placeholder spot for the run only.
 - `Inspect_ImageFile.groovy` lists what is inside a file without opening it —
   series, dimensions, calibration — and with `checkPixels` reports the
   percentage of non-zero pixels per series. That last one matters: a series that

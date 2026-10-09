@@ -41,7 +41,9 @@ def CEN_COLS = ["series_id", "t", "feature_type", "feature_id", "x", "y", "z",
  *
  * `spots` are [name, t, x, y, z]; z null is written blank. Feature ids are
  * numbered in list order, so a case reads in names (A1, D2) and the returned
- * map turns them into ids.
+ * map turns them into ids. The `# frames_analysed:` line annotate copies from
+ * _config.txt is written above the header: opt.axis, else every t the spots
+ * hold; opt.noAxis leaves it out.
  */
 def writeCase = { String label, List spots, Map opt = [:] ->
     def dir = new File(tmp, label); dir.mkdirs()
@@ -60,6 +62,10 @@ def writeCase = { String label, List spots, Map opt = [:] ->
     }
     def f = new File(dir, (opt.stem ?: sid) + "_feature_centroids.tsv")
     TSV.write(rows, f, CEN_COLS)
+    if (!opt.noAxis) {
+        def axis = opt.axis ?: spots.collect { it[1] as int }.unique().sort()
+        f.setText("# frames_analysed: " + axis.join(" ") + "\n# pixel_depth: 1.0\n" + f.text, "UTF-8")
+    }
     return [dir: dir, file: f, ids: ids, names: ids.collectEntries { k, v -> [v, k] }]
 }
 
@@ -414,6 +420,60 @@ check("front end runs", feErr, null)
 check("front end: wrote the tracks", TSV.read(FTC.tracksFile(c18.file, "nucleus")).size(), 2)
 def b2 = new Binding(b.getVariables() + [useZ: ""])
 check("front end: a blank useZ stops it", errOf { new GroovyShell(this.class.classLoader, b2).evaluate(src) }?.contains("useZ must be true"), true)
+
+// -----------------------------------------------------------------------------
+println "\n--- 15. the time axis is the frames the run analysed (review, PR 6)"
+// Cases 3 and 4 need a bystander present in every frame, so that the frame
+// where the nucleus is missing EXISTS. Real data has no such guarantee: a
+// one-cell embryo at envelope breakdown, or a frame where detection failed,
+// has nothing at all. The axis line makes the frame exist without one.
+def c22 = writeCase("gap_alone", [["A1",1,0,0,0],["A2",2,1,0,0],["A4",4,3,0,0],["A5",5,4,0,0]], [axis: [1, 2, 3, 4, 5]])
+def logs22 = []
+def r22 = track(c22, XY, logs22)
+check("gap, no bystander: A4 follows A2, as with one", r22.links.sort(), ["A1<-", "A2<-A1", "A4<-A2", "A5<-A4"])
+check("gap, no bystander: counted as gap-closed", r22.res.series[0].stats.n_gap_closed, 1)
+check("gap, no bystander, max_frame_gap 1: bridges nothing", track(c22, XY + [max_frame_gap: 1]).links.sort(),
+      ["A1<-", "A2<-A1", "A4<-", "A5<-A4"])
+check("gap, no bystander: the log names the empty time point", logs22.any { it.contains("no nucleus found at t = 3") }, true)
+def p22 = TSV.read(FTC.paramsFile(c22.file, "nucleus")).collectEntries { [it.parameter, it.value] }
+check("params: frames is the axis", p22.frames, "1,2,3,4,5")
+check("params: frames_without_feature", p22.frames_without_feature, "3")
+check("placeholders never written", c22.dir.listFiles().findAll { it.text.contains(FTC.PLACEHOLDER) }.collect { it.getName() }, [])
+
+// The same division as case 3, without the bystander: what TrackMate does
+// must not depend on whether something else was found that frame.
+def c23 = writeCase("divide_gap_alone", [["M1",1,0,0,0],["M2",2,0,0,0],["D1",4,-4,0,0],["E1",4,4,0,0],["D2",5,-7,0,0],["E2",5,7,0,0]],
+                    [axis: [1, 2, 3, 4, 5]])
+def r23 = track(c23, XY)
+def mde = { List links -> links.findAll { it ==~ /^[MDE]\d.*/ }.sort() }
+check("division across an empty frame: the same links as with a bystander (case 3)", mde(r23.links), mde(r3.links))
+check("division across an empty frame: not a split", r23.res.series[0].stats.n_divisions, 0)
+
+// Time points after the last feature (s0009: nothing found at t = 80, 90).
+def c24 = writeCase("tail", [["A1",1,0,0,0],["A10",10,1,0,0]], [axis: [1, 10, 20, 30]])
+def r24 = track(c24, XY)
+check("empty time points at the end: the link before them unchanged", r24.links.sort(), ["A10<-A1", "A1<-"])
+check("...and recorded", TSV.read(FTC.paramsFile(c24.file, "nucleus")).find { it.parameter == "frames_without_feature" }.value, "20,30")
+
+// The library's own guard: given no axis, link() falls back to the features'
+// time points -- the behaviour this section replaces, kept visible here.
+def fb = FTC.link(FT.readCentroids(c22.file, "nucleus", false).features as List<Map>,
+                  FTC.checkSettings([feature_type: "nucleus", use_z: "false"]))
+check("control: without the axis the gap is invisible (0 gap-closed)", fb.stats.n_gap_closed, 0)
+
+def c25 = writeCase("no_axis", [["A1",1,0,0,0],["A2",2,1,0,0]], [noAxis: true])
+check("several time points and no axis line: refused",
+      errOf { track(c25, XY) }?.contains("no '# frames_analysed:' line"), true)
+check("...and nothing written", FTC.tracksFile(c25.file, "nucleus").exists(), false)
+def c26 = writeCase("no_axis_one_t", [["A1",1,0,0,0],["B1",1,5,0,0]], [noAxis: true])
+check("one time point and no axis line: fine", track(c26, XY).links.sort(), ["A1<-", "B1<-"])
+def c27 = writeCase("off_axis", [["A1",1,0,0,0],["A2",2,1,0,0]], [axis: [1, 3]])
+check("a t the axis does not name: refused", errOf { track(c27, XY) }?.contains("t = 2 is not among the frames the run analysed"), true)
+def c28 = writeCase("bad_axis", [["A1",1,0,0,0],["A2",2,1,0,0]], [noAxis: true])
+c28.file.setText("# frames_analysed: 1 two 3\n" + c28.file.text)
+check("an axis line that is not time points: refused", errOf { track(c28, XY) }?.contains("is not a list of time points"), true)
+check("a NaN distance refused (Groovy: NaN > 0 is true)",
+      errOf { FT.trackDirectory(c1.dir, XY + [feature_type: "nucleus", linking_max_distance: Double.NaN]) }?.contains("positive distance"), true)
 
 println String.format("%nTest_FeatureTracks: %d passed, %d FAILED", passed, failed)
 } catch (Throwable t) {

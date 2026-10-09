@@ -170,8 +170,10 @@ open in a viewer or pasted into a note.
 
 To **name a problem outline**, colour each feature of one type differently and
 write its number on it: `annotate_features_cli.r --qc_plot --qc_color_by
-feature_id --qc_label all`, or the same without the `qc_` prefix on
-`feature_outline_cli.r`. The type is the first `--feature`; others are drawn grey.
+feature_id --qc_label all` (or `--qc_label 7 12` for some), or
+`--color_by feature_id --label all` (`--label feature_id=7,12`) on
+`feature_outline_cli.r`, which can also label by track and branch
+(`--label_by`; `note/data_formats.md`). The type is the first `--feature`; others are drawn grey.
 `--qc_palette` picks the colours (`Tableau 10` by default; `Okabe-Ito`, `Set 1`,
 `Viridis`, …). `annotate_features_cli.r` also writes
 `<series_id>_feature_centroids.tsv`, one point per feature in calibrated units —
@@ -434,13 +436,15 @@ Tracking goes back and forth between R and Fiji, so the steps are gathered here
 in the order they run, for one feature type at a time:
 
 1. **Annotate** — `annotate_features_cli.r` as for any series; it also writes
-   `<series_id>_feature_centroids.tsv`.
+   `<series_id>_feature_centroids.tsv`, stamped with the run's
+   `frames_analysed` from Fiji's `_config.txt` beside its inputs.
 2. **Link** — `Make_FeatureTracks.groovy` (Fiji) turns the centroids into
    `<series_id>_<type>_tracks.tsv`.
-3. **Check** — `feature_outline_cli.r --color_by branch_id --label all`, a page
-   per frame.
-4. **Correct** — rows in `<series_id>_<type>_track_edits.tsv`, then step 3
-   again. Step 2 is not re-run.
+3. **Check** — `feature_outline_cli.r --feature nucleus --color_by branch_id
+   --label all`, a page per frame.
+4. **Correct** — rows in `<series_id>_<type>_track_edits.tsv`, chosen on
+   `--color_by branch_id --label_by feature_id branch_id`, then step 3 again.
+   Step 2 is not re-run.
 5. **Measure** — `feature_stat_cli.r --track_type <type>`.
 
 **Linking** is a Fiji step that runs *after* `annotate`,
@@ -458,10 +462,12 @@ ImageJ-macosx --headless --console --run scripts/groovy/Make_FeatureTracks.groov
 `useZ` has no default — `true` uses the 3-D distance, `false` x-y only — because
 with a coarse z step a nucleus's z centroid wobbles by more than it moves in x-y,
 and which is right depends on the data. Distances are in µm (15 by default);
-time points chosen with the batch's `frames=` are steps, so `1,10,20` gap-closes
-and divides as if consecutive. A division after the mother went undetected for
-a frame comes out as one daughter linked and the other starting a new track —
-TrackMate's behaviour, not a setting.
+the time points the run analysed are the steps (`frames_analysed`, which
+`annotate` copies onto the centroid table from Fiji's `_config.txt`), so
+`1,10,20` gap-closes and divides as if consecutive, and a time point where no
+nucleus was found is still a step. A division after the mother went undetected
+for a frame comes out as one daughter linked and the other starting a new
+track — TrackMate's behaviour, not a setting.
 
 **Checking.** Tracks are joined onto the features in R at use, never written
 into them, and numbered there: `track_id` is a lineage (a cell and its
@@ -470,7 +476,7 @@ either — a tracking error shows up as a colour jump between pages:
 
 ```bash
 feature_outline_cli.r --features R/feature/S_features.rds --output S_tracks.tif \
-  --color_by branch_id --label all
+  --feature nucleus --color_by branch_id --label all
 ```
 
 A tracks table made before a re-annotation, or missing a row, is refused rather
@@ -478,8 +484,11 @@ than joined.
 
 **Correcting a track by hand** is a row in the `<series_id>_<type>_track_edits.tsv`
 seeded beside each tracks table: copy its commented template line, remove the
-`# `, and fill in the action and two `feature_id`s (`feature_outline_cli.r
---color_by feature_id --label all` shows which is which). `join X Y` rejoins a
+`# `, and fill in the action and two `feature_id`s. To find them,
+`feature_outline_cli.r --feature nucleus --color_by branch_id --label_by
+feature_id branch_id` colours each outline by its branch and labels it with
+its feature number over its branch; `--label track_id=3` (or `feature_id=5,7`,
+`branch_id=3b2`) keeps the labels to the ones in question. `join X Y` rejoins a
 track that broke (X its last feature before the break, Y the first after),
 `cut X Y` removes a wrong link, `link X Y` adds one — a missed division is two
 `link`s from the mother. The edits are applied every time R reads the tracks,
@@ -491,7 +500,9 @@ applying them to whichever nuclei now hold those ids.
 row of `feature_stats.tsv` and writes `branches.tsv` (one row per branch: its
 parent, first and last time point). Per-cell plots group by `branch_id`; a
 lineage is counted, never averaged (`count_features_cli.r --feature_table
-feature_stats.tsv --feature_class_by track_id`). Details in
+feature_stats.tsv --feature nucleus --feature_class_by track_id`; without
+`--feature`, other types are counted as `unclassified` with the untracked
+nuclei). Details in
 `note/data_formats.md`.
 
 ## Tests

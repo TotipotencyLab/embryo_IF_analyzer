@@ -1365,6 +1365,58 @@ segmented time-lapse exists (`note/wishlist.md`).
       time course", the five steps in order, since the workflow crosses the
       README's Fiji/R split. Entries above keep the old name: they record what
       was built then.
+- [x] **PR 6 — `tracking-review-fixes`.** ✅ done. Added 2026-10-09: a review
+      of the whole milestone before release (three reviewers in parallel —
+      Groovy, R core, CLIs and docs — each finding reproduced). Fixed:
+      - **The tracker's time axis is the run's `frames_analysed`**, which
+        `annotate` now stamps above the centroid table's header
+        (`# frames_analysed: …`, `# pixel_depth: …`, copied from Fiji's
+        `_config.txt`). Before, the steps were the time points holding a
+        feature of the type, so a frame where none was found vanished: a link
+        across it looked adjacent (not gap-closed, allowed at `maxFrameGap` 1)
+        and a division across it was recorded as a split — **depending on
+        whether some other nucleus was found that frame**. Reading the
+        config in Groovy was rejected: `annotate` already pairs each series
+        with its config, and a second pairing could pick another run's.
+        TrackMate skips a frame holding no spots, so each such frame gets a
+        placeholder spot for the run only — out of reach of every feature,
+        never written, and a link to one stops the run. A table of several
+        time points without the stamp, or with a `t` it does not name, is
+        refused. (Options weighed: steps from every type's time points, or
+        documenting the old behaviour; the axis from the run was chosen as the
+        only one where a track depends on nothing but the object.)
+      - `feature_stat --group_by branch_id` drew two series' same-numbered
+        branches as one box; with several series a branch is labelled with
+        its `series_id`.
+      - One series with no valid feature of the tracked type stopped the whole
+        `feature_stat` run (and the montage): it now gets NA ids; a type found
+        in no input is still refused.
+      - The documented per-lineage count lacked `--feature <type>`, so other
+        types were counted as `unclassified` beside the untracked nuclei.
+      - Branch numbers are three digits (`_b001`): a lineage from one cell to
+        64 has 127 branches, and `b100` sorted after `b10`.
+      - Smaller: a NaN distance was accepted by the library (`NaN > 0` is true
+        in Groovy); a blank fingerprint before a trailing tab was reported as a
+        spacing problem; R refused a series sheet saved with a byte-order mark
+        that Groovy accepts; docs — `NA` not blank in `feature_stats.tsv`,
+        "two or more" merge parents, the z step per series, `--feature` in
+        the README's check step.
+      - **Labels: `--label_by` says what, `--label` says which** (raised by
+        the user while choosing hand edits: no picture showed feature ids and
+        branches together). `--label_by feature_id track_id branch_id`, any
+        of them stacked in one label in the outline's colour; `--label` an
+        optional OR-filter of `key=values` (`feature_id=7,3 branch_id=3b2`).
+        A bare number is refused in `feature_outline` — under branch
+        colouring the old `--label nucleus_0005` kept only the number and
+        labelled TRACK 5, another object — and means a feature in
+        `annotate --qc_label`, through the same parser with a default key
+        (`.cli_label_spec()`). One focus type kept; the multi-panel redesign
+        is in the wishlist.
+      Verified: each fix's test fails on the code before it (run against an
+      export of `tracking` at PR 5), passes after. Left for later, in
+      `note/wishlist.md`: `number_tracks` quadratic in branches, several
+      misleading messages and silent no-op flag combinations, and no R test
+      reading a tracks file Groovy actually wrote.
 - [ ] *Not in this milestone* (moved out 2026-10-08): **the overlap-core
       refactor** (§7) — with the in-house frame-to-frame linker out of scope,
       it has one caller and nothing above needs it; a standalone cleanup, any
@@ -1496,6 +1548,50 @@ a library class and the `Open_*` script is a thin caller — same division as
       cannot do this — Bio-Formats has no Luxendo reader — and the HDF5 import
       opens one channel per file (`note/luxendo_file_format.md` §5). Added
       2026-10-02.
+- [ ] **One index-list grammar, read and written everywhere** (raised
+      2026-10-09, during `tracking`'s review). Lists of indices are typed and
+      written in several spellings today, each with its own parser:
+      - **t** — the batch's and `Make_LuxendoTiff`'s `frames` (`1,48,96`,
+        `1-4`; `TiffAssembler.parseFrames`), `feature_outline_cli.r --t` (a
+        second parser in R), and, written: `_config.txt`'s `frames_analysed`
+        (`1 2 3 … 96`, space-separated), the centroid table's stamp (a copy of
+        it), the track params' `frames` and `frames_without_feature`.
+        Readers of `frames_analysed`: the batch's resume check
+        (`BatchRunner`), `feature_outline_cli.r`'s page matching,
+        `FeatureTracks.parseAxis`.
+      - **z** — `zSpec` on `Run_NucleusSelector`, `Run_Overview`,
+        `Run_Overview_Batch` (`1-20,35-40`).
+      - **c** — `channelsCsv` (`1,2,3`, commas only, no ranges).
+      - **series** — `seriesSpec` on `Inspect_ImageFile` (`1030-1069`,
+        `3 7 9`, `name:…`) and `Open_LifFile` (`1,4, 6-8`), two more parsers.
+        ⚠️ `series_index` counts from **0** (Bio-Formats owns it); t, z and c
+        from 1. One grammar, the base per index.
+      - **Pipeline ids** (`series_id`, the sources key, `feature_id`) — check
+        whether any input takes a list of them; none does in a `#@` today.
+
+      ⚠️ **On the R side argparser splits a value on commas before any of
+      our code sees it** (`--x 1,3` arrives as `1`, `3`; the
+      `r-cli-convention` skill), so every R parser of this grammar must
+      re-join the pieces first, as `feature_outline_cli.r --t` and
+      `.cli_label_spec()` (PR 6) already do. Index lists then reach `--label`
+      and `--qc_label` values (`feature_id=1-20`) through that one function.
+      Proposed: SLURM-array style — `5`, `1-96`, `10-90:10` (a step), pieces
+      joined by commas — parsed by **one** function per language, so Groovy
+      and R cannot drift. Writers emit one canonical, shortest form (a step
+      run only for 3 or more), so a 96-frame run writes `1-96` and a missing
+      70th frame shows as `1-69,71-96` instead of hiding in 96 numbers. Note
+      that the sampling used so far (1, 10, 20 … 90) is `1,10-90:10`, not
+      `1-90:10` (that is 1, 11, 21 …).
+      🔒 **Every older spelling stays readable** — the space-separated
+      `frames_analysed` in every `_config.txt` already written, and the Fiji
+      style inputs (`1,48,96`, `1-4`) people already type. Comparisons are on
+      the parsed list, never the text: the resume check compares
+      `frames_analysed` today, and a text compare would re-run finished
+      series. Round-trip tests: parse(format(x)) == x on random sets, and
+      every old spelling parsed to the same list as before.
+      Not adopted with it: a `frames_failed`-style key. It is not a setting,
+      and a frame absent from `frames_analysed` is one that errored, which the
+      batch summary already records.
 - [ ] `Open_SeriesRow.groovy` — open row N of a series table. (Named for
       `series.tsv`, not the retired "sample sheet".)
       🔒 **1-based** (it is a table row; `series_index` stays 0-based because

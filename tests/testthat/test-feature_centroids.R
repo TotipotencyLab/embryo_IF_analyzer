@@ -22,7 +22,7 @@ source_cli("cli_helpers.r")
               row.names = FALSE)
 }
 .read_centroids <- function(out, sid){
-  read.delim(file.path(out, paste0(sid, "_feature_centroids.tsv")), stringsAsFactors = FALSE)
+  read.delim(file.path(out, paste0(sid, "_feature_centroids.tsv")), stringsAsFactors = FALSE, comment.char = "#")
 }
 
 # One nucleus: a 10x10 square on slice 1 and a 20x20 one on slice 2 that
@@ -197,15 +197,21 @@ test_that("each focus feature gets a colour, other types one grey, grey never a 
 
 test_that("labels: all, some by number or id, focus type only", {
   source_r_scripts("plot_outline_topView.r")
-  ids <- c("nucleus_0001", "nucleus_0007", "nucleolus_0007")
-  types <- c("nucleus", "nucleus", "nucleolus")
-  expect_identical(qc_label_select(ids, types, "nucleus", "all"), c("0001", "0007", NA))
-  for (spec in c("7", "0007", "nucleus_0007")) {
-    expect_identical(qc_label_select(ids, types, "nucleus", spec), c(NA, "0007", NA), info = spec)
+  source_cli("cli_helpers.r")
+  tab <- data.frame(feature_id = c("nucleus_0001", "nucleus_0007", "nucleolus_0007"),
+                    feature_type = c("nucleus", "nucleus", "nucleolus"))
+  # annotate's --qc_label: a bare number is a feature (default_key).
+  qc <- function(...) .cli_label_spec(c(...), "--qc_label", keys = "feature_id",
+                                      default_key = "feature_id")
+  expect_identical(qc_labels(tab, "nucleus", qc("all")), c("0001", "0007", NA))
+  for (spec in list("7", "0007", "nucleus_0007", "feature_id=7")) {
+    expect_identical(qc_labels(tab, "nucleus", qc(spec)), c(NA, "0007", NA), info = spec)
   }
-  expect_identical(qc_label_select(ids, types, "nucleus", NULL), rep(NA_character_, 3))
-  expect_warning(qc_label_select(ids, types, "nucleus", "12"), "numbered 0012")
-  expect_error(qc_label_select(ids, types, "nucleus", "seven"), "takes 'all'")
+  expect_identical(qc_labels(tab, "nucleus", qc("1", "7")), c("0001", "0007", NA))
+  expect_identical(qc_labels(tab, "nucleus", NULL), rep(NA_character_, 3))
+  expect_warning(qc_labels(tab, "nucleus", qc("12")), "No feature nucleus_0012 to label")
+  expect_error(qc("seven"), "is not a feature_id")
+  expect_error(qc("track_id=2"), "'track_id=' is not a kind it can select by; use feature_id=")
 })
 
 test_that("annotate's QC: colour by id draws something else, bad options stop early", {

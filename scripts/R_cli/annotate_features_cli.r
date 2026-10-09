@@ -150,7 +150,8 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                                  "of the first --feature type its own colour, other types grey"))
   p <- add_argument(p, "--qc_label", short = "-L", type = "character", nargs = Inf, default = NULL,
                     help = paste("label QC outlines of the first --feature type with their number:",
-                                 "'all', or some of them (7 0007 nucleus_0007)"))
+                                 "'all', or some of them (7,3 0007 nucleus_0007, or",
+                                 "feature_id=7,3 as feature_outline_cli.r's --label takes it)"))
   p <- add_argument(p, "--qc_palette", short = "-p", type = "character", default = NA,
                     help = paste("palette for --qc_color_by feature_id [default: Tableau 10]:",
                                  "a grDevices::palette.pals() set (cycled) or an hcl.pals() ramp",
@@ -443,7 +444,15 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     z_step <- .cli_z_step_for(series_sf, rds_path, unique(dirname(sid_jobs$path)))
     cen <- feature_centroids(series_sf, z_step = as.numeric(z_step))
     cen_path <- file.path(outdir, paste0(sid, "_feature_centroids.tsv"))
-    utils::write.table(cen, cen_path, sep = "\t", quote = FALSE, row.names = FALSE, na = "")
+    # The Fiji run's time axis rides above the header (`# frames_analysed: ...`):
+    # a frame where nothing was found has no row, and tracking needs to know it
+    # was there. Without a config the table is written without it, and tracking
+    # several frames refuses it.
+    stamp <- .cli_centroid_stamp(sid, rds_path, unique(dirname(sid_jobs$path)))
+    con <- file(cen_path, "w")
+    if (length(stamp)) writeLines(paste0("# ", names(stamp), ": ", stamp), con)
+    utils::write.table(cen, con, sep = "\t", quote = FALSE, row.names = FALSE, na = "")
+    close(con)
     message("    -> ", basename(cen_path), " (", nrow(cen), " feature(s); ",
             .centroid_z_note(cen, z_step), ")")
     
@@ -566,11 +575,15 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   if (!color_by %in% c("feature_type", "feature_id")) {
     stop("--qc_color_by takes feature_type or feature_id; got '", color_by, "'", call. = FALSE)
   }
-  label <- .cli_resolve_arg(argv$qc_label, "--qc_label")
+  # The same grammar as feature_outline_cli.r's --label, through the same
+  # parser; annotate has features only, so a bare number IS a feature.
+  label <- .cli_label_spec(argv$qc_label, "--qc_label", keys = "feature_id",
+                           default_key = "feature_id",
+                           hint = " (annotate has no tracks: label them in feature_outline_cli.r)")
   palette <- if (is.na(argv$qc_palette)) QC_DEFAULT_PALETTE else argv$qc_palette
   qc_palette_colours(palette)                       # stops on an unknown name
   given <- c(if (color_by != "feature_type") "--qc_color_by",
-             if (length(label)) "--qc_label",
+             if (!is.null(label)) "--qc_label",
              if (!is.na(argv$qc_palette)) "--qc_palette")
   if (length(given) && !argv$qc_plot) {
     warning(paste(given, collapse = ", "), " given without --qc_plot: no QC plot is drawn, ",
@@ -616,10 +629,12 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   } else {
     palette <- NULL; color_by <- "feature_type"; legend <- TRUE
   }
-  unioned$qc_label <- qc_label_select(unioned$feature_id, unioned$feature_type,
-                                      qc$focus, qc$label)
+  # Over the whole series, like the colours: per page, an id from another
+  # frame would warn as missing on every page but its own.
+  labs <- qc_labels(sf::st_drop_geometry(all_unioned), qc$focus, qc$label, "feature_id")
+  unioned$qc_label <- unname(stats::setNames(labs, all_unioned$feature_id)[unioned$feature_id])
   return(list(unioned = unioned, palette = palette, color_by = color_by, legend = legend,
-              label_by = if (length(qc$label)) "qc_label" else NULL))
+              label_by = if (!is.null(qc$label)) "qc_label" else NULL))
 }
 
 .qc_plot <- function(series_sf, sid, path, qc) {

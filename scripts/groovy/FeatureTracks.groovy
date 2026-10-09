@@ -18,8 +18,17 @@
 //   - Gap closing and splitting count frame NUMBERS, so time points sampled
 //     1, 10, 20 are nine frames apart to them: nothing would ever be
 //     gap-closed, and no division recorded (a split must be one frame). The
-//     tracker is therefore given each time point's RANK among the series'
-//     time points, and `t` is restored on the way out.
+//     tracker is therefore given each time point's RANK among the time points
+//     the run ANALYSED -- `frames_analysed`, which annotate stamps on the
+//     centroid table from Fiji's _config.txt -- and `t` is restored on the way
+//     out. Not the time points that happen to hold a feature: a frame where
+//     nothing of the type was found would then not be a step at all, so a
+//     link across it would look adjacent (not gap-closed, allowed at
+//     max_frame_gap 1, and a division across it recorded as a split), and
+//     whether it did would depend on whether some OTHER feature was found
+//     that frame. Because of the first point, such a frame is given a
+//     placeholder spot, far from everything, removed again before anything is
+//     written (link()).
 //   - Gap closing and splitting link track SEGMENTS, and a spot linked to
 //     nothing frame to frame is not a segment: a feature seen in one frame
 //     only is never gap-closed, and a daughter seen in one frame only is
@@ -41,6 +50,12 @@ import fiji.plugin.trackmate.tracking.jaqaman.SparseLAPTrackerFactory
 class FeatureTracks {
 
     static final String CENTROID_SUFFIX = "_feature_centroids.tsv"
+
+    /** The `# frames_analysed: ...` line annotate writes above the header. */
+    static final String AXIS_KEY = "frames_analysed"
+
+    /** A placeholder spot's name: never a feature_id, which is `<type>_NNNN`. */
+    static final String PLACEHOLDER = "__placeholder_"
 
     /** What a centroid table must hold for this step (it holds more). */
     static final List<String> CENTROID_NEED =
@@ -131,7 +146,9 @@ class FeatureTracks {
         ["linking_max_distance", "gap_closing_max_distance", "splitting_max_distance",
          "merging_max_distance"].each { k ->
             double v = s[k] as double
-            if (!(v > 0) || Double.isInfinite(v)) {
+            // Not `!(v > 0)` alone: Groovy compares a NaN through compareTo(),
+            // and `Double.NaN > 0` is TRUE there.
+            if (Double.isNaN(v) || !(v > 0) || Double.isInfinite(v)) {
                 throw new IllegalArgumentException(k + " must be a positive distance; got " + s[k])
             }
             s[k] = v
@@ -179,7 +196,14 @@ class FeatureTracks {
      * have to catch. Blank z is refused only when z is used -- annotate writes
      * it blank when no z step was found, and an x-y run does not need it.
      *
-     * @return [series_id, run_id, fingerprint, features: [[feature_id, t, x, y, z]], types: every type in the table]
+     * The time axis is the `# frames_analysed:` line annotate copies from
+     * Fiji's _config.txt. A table holding several time points without it is
+     * refused: tracking across a frame nothing was found in would otherwise be
+     * silently wrong (see the top of this file). A `t` the line does not name
+     * is refused too -- the centroids and that config are from different runs.
+     *
+     * @return [series_id, run_id, fingerprint, features: [[feature_id, t, x, y, z]],
+     *         types: every type in the table, frames: the time axis, sorted]
      */
     Map readCentroids(File f, String type, boolean useZ) {
         def rows = TSV.read(f)
@@ -192,8 +216,30 @@ class FeatureTracks {
             throw new IllegalArgumentException(name + " lacks column(s): " + missing.join(", ") +
                 " -- is it a centroid table from annotate_features_cli.r?")
         }
+        def stamp = stampOf(f)
+        List<Integer> axis = null
+        if (stamp.containsKey(AXIS_KEY)) {
+            axis = parseAxis(stamp[AXIS_KEY], name)
+        }
+        def tsAll = rows.collect { it.t }.findAll { it ==~ /^\d+$/ }.collect { it as int }.unique().sort()
+        if (axis == null) {
+            if (tsAll.size() > 1) {
+                throw new IllegalArgumentException(name + " holds " + tsAll.size() + " time points but no '# " +
+                    AXIS_KEY + ":' line, so which frames the run analysed -- including any where nothing " +
+                    "was found -- is unknown. Re-run annotate_features_cli.r with Fiji's _config.txt beside " +
+                    "its inputs (it is read from there, like pixel_depth).")
+            }
+            axis = tsAll
+        } else {
+            def stray = tsAll - axis
+            if (stray) {
+                throw new IllegalArgumentException(name + ": t = " + stray.join(", ") + " is not among the " +
+                    "frames the run analysed (" + AXIS_KEY + ": " + stamp[AXIS_KEY] + "). The centroids and " +
+                    "the _config.txt annotate read are from different runs -- re-run annotate on the current one.")
+            }
+        }
         if (rows.isEmpty()) {
-            return [series_id: null, run_id: null, fingerprint: null, features: [], types: []]
+            return [series_id: null, run_id: null, fingerprint: null, features: [], types: [], frames: axis]
         }
         def sids = rows.collect { it.series_id }.unique()
         if (sids.size() != 1 || !sids[0]) {
@@ -202,7 +248,7 @@ class FeatureTracks {
         }
         def mine = rows.findAll { it.feature_type == type }
         def out = [series_id: sids[0], types: rows.collect { it.feature_type }.unique().sort(),
-                   features: [], run_id: null, fingerprint: null]
+                   features: [], run_id: null, fingerprint: null, frames: axis]
         if (mine.isEmpty()) return out
 
         def one = { String col ->
@@ -267,6 +313,41 @@ class FeatureTracks {
         return line == null ? [] : line.split("\t", -1).collect { it.trim() }
     }
 
+    /**
+     * The `# key: value` lines above a table's header, as annotate stamps them
+     * on a centroid table. Only lines before the header count, and only that
+     * shape; any other comment is ignored.
+     */
+    static Map<String, String> stampOf(File f) {
+        def out = new LinkedHashMap<String, String>()
+        for (String line : bomless(f.getText("UTF-8")).readLines()) {
+            def tl = line.trim()
+            if (!tl) continue
+            if (!tl.startsWith("#")) break
+            def m = (tl =~ /^#\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/)
+            if (m) out[m[0][1] as String] = (m[0][2] as String).trim()
+        }
+        return out
+    }
+
+    /**
+     * `frames_analysed` as _config.txt writes it: time points separated by
+     * spaces (commas accepted too), each from 1, none twice.
+     */
+    static List<Integer> parseAxis(String v, String name) {
+        def parts = (v ?: "").split(/[\s,]+/).findAll { it }
+        if (!parts || parts.any { !(it ==~ /^\d+$/) }) {
+            throw new IllegalArgumentException(name + ": '# " + AXIS_KEY + ": " + v + "' is not a list of " +
+                "time points like 1 10 20")
+        }
+        def ts = parts.collect { it as int }
+        if (ts.contains(0)) throw new IllegalArgumentException(name + ": " + AXIS_KEY + " holds 0; t counts from 1")
+        if (ts.unique(false).size() != ts.size()) {
+            throw new IllegalArgumentException(name + ": " + AXIS_KEY + " names a time point twice: " + v)
+        }
+        return ts.sort()
+    }
+
     // --- linking ----------------------------------------------------------------
 
     /**
@@ -274,25 +355,50 @@ class FeatureTracks {
      *
      * @param feats  [feature_id, t, x, y, z] maps, one per feature
      * @param s      checkSettings() output
+     * @param axis   the time points the run analysed (readCentroids()'s
+     *               frames); null = the features' own, which is right only
+     *               when every one of them holds a feature
      * @return [rows: one map per link, plus a start row (blank prev) for every
      *         feature nothing leads to, sorted by t, feature_id, prev_feature_id;
-     *         frames: the time points, in order; stats: n_links, n_gap_closed,
-     *         n_divisions, n_merges]
+     *         frames: the time axis, in order; absent: the time points on it
+     *         holding no feature; stats: n_links, n_gap_closed, n_divisions,
+     *         n_merges]
      */
-    static Map link(List<Map> feats, Map s) {
-        def frames = feats.collect { it.t as int }.unique().sort()
+    static Map link(List<Map> feats, Map s, List<Integer> axis = null) {
+        def frames = (axis != null ? axis : feats.collect { it.t as int }).unique(false).sort(false)
         def rank = [:]
         frames.eachWithIndex { int t, int i -> rank[t] = i + 1 }
         def tOf = feats.collectEntries { [it.feature_id, it.t as int] }
+        def held = tOf.values() as Set
+        def stray = held - frames
+        if (stray) throw new IllegalArgumentException("t = " + stray.join(", ") + " is not on the time axis " + frames)
+        def absent = frames.findAll { !held.contains(it) }
 
         def edges = []          // [prev, next] feature_ids
-        if (frames.size() > 1) {
+        if (frames.size() > 1 && feats) {
             def sc = new SpotCollection()
             feats.each { f ->
                 // The radius and quality are not used by the tracker without
                 // feature penalties, and none are set.
                 def spot = new Spot(f.x as double, f.y as double, f.z as double, 1.0d, 1.0d, f.feature_id as String)
                 sc.add(spot, rank[f.t as int] as Integer)
+            }
+            // TrackMate links a frame to the next frame that HOLDS spots, so a
+            // time point with no feature would not be a step. One placeholder
+            // there makes it one. Each sits further than any distance setting
+            // from every feature and from every other placeholder, so nothing
+            // can be linked to it -- and if anything ever were, the run stops
+            // below rather than write a link through a spot that is not there.
+            if (absent) {
+                double maxD = [s.linking_max_distance, s.gap_closing_max_distance,
+                               s.splitting_max_distance, s.merging_max_distance].collect { it as double }.max()
+                def coords = feats.collectMany { f -> [f.x as double, f.y as double, f.z as double] }
+                double extent = coords.collect { Math.abs(it) }.max()
+                double step = 10.0d * (maxD + 2.0d * extent) + 1.0e6d
+                absent.each { int t ->
+                    double far = extent + step * rank[t]
+                    sc.add(new Spot(far, far, 0.0d, 1.0d, 1.0d, PLACEHOLDER + rank[t]), rank[t] as Integer)
+                }
             }
             sc.setVisible(true)
             def factory = new SparseLAPTrackerFactory()
@@ -308,6 +414,10 @@ class FeatureTracks {
             def g = tracker.getResult()
             g.edgeSet().each { e ->
                 def a = g.getEdgeSource(e).getName(), b = g.getEdgeTarget(e).getName()
+                if (a.startsWith(PLACEHOLDER) || b.startsWith(PLACEHOLDER)) {
+                    throw new IllegalStateException("TrackMate linked a placeholder spot (" + a + " - " + b +
+                        "); placeholders are placed out of reach so that this cannot happen. Nothing written.")
+                }
                 edges << (tOf[a] < tOf[b] ? [a, b] : [b, a])
             }
         }
@@ -330,7 +440,7 @@ class FeatureTracks {
                      n_gap_closed: edges.count { rank[tOf[it[1]]] - rank[tOf[it[0]]] > 1 },
                      n_divisions: succ.count { k, v -> v > 1 },
                      n_merges   : preds.count { k, v -> v.size() > 1 }]
-        return [rows: rows, frames: frames, stats: stats]
+        return [rows: rows, frames: frames, absent: absent, stats: stats]
     }
 
     // --- one directory ----------------------------------------------------------
@@ -389,7 +499,7 @@ class FeatureTracks {
         // Link every series before writing any: a TrackMate failure on the
         // third series must not leave the first two rewritten under these
         // settings and the rest under the last.
-        tables.each { tb -> tb.res = link(tb.cen.features as List<Map>, s) }
+        tables.each { tb -> tb.res = link(tb.cen.features as List<Map>, s, tb.cen.frames as List<Integer>) }
 
         def version = RX.repoVersion(libDir)
         def out = [settings: s, series: []]
@@ -410,7 +520,7 @@ class FeatureTracks {
             def what
             if (cen.features.isEmpty()) {
                 what = "no " + s.feature_type + " features; an empty tracks table"
-            } else if (res.frames.size() < 2) {
+            } else if (cen.features.collect { it.t }.unique().size() < 2) {
                 what = cen.features.size() + " feature(s) in one frame: nothing to link, every feature a start row"
             } else {
                 what = cen.features.size() + " feature(s) over " + res.frames.size() + " frame(s) -> " +
@@ -418,6 +528,10 @@ class FeatureTracks {
                        st.n_divisions + " division(s), " + st.n_merges + " merge(s)"
             }
             log("  " + (cen.series_id ?: stemOf(f)) + ": " + what)
+            if (cen.features && res.absent) {
+                log("    no " + s.feature_type + " found at t = " + res.absent.join(", ") +
+                    " (still time points: a link across them is gap-closed)")
+            }
             out.series << [series_id: cen.series_id, stem: stemOf(f), n_features: cen.features.size(),
                            frames: res.frames, stats: st, edits: edits]
         }
@@ -512,6 +626,7 @@ class FeatureTracks {
         p.allow_merging = s.allow_merging
         p.merging_max_distance = s.merging_max_distance
         p.frames = res.frames.join(",")
+        p.frames_without_feature = res.absent.join(",")
         p.n_features = cen.features.size()
         res.stats.each { k, v -> p[k] = v }
         TSV.write(p.collect { k, v -> [parameter: k, value: v] }, dest, ["parameter", "value"])

@@ -23,14 +23,14 @@ test_that("the plan's A/A1/A2/B example gives exactly its tracks and branches", 
   x <- .aab()
   r <- number_tracks(x$feat, x$links, "nucleus")
   ids <- stats::setNames(r$features$branch_id, r$features$feature_id)
-  # A (t1-2) _b01, A1 (t3-4) _b02, A2 (t3, t5) _b03, all one lineage; B its own.
-  expect_identical(unname(ids[.f(c(1, 3))]), rep("nucleus_track_0001_b01", 2))
-  expect_identical(unname(ids[.f(c(5, 8))]), rep("nucleus_track_0001_b02", 2))
-  expect_identical(unname(ids[.f(c(6, 9))]), rep("nucleus_track_0001_b03", 2))
-  expect_identical(unname(ids[.f(c(2, 4, 7))]), rep("nucleus_track_0002_b01", 3))
+  # A (t1-2) _b001, A1 (t3-4) _b002, A2 (t3, t5) _b003, all one lineage; B its own.
+  expect_identical(unname(ids[.f(c(1, 3))]), rep("nucleus_track_0001_b001", 2))
+  expect_identical(unname(ids[.f(c(5, 8))]), rep("nucleus_track_0001_b002", 2))
+  expect_identical(unname(ids[.f(c(6, 9))]), rep("nucleus_track_0001_b003", 2))
+  expect_identical(unname(ids[.f(c(2, 4, 7))]), rep("nucleus_track_0002_b001", 3))
   expect_identical(sort(unique(r$features$track_id)), c("nucleus_track_0001", "nucleus_track_0002"))
   b <- r$branches
-  expect_identical(b$parent_branch_id, c("", "nucleus_track_0001_b01", "nucleus_track_0001_b01", ""))
+  expect_identical(b$parent_branch_id, c("", "nucleus_track_0001_b001", "nucleus_track_0001_b001", ""))
   expect_identical(b$first_t, c(1L, 3L, 3L, 1L))
   expect_identical(b$last_t, c(2L, 4L, 5L, 3L))            # A2's branch spans its gap
   expect_identical(b$n_features, c(2L, 2L, 2L, 3L))        # ...and holds two features, not three
@@ -69,7 +69,7 @@ test_that("a merge: one track, the merged feature starts a branch flagged as two
   m <- b[b$branch_merged, ]
   expect_identical(nrow(m), 1L)
   expect_identical(c(m$first_t, m$last_t), c(3L, 4L))
-  expect_identical(m$parent_branch_id, "nucleus_track_0001_b01;nucleus_track_0001_b02")
+  expect_identical(m$parent_branch_id, "nucleus_track_0001_b001;nucleus_track_0001_b002")
   expect_identical(sum(b$parent_branch_id == m$branch_id), 2L)   # it divides again after
   fm <- r$features$branch_merged[r$features$feature_id %in% .f(5:6)]
   expect_identical(fm, c(TRUE, TRUE))
@@ -118,7 +118,7 @@ test_that("join_tracks adds the three columns to every row of the type, NA elsew
   out <- join_tracks(.feats(), "nucleus", d)
   expect_identical(nrow(out), nrow(.feats()))
   a <- out[out$feature_id == .f(6), ]
-  expect_identical(unique(a$branch_id), "nucleus_track_0001_b03")
+  expect_identical(unique(a$branch_id), "nucleus_track_0001_b003")
   expect_identical(nrow(a), 2L)                                   # both ROIs
   other <- out[!startsWith(out$feature_id, "nucleus_"), ]
   expect_true(all(is.na(other$track_id) & is.na(other$branch_id)))
@@ -170,7 +170,11 @@ test_that("a series with no tracks table, or a table naming another series, is r
   expect_error(join_tracks(two, "nucleus", d), "S?T_nucleus_tracks.tsv")
   p <- .write_tracks(d, sid = "T", edit = function(tr) { tr$series_id <- "S"; tr })
   expect_error(join_tracks(.feats(sid = "T"), "nucleus", d), "holds series S, not T")
-  expect_error(join_tracks(.feats(), "oocyte", d), "No 'oocyte' features")
+  # A type with no valid feature is a result, not a missing input (review,
+  # PR 6): NA ids, an empty branches table. A typo is the CLI's to catch.
+  none <- expect_message(join_tracks(.feats(), "oocyte", d), "No valid 'oocyte' feature in S")
+  expect_true(all(is.na(none$track_id)) && all(is.na(none$branch_id)) && all(is.na(none$branch_merged)))
+  expect_identical(nrow(attr(none, "branches")), 0L)
   withcols <- transform(.feats(), track_id = "x")
   .write_tracks(d)
   expect_error(join_tracks(withcols, "nucleus", d), "never stored")
@@ -195,7 +199,7 @@ test_that("two joins of the same tables give identical ids", {
   data.frame(name = name, roi = roi, t = t, z = z,
              x = c(x0, x0 + s, x0 + s, x0), y = c(y0, y0, y0 + s, y0 + s))
 }
-.time_course <- function(d, sid = "TC"){
+.time_course <- function(d, sid = "TC", frames = NULL){
   objs <- data.frame(name = c("A", "B", "C", "A", "B", "A1", "A2", "B", "A1", "A2"),
                      t = c(1, 1, 2, 2, 2, 3, 3, 3, 4, 5),
                      x = c(10, 60, 110, 10, 60, 5, 15, 60, 5, 15),
@@ -208,9 +212,11 @@ test_that("two joins of the same tables give identical ids", {
   }
   utils::write.table(do.call(rbind, rows), file.path(d, paste0(sid, "_nucleus_outline.txt")),
                      sep = "\t", quote = FALSE, row.names = FALSE)
-  utils::write.table(data.frame(parameter = c("series_id", "pixel_depth", "image_width",
-                                              "image_height", "pixel_width", "pixel_height"),
-                                value = c(sid, "1.0", "140", "50", "1", "1")),
+  cfg <- data.frame(parameter = c("series_id", "pixel_depth", "image_width",
+                                  "image_height", "pixel_width", "pixel_height"),
+                    value = c(sid, "1.0", "140", "50", "1", "1"))
+  if(!is.null(frames)) cfg <- rbind(cfg, data.frame(parameter = "frames_analysed", value = frames))
+  utils::write.table(cfg,
                      file.path(d, paste0(sid, "_config.txt")), sep = "\t", quote = FALSE,
                      row.names = FALSE)
   objs
@@ -218,7 +224,8 @@ test_that("two joins of the same tables give identical ids", {
 # The links Make_FeatureTracks would write for that course, by object name,
 # using the ids annotate actually assigned (read from its centroid table).
 .tracks_for <- function(out, sid = "TC"){
-  cen <- utils::read.delim(file.path(out, paste0(sid, "_feature_centroids.tsv")), stringsAsFactors = FALSE)
+  cen <- utils::read.delim(file.path(out, paste0(sid, "_feature_centroids.tsv")), stringsAsFactors = FALSE, comment.char = "#")
+  cen <- cen[cen$feature_type == "nucleus", ]
   id_at <- function(t, x) cen$feature_id[cen$t == t & abs(cen$x - (x + 4)) < 1e-6]
   links <- rbind(c(id_at(2, 10), id_at(1, 10)), c(id_at(2, 60), id_at(1, 60)),
                  c(id_at(3, 5), id_at(2, 10)), c(id_at(3, 15), id_at(2, 10)),
@@ -250,9 +257,9 @@ test_that("feature_stat --track_type: ids on every row, a branch table, the summ
 
   s <- run("--track_type", "nucleus")
   bid <- function(t, x) s$branch_id[s$feature_id == k$id_at(t, x)]
-  expect_identical(bid(1, 10), "nucleus_track_0001_b01")          # A
-  expect_identical(bid(5, 15), "nucleus_track_0001_b03")          # A2, after its gap
-  expect_identical(bid(3, 60), "nucleus_track_0002_b01")          # B
+  expect_identical(bid(1, 10), "nucleus_track_0001_b001")          # A
+  expect_identical(bid(5, 15), "nucleus_track_0001_b003")          # A2, after its gap
+  expect_identical(bid(3, 60), "nucleus_track_0002_b001")          # B
   expect_true(is.na(bid(2, 110)))                                 # C, linked to nothing
   expect_true(all(c("track_id", "branch_id", "branch_merged") %in% colnames(
     utils::read.delim(file.path(st, "feature_stats.tsv"), nrows = 1))))
@@ -296,7 +303,7 @@ test_that("feature_stat --group_by branch_id leaves out merged branches and untr
   .tracks_for(out)
   expect_message(suppressWarnings(feature_stat_cli(c(
     "--input", out, "--outdir", st, "--track_type", "nucleus", "--group_by", "branch_id"))),
-    "left out 1 feature\\(s\\) -- 1 in no branch, 0 on merged branches")
+    "left out 1 feature\\(s\\) -- 0 of another type, 1 in no branch, 0 on merged branches")
   expect_true(file.exists(file.path(st, "feature_stats.pdf")))
 })
 
@@ -342,8 +349,8 @@ test_that("montage --color_by branch_id: one colour per branch over every page, 
     run("--output", tif, "--color_by", mode)
     .page_colours(tif)
   }
-  # Tableau 10 in id order. By branch: track_0001 _b01 (A), _b02 (A1), _b03
-  # (A2), then track_0002 _b01 (B).
+  # Tableau 10 in id order. By branch: track_0001 _b001 (A), _b002 (A1), _b003
+  # (A2), then track_0002 _b001 (B).
   A <- "#4E79A7"; A1 <- "#F28E2B"; A2 <- "#E15759"; B <- "#76B7B2"
   br <- pages_by("branch_id")
   expect_identical(nrow(br), 5L)
@@ -421,7 +428,7 @@ test_that("cut: a link removed; a feature left linked to nothing has no track", 
   expect_message(out <- join_tracks(.feats(), "nucleus", d), "1 hand edit\\(s\\) applied")
   ids <- .ids(out)
   expect_true(is.na(ids$track_id[ids$feature_id == .f(9)]))
-  expect_identical(ids$branch_id[ids$feature_id == .f(6)], "nucleus_track_0001_b03")
+  expect_identical(ids$branch_id[ids$feature_id == .f(6)], "nucleus_track_0001_b003")
   src <- unique(attr(out, "branches")[, c("track_id", "track_source")])
   expect_identical(src$track_source, c("edited", "auto"))
   # Cutting A from both daughters splits the lineage in three -- A1 and A2 are
@@ -575,4 +582,192 @@ test_that("end to end: the centroid table's fingerprint is the one join_tracks c
   expect_identical(s$branch_id[s$feature_id == a2_later], s$branch_id[s$feature_id == b3])
   br <- utils::read.delim(file.path(st, "branches.tsv"), stringsAsFactors = FALSE)
   expect_identical(sort(unique(br$track_source)), c("edited"))   # both lineages touched
+})
+
+# --- review fixes (PR 6) ----------------------------------------------------------
+
+test_that("annotate stamps the Fiji run's time axis above the centroid table's header", {
+  skip_if_no_sf()
+  skip_if_no_pkg("argparser")
+  source_cli("annotate_features_cli.r")
+  d <- withr::local_tempdir(); out <- withr::local_tempdir()
+  # t = 6 analysed and nothing found there: only the stamp can say so.
+  .time_course(d, frames = "1 2 3 4 5 6")
+  suppressMessages(annotate_features_cli(c("--input", d, "--feature", "nucleus", "--outdir", out,
+                                           "--min_z_span", "nucleus=2")))
+  f <- file.path(out, "TC_feature_centroids.tsv")
+  expect_identical(readLines(f, n = 3)[1:2], c("# frames_analysed: 1 2 3 4 5 6", "# pixel_depth: 1.0"))
+  expect_identical(sort(unique(utils::read.delim(f, comment.char = "#")$t)), 1:5)
+  # No frames_analysed in the config: that line is left out, not invented.
+  d2 <- withr::local_tempdir(); out2 <- withr::local_tempdir()
+  .time_course(d2)
+  suppressMessages(annotate_features_cli(c("--input", d2, "--feature", "nucleus", "--outdir", out2,
+                                           "--min_z_span", "nucleus=2")))
+  expect_identical(readLines(file.path(out2, "TC_feature_centroids.tsv"), n = 1), "# pixel_depth: 1.0")
+})
+
+# A second series where every nucleus fails --min_z_span (one slice each), and
+# one nucleolus that passes: the montage draws the valid features, and the
+# reviewer's stop came from there being some.
+.empty_course <- function(d, sid = "TD"){
+  rows <- lapply(1:3, function(t) .sq(sid, sprintf("nucleus_%04d-0001-%04d-0010", t, t), t, 1, 10, 10, 8))
+  utils::write.table(do.call(rbind, rows), file.path(d, paste0(sid, "_nucleus_outline.txt")),
+                     sep = "\t", quote = FALSE, row.names = FALSE)
+  nl <- rbind(.sq(sid, "nucleolus_0001-0001-0001-0012", 1, 1, 12, 12, 3),
+              .sq(sid, "nucleolus_0001-0002-0002-0012", 1, 2, 12, 12, 3))
+  utils::write.table(nl, file.path(d, paste0(sid, "_nucleolus_outline.txt")),
+                     sep = "\t", quote = FALSE, row.names = FALSE)
+}
+
+test_that("a series with no valid feature of the type does not stop the run; a typo does", {
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2"))
+  source_cli(c("annotate_features_cli.r", "feature_stat_cli.r", "feature_outline_cli.r"))
+  d <- withr::local_tempdir(); out <- withr::local_tempdir(); st <- withr::local_tempdir()
+  .time_course(d); .empty_course(d)
+  suppressMessages(annotate_features_cli(c("--input", d, "--feature", "nucleus", "nucleolus",
+                                           "--outdir", out, "--min_z_span", "nucleus=2", "nucleolus=2")))
+  k <- .tracks_for(out)
+  # What Make_FeatureTracks writes for a series without the type: the header.
+  utils::write.table(data.frame(series_id = character(0), t = integer(0), feature_id = character(0),
+                                prev_feature_id = character(0), run_id = character(0)),
+                     tracks_path(out, "TD", "nucleus"), sep = "\t", quote = FALSE, row.names = FALSE)
+  expect_message(s <- suppressWarnings(feature_stat_cli(c(
+    "--input", out, "--outdir", st, "--no_plot", "--track_type", "nucleus"))),
+    "No valid 'nucleus' feature in TD")
+  expect_identical(s$branch_id[s$feature_id == k$id_at(1, 10) & s$series_id == "TC"], "nucleus_track_0001_b001")
+  expect_true(all(is.na(s$track_id[s$series_id == "TD"])) && any(s$series_id == "TD"))
+  expect_error(suppressWarnings(suppressMessages(feature_stat_cli(c(
+    "--input", out, "--outdir", st, "--no_plot", "--track_type", "nucleous")))),
+    "--track_type nucleous: no feature of that type in any input")
+  # The montage of the empty series draws, untracked, rather than stopping.
+  tif <- file.path(withr::local_tempdir(), "TD.png")
+  expect_message(suppressWarnings(feature_outline_cli(c(
+    "--features", file.path(out, "TD_features.rds"), "--output", tif, "--t", "1",
+    "--feature", "nucleus", "nucleolus", "--color_by", "branch_id"))), "No valid 'nucleus' feature in TD")
+  expect_true(file.exists(tif))
+})
+
+test_that("per-branch plot rows: one box per cell, never two series' branches pooled", {
+  source_cli("feature_stat_cli.r")
+  st <- data.frame(series_id = c("S", "S", "T", "T", "S", "S"),
+                   feature_type = c("nucleus", "nucleus", "nucleus", "nucleus", "nucleus", "nucleolus"),
+                   branch_id = c("nucleus_track_0001_b001", "nucleus_track_0001_b001",
+                                 "nucleus_track_0001_b001", "nucleus_track_0001_b002", NA, NA),
+                   branch_merged = c(FALSE, FALSE, FALSE, TRUE, NA, NA), stringsAsFactors = FALSE)
+  expect_message(r <- .branch_rows(st, "nucleus", keep_merged = FALSE),
+                 "left out 3 feature\\(s\\) -- 1 of another type, 1 in no branch, 1 on merged branches")
+  # The same id in S and T is two cells: two labels, not one.
+  expect_identical(sort(unique(r$branch_id)), c("S nucleus_track_0001_b001", "T nucleus_track_0001_b001"))
+  r2 <- suppressMessages(.branch_rows(st, "nucleus", keep_merged = TRUE))
+  expect_identical(nrow(r2), 4L)
+  # One series: ids left as they are.
+  r1 <- suppressMessages(.branch_rows(st[st$series_id == "S", ], "nucleus", keep_merged = FALSE))
+  expect_identical(unique(r1$branch_id), "nucleus_track_0001_b001")
+})
+
+test_that("the per-lineage count needs --feature: other types land in unclassified otherwise", {
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2"))
+  source_cli(c("annotate_features_cli.r", "feature_stat_cli.r", "count_features_cli.r"))
+  d <- withr::local_tempdir(); out <- withr::local_tempdir(); st <- withr::local_tempdir()
+  .time_course(d)
+  # Two nucleoli at t = 2, inside A and B.
+  nl <- rbind(.sq("TC", "nucleolus_0002-0001-0001-0012", 2, 1, 12, 12, 3),
+              .sq("TC", "nucleolus_0002-0002-0002-0012", 2, 2, 12, 12, 3),
+              .sq("TC", "nucleolus_0002-0001-0003-0012", 2, 1, 62, 12, 3),
+              .sq("TC", "nucleolus_0002-0002-0004-0012", 2, 2, 62, 12, 3))
+  utils::write.table(nl, file.path(d, "TC_nucleolus_outline.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+  suppressMessages(annotate_features_cli(c("--input", d, "--feature", "nucleus", "nucleolus",
+                                           "--outdir", out, "--min_z_span", "nucleus=2", "nucleolus=2")))
+  .tracks_for(out)
+  suppressWarnings(suppressMessages(feature_stat_cli(c(
+    "--input", out, "--outdir", st, "--no_plot", "--track_type", "nucleus"))))
+  count <- function(...) suppressWarnings(suppressMessages(count_features_cli(c(
+    "--input", out, "--outdir", file.path(withr::local_tempdir(), "c"),
+    "--feature_table", file.path(st, "feature_stats.tsv"), "--feature_class_by", "track_id", ...))))
+  n_unc <- function(ct) as.integer(ct$n_detected[ct$feature_class == "unclassified" & ct$t == 2])
+  expect_identical(n_unc(count("--feature", "nucleus")), 1L)       # C alone, as documented
+  expect_identical(n_unc(count()), 3L)                             # C and the two nucleoli
+})
+
+test_that("a blank fingerprint before a trailing tab is called that, not a spacing problem", {
+  d <- withr::local_tempdir(); .write_tracks(d)
+  e <- .write_edits(d, list(c("cut", .f(6), .f(9))))
+  writeLines(sub("\t[0-9a-f]{10}\ttest$", "\t", readLines(e)), e)
+  expect_error(join_tracks(.feats(), "nucleus", d), "line 5 \\(cut nucleus_0006 nucleus_0009\\): no fingerprint")
+})
+
+# --- labels: --label_by says what, --label says which (PR 6) -------------------------
+
+test_that("--label parses key=values, OR, argparser's comma split, and refuses a guess", {
+  source_cli("cli_helpers.r")
+  L <- function(...) .cli_label_spec(c(...), "--label")
+  # `feature_id=7,3,1 track_id=2` as argparser delivers it.
+  expect_identical(L("feature_id=7", "3", "1", "track_id=2"),
+                   list(feature_id = c("7", "3", "1"), track_id = "2"))
+  expect_identical(L("feature_id=7 3"), list(feature_id = c("7", "3")))
+  expect_identical(L("feature_id=7", "feature_id=3"), list(feature_id = c("7", "3")))
+  expect_identical(L("all"), list(all = TRUE))
+  expect_identical(L("3b2", "nucleus_0005"), list(branch_id = "3b2", feature_id = "nucleus_0005"))
+  expect_null(L())
+  expect_error(L("7"), "say what it names: feature_id=7 or track_id=7")
+  expect_error(L("all", "feature_id=1"), "not both")
+  expect_error(L("branch_id=3"), "a branch needs its track")
+  expect_error(L("track_id=3b2"), "is a branch id, under track_id=; write branch_id=3b2")
+  expect_error(L("cell=3"), "'cell=' is not a kind")
+  expect_error(L("feature_id="), "names no value")
+})
+
+test_that("labels: stacked kinds, a selection by any kind, never a feature read as a track", {
+  source_r_scripts("plot_outline_topView.r")
+  source_cli("cli_helpers.r")
+  L <- function(...) .cli_label_spec(c(...), "--label")
+  # Feature 5 is in track 1; track 5 holds feature 9. Before --label_by,
+  # `--label nucleus_0005` under branch colouring kept only the number and
+  # labelled TRACK 5's branch -- nucleus_0009, another object.
+  tab <- data.frame(feature_id = c("nucleus_0005", "nucleus_0007", "nucleus_0009", "nucleus_0011", "nucleolus_0001"),
+                    feature_type = c(rep("nucleus", 4), "nucleolus"),
+                    track_id = c("nucleus_track_0001", "nucleus_track_0001", "nucleus_track_0005", NA, NA),
+                    branch_id = c("nucleus_track_0001_b001", "nucleus_track_0001_b002",
+                                  "nucleus_track_0005_b001", NA, NA))
+  expect_identical(qc_labels(tab, "nucleus", L("nucleus_0005"), "branch_id"),
+                   c("0001b001", NA, NA, NA, NA))
+  # Stacked, in --label_by's order; an untracked feature keeps what it has.
+  expect_identical(qc_labels(tab, "nucleus", L("all"), c("feature_id", "branch_id")),
+                   c("0005\n0001b001", "0007\n0001b002", "0009\n0005b001", "0011", NA))
+  # OR across kinds; zeros optional in the short form.
+  expect_identical(qc_labels(tab, "nucleus", L("track_id=5", "branch_id=1b2"), "feature_id"),
+                   c(NA, "0007", "0009", NA, NA))
+  expect_identical(qc_labels(tab, "nucleus", L("branch_id=0001b001"), "feature_id"),
+                   c("0005", NA, NA, NA, NA))
+  expect_error(qc_labels(tab, "nucleus", L("nucleolus_0001"), "feature_id"),
+               "labels act on the focus type, nucleus. Name nucleolus first in --feature")
+  expect_warning(qc_labels(tab, "nucleus", L("track_id=9"), "feature_id"),
+                 "No track nucleus_track_0009 to label")
+  expect_error(qc_labels(tab[, 1:2], "nucleus", L("all"), "branch_id"), "the tracks are not joined")
+})
+
+test_that("feature_outline --label_by: tracks read for labels alone, and bad options stop early", {
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
+  source_cli(c("annotate_features_cli.r", "feature_outline_cli.r"))
+  d <- withr::local_tempdir(); out <- withr::local_tempdir()
+  .time_course(d)
+  suppressMessages(annotate_features_cli(c("--input", d, "--feature", "nucleus", "--outdir", out,
+                                           "--min_z_span", "nucleus=2")))
+  .tracks_for(out)
+  run <- function(...) suppressWarnings(feature_outline_cli(c(
+    "--features", file.path(out, "TC_features.rds"), "--config", file.path(d, "TC_config.txt"),
+    "--output", file.path(withr::local_tempdir(), "m.tif"), ...)))
+  # Class colouring, branch labels: the tracks are read because a label needs them.
+  expect_message(run("--label_by", "feature_id", "branch_id", "--label", "track_id=1"),
+                 "2 nucleus track\\(s\\), 4 branch\\(es\\)")
+  expect_error(run("--label", "7"), "say what it names")
+  expect_error(run("--label_by", "class"), "--label_by takes feature_id, track_id and/or branch_id")
+  expect_error(run("--color_by", "branch_id", "--label", "track_id=3b2"), "write branch_id=3b2")
+  expect_warning(feature_outline_cli(c(
+    "--features", file.path(out, "TC_features.rds"), "--config", file.path(d, "TC_config.txt"),
+    "--output", file.path(withr::local_tempdir(), "m.tif"), "--tracks_dir", out, "--label", "all")),
+    "--tracks_dir is used only when")
 })

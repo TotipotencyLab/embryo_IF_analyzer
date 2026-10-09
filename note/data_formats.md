@@ -912,7 +912,7 @@ identical ids. A **track** is everything connected by links, numbered
 `feature_id`. A **branch** starts at a track's first feature, at each daughter
 of a division, and at a merged feature, and runs on while each feature has one
 successor and that successor one predecessor — so it holds at most one feature
-per `t`. Branches are numbered `<track_id>_bNN` within their track, the same
+per `t`. Branches are numbered `<track_id>_bNNN` within their track, the same
 way. A feature linked to nothing has neither id. An edit can renumber both, so
 an id noted down holds for one set of links.
 
@@ -994,8 +994,10 @@ track an edit named a feature of is `track_source = edited` in `branches.tsv`
 `parameter` / `value`, like `_config.txt`: `repo_version`,
 `trackmate_version`, the centroid table and its `run_id` and `fingerprint`,
 every tracker setting (below, plus `allow_gap_closing` and
-`allow_track_splitting`, always `true`), the `frames` tracked, and the
-counts — `n_features`, `n_links`, `n_gap_closed`, `n_divisions`, `n_merges`.
+`allow_track_splitting`, always `true`), the `frames` tracked (the time axis),
+`frames_without_feature` (the time points on it where no feature of the type
+was found), and the counts — `n_features`, `n_links`, `n_gap_closed`,
+`n_divisions`, `n_merges`.
 
 #### The settings
 
@@ -1012,12 +1014,28 @@ counts — `n_features`, `n_links`, `n_gap_closed`, `n_divisions`, `n_merges`.
 
 Gap closing and splitting are always on. Defaults are TrackMate's own.
 
-**What a "frame" is to the tracker.** The time points the series' table
-holds, in order — not frame numbers. TrackMate counts gaps and splits in frame
-numbers, so time points sampled `1,10,20` (a batch run with `frames=`) would be
-nine frames apart to it: nothing gap-closed, no division recorded. Each time
-point is given to it as its rank and `t` restored afterwards, so one step is one
-sampled time point. A time point with no feature of the type is not a step.
+**What a "frame" is to the tracker.** The time points the run **analysed**, in
+order — `frames_analysed`, which `annotate` copies above the centroid table's
+header from Fiji's `_config.txt` — not frame numbers. TrackMate counts gaps and
+splits in frame numbers, so time points sampled `1,10,20` (a batch run with
+`frames=`) would be nine frames apart to it: nothing gap-closed, no division
+recorded. Each time point is given to it as its rank and `t` restored
+afterwards, so one step is one analysed time point.
+
+**A time point where no feature of the type was found is still a step.** Taking
+the steps from the features instead would make a link across such a frame
+look adjacent: not counted as gap-closed, allowed at `maxFrameGap` 1, and a
+division across it recorded as a split — and whether it did would depend on
+whether some *other* nucleus happened to be found that frame. TrackMate itself
+skips a frame holding no spots, so such a frame is given a placeholder spot,
+out of reach of every feature and every distance setting, for the run only:
+it is never written, and a link to one stops the run. The log and the params
+file name these time points (`frames_without_feature`).
+
+A centroid table holding several time points **without** the
+`frames_analysed` line is refused — re-run `annotate` with Fiji's
+`_config.txt` beside its inputs — and so is one holding a `t` the line does
+not name: the centroids and that config are from different runs.
 
 **What TrackMate does that the settings do not say**, measured on synthetic
 features (`tests/groovy/Test_FeatureTracks.groovy` pins each):
@@ -1268,9 +1286,13 @@ reporting name — never `nucleus` by assumption.
 
 Colours are assigned in `feature_id` order over the **whole series**, so a
 feature keeps its colour on every page of a time course. With a qualitative
-palette, ids `k` apart share a colour; the label settles which is which. The
-same options, without the `qc_` prefix (`--color_by`, `--label`,
-`--palette`), colour panel (iii) of `feature_outline_cli.r`.
+palette, ids `k` apart share a colour; the label settles which is which.
+`feature_outline_cli.r` takes the same choices without the `qc_` prefix
+(`--color_by feature_id`, `--label`, `--palette`) for panel (iii), except that
+its colour-by-type mode is called `class` rather than `feature_type`.
+`--qc_label` is parsed by the same function as `--label` (`.cli_label_spec()`):
+`all`, `feature_id=7,3`, or — since annotate has features only — bare numbers
+(`7 3`), which mean features here and nothing else.
 
 #### `<series_id>_feature_centroids.tsv`
 
@@ -1300,8 +1322,25 @@ weighted mean its z is not stuck on whole slices.
 **input** outline tables (then beside the `.rds` and its parent). `annotate`
 needs no config and runs on data without one (`PLA_analysis/`), so a missing
 step is not an error here: `z` is left blank, the log says why, and the step
-that would use z refuses it. Series in one run whose configs disagree get no
-step rather than an arbitrary one.
+that would use z refuses it. Each series takes the step from its own config --
+pixel size varies between series of one file -- so two series in one run may
+have different steps.
+
+**Above the header**, the same config's `frames_analysed` and `pixel_depth`,
+copied as it writes them:
+
+```
+# frames_analysed: 1 10 20 30 40 50 60 70 80 90
+# pixel_depth: 5.0
+series_id	t	feature_type	...
+```
+
+`frames_analysed` is the run's **time axis**, which the rows cannot give: a
+frame where nothing was found has no row, yet is still a time point to a
+tracker. `Make_FeatureTracks` refuses a table holding several time points
+without it, and a `t` it does not name (§2, Feature tracks). A key the config
+lacks is left out, and without a config there are no such lines. Read with
+`comment.char = "#"` in R.
 
 **`fingerprint`** is a hash of the sorted `(feature_id, t, roi)` triples of the
 type's real features, bridges included — *what the features are*. It changes
@@ -1398,7 +1437,7 @@ rejects table instead of being folded in.
 | `circ_med`, `circ_min` | only when the `_res.txt` was found |
 | `ch<N>_signal` | one column per channel measured; only when the `_res.txt` was found |
 | `class` | the `--class` a feature matched, or `unclassified`; only when `--class` was given |
-| `track_id`, `branch_id`, `branch_merged` | only with `--track_type`: the feature's lineage, its object-through-time, and whether that branch was formed by a merge (§2, Feature tracks). Blank for a feature of another type or linked to nothing |
+| `track_id`, `branch_id`, `branch_merged` | only with `--track_type`: the feature's lineage, its object-through-time, and whether that branch was formed by a merge (§2, Feature tracks). `NA` for a feature of another type or linked to nothing, as for any absent value in this file |
 | *metadata* | every non-`series_id` series-table column, when supplied. `is_bridge` is **not** carried through: it is an ROI-level fact that varies within a feature, and `n_bridge` / `frac_bridge` are the feature-level answer |
 
 ⚠️ Every statistic above **excludes bridge ROIs** (`n_roi` and `n_z`
@@ -1460,8 +1499,10 @@ draws them) and those **in no branch**, saying how many. `--group_by track_id`
 is **refused**: a lineage holds two cells at one `t` once it divides, and a
 distribution pooled over it is the frames-summed-into-a-count mistake again.
 What a lineage supports is a count — `count_features_cli.r --feature_table
-<this feature_stats.tsv> --feature_class_by track_id` counts features per
-track per `t`.
+<this feature_stats.tsv> --feature nucleus --feature_class_by track_id` counts
+features per track per `t`. **`--feature` is not optional here**: the counts
+have no `feature_type` column, so without it every feature of another type
+(each nucleolus) lands in `unclassified` beside the untracked nuclei.
 
 ##### `<output_prefix>branches.tsv`
 
@@ -1474,8 +1515,8 @@ with no statistic averaged over time. Sorted by series, track, branch.
 | `feature_type` | the tracked type |
 | `track_id` | `<feature_type>_track_NNNN` |
 | `track_source` | `edited` when a hand edit named any feature of its track (§2, the edits table), else `auto` |
-| `branch_id` | `<track_id>_bNN` |
-| `parent_branch_id` | the branch its first feature was linked from: blank for a track's first branch, two ids joined by `;` for a merged branch |
+| `branch_id` | `<track_id>_bNNN` |
+| `parent_branch_id` | the branch its first feature was linked from: blank for a track's first branch, two or more ids joined by `;` for a merged branch |
 | `branch_merged` | `TRUE` when its first feature has two predecessors |
 | `first_t`, `last_t` | its first and last time point; a gap-closed branch has fewer features than the span |
 | `n_features` | features in it, at most one per `t` |
@@ -1639,9 +1680,36 @@ object-through-time, over every page of the series, so a nucleus keeps its
 colour from frame to frame and **a tracking error shows as a colour jump** —
 the visual check of tracking. The tracks are read from beside `--features`
 (or `--tracks_dir`) and checked as §2 describes; features linked to nothing
-are grey, as are other types. `--label` then writes the track number (`0003`)
-or the branch (`0003b02`), and its numbers select tracks: `--label 3` labels
-every branch of track 3.
+are grey, as are other types.
+
+**Labels: `--label_by` says what, `--label` says which.** Both act on the focus
+type only (the first `--feature`); other types are never labelled.
+
+- `--label_by feature_id track_id branch_id` — any of them, **stacked one per
+  line** in one label (`0005` over `0001b002`), drawn in the outline's colour,
+  on every outline of the type. A kind an outline lacks (an untracked
+  feature's branch) is left out of its label. Default, when only `--label` is
+  given: the `--color_by` id, or `feature_id` under class colouring — the
+  labels as they were before `--label_by`. When the labels name something
+  other than what is coloured, the caption says so (`labels: feature, branch`).
+- `--label` narrows that to the outlines named, **any of them** (OR):
+  `all`, or `key=values` tokens — `feature_id=7,3 track_id=2 branch_id=3b2`.
+  Values are numbers (zeros optional), a branch's short form (`3b2` =
+  `0003b002`; a branch needs its track, and `track_id=3` is all of track 3's
+  branches), or full ids. A token without `=` belongs to the key before it,
+  which is also what argparser makes of a comma: `feature_id=7,3,1` arrives as
+  `feature_id=7`, `3`, `1`. A full id or `3b2` names its own kind, and is
+  refused under a key of another kind. **A bare number with no key before it
+  is refused** — under branch colouring, `7` could be feature 7 or track 7,
+  and reading `nucleus_0005` as track 5 is what the old `--label` did. An id
+  of another type is refused, naming the `--feature` order that would label
+  it; one that matches nothing warns.
+
+The tracks are read whenever `--color_by`, `--label_by` or `--label` involves
+`track_id` or `branch_id`, so `--color_by class --label_by branch_id` works.
+For choosing hand edits: `--color_by branch_id --label_by feature_id
+branch_id` — the colour shows where a track breaks, the labels give the two
+`feature_id`s to `join`.
 
 `--color_map 'growing=red' 'small=blue'` highlights the classes under
 inspection. Everything else — including orphans — is drawn as a single `other`

@@ -624,7 +624,7 @@ test_that("annotate writes the documented feature centroid columns", {
     "--input", fixture_dir(), "--feature", "nucleus", "nucleolus", "--outdir", out,
     "--min_z_span", "default=5", "nucleolus=2")))
   tsv <- file.path(out, "GRV_Position010_feature_centroids.tsv")
-  written <- names(read.delim(tsv, nrows = 1))
+  written <- names(read.delim(tsv, nrows = 1, comment.char = "#"))
 
   # The doc's table, row by row: a cell may name two columns ("`x`, `y`").
   doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)

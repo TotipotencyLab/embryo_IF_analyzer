@@ -122,6 +122,102 @@
   return(as.list(out))
 }
 
+#' Parse a --label / --qc_label selection into ids per kind
+#'
+#' Which outlines get a label -- WHAT the label says is --label_by's. Tokens:
+#'
+#'   all                          every outline (alone; with others it is refused)
+#'   feature_id=7,3 track_id=2    key=values; values add up (OR), across tokens too
+#'   feature_id=7 3 1             a token without `=` belongs to the key before it,
+#'                                which is also what argparser makes of a comma:
+#'                                `feature_id=7,3,1` arrives as "feature_id=7" "3" "1"
+#'   nucleus_0007  3b2            a full id, or a branch's short form, names its
+#'                                own kind; under a key of another kind it is refused
+#'
+#' A number with no key before it is filed under `default_key` -- annotate's
+#' `--qc_label 7`, where only features exist -- and refused when there is none:
+#' under `--color_by branch_id`, is 7 a feature or a track? Guessing it was
+#' how `nucleus_0005` once selected track 5.
+#'
+#' Shapes are checked here; whether an id exists, and is of the focus type, is
+#' the caller's (qc_labels()).
+#'
+#' @param keys        the kinds this CLI can label
+#' @param default_key the kind a leading bare value is filed under, or NULL
+#' @param hint        appended to an unknown-key refusal
+#' @return NULL when nothing was given; list(all = TRUE); or a list of
+#'         character vectors named by kind
+.cli_label_spec <- function(tokens, what = "--label",
+                            keys = c("feature_id", "track_id", "branch_id"),
+                            default_key = NULL, hint = "") {
+  tokens <- .cli_resolve_arg(tokens, what)
+  if (!length(tokens)) return(NULL)
+  if (any(tolower(tokens) == "all")) {
+    if (length(tokens) > 1L) {
+      stop(what, " all already labels every outline; give 'all' or a selection, not both",
+           call. = FALSE)
+    }
+    return(list(all = TRUE))
+  }
+  shape <- c(feature_id = "^([0-9]+|.+_[0-9]+)$",
+             track_id   = "^([0-9]+|.+_track_[0-9]+)$",
+             branch_id  = "^([0-9]+b[0-9]+|.+_track_[0-9]+_b[0-9]+)$")
+  kind_of_full <- function(v) {
+    if (grepl("_track_[0-9]+_b[0-9]+$", v)) "branch_id"
+    else if (grepl("_track_[0-9]+$", v)) "track_id"
+    else if (grepl("^.+_[0-9]+$", v)) "feature_id"
+    else NA_character_
+  }
+  out <- list(); cur <- NULL
+  for (tok in tokens) {
+    if (grepl("=", tok, fixed = TRUE)) {
+      cur <- trimws(sub("=.*$", "", tok))
+      if (!cur %in% keys) {
+        stop(what, ": '", cur, "=' is not a kind it can select by; use ",
+             paste0(keys, "=", collapse = ", "), hint, call. = FALSE)
+      }
+      vals <- sub("^[^=]*=", "", tok)
+    } else {
+      vals <- tok
+    }
+    vals <- strsplit(trimws(vals), "[,[:space:]]+")[[1]]
+    vals <- vals[nzchar(vals)]
+    if (!length(vals)) stop(what, ": '", tok, "' names no value", call. = FALSE)
+    for (v in vals) {
+      # An id, or a branch's short form (3b2), says what it is; a plain number
+      # belongs to the key before it. Both saying, and disagreeing, is refused
+      # rather than one of them winning.
+      own <- if (grepl("_", v, fixed = TRUE)) kind_of_full(v)
+             else if (grepl("^[0-9]+b[0-9]+$", v)) "branch_id" else NULL
+      if (!is.null(own) && !is.na(own) && !is.null(cur) && own != cur) {
+        stop(what, ": '", v, "' is a ", sub("_id$", "", own), " id, under ", cur,
+             "=; write ", own, "=", v, call. = FALSE)
+      }
+      k <- if (!is.null(own)) own else cur
+      if (is.null(k) && !is.null(default_key)) k <- default_key
+      if (is.null(k) || is.na(k)) {
+        num <- intersect(keys, c("feature_id", "track_id"))
+        stop(what, ": '", v, "' -- say what it names: ",
+             paste0(num, "=", v, collapse = " or "), call. = FALSE)
+      }
+      if (!k %in% keys) {
+        stop(what, ": '", v, "' is a ", sub("_id$", "", k), " id; ", what, " selects by ",
+             paste(keys, collapse = ", "), hint, call. = FALSE)
+      }
+      if (!grepl(shape[[k]], v)) {
+        stop(what, ": '", v, "' is not a ", k,
+             switch(k, feature_id = " (7, 0007 or nucleus_0007)",
+                    track_id = " (3, 0003 or nucleus_track_0003)",
+                    branch_id = paste0(" (3b2, 0003b002 or nucleus_track_0003_b002 -- a branch ",
+                                       "needs its track; track_id=3 is all of track 3's branches)")),
+             call. = FALSE)
+      }
+      out[[k]] <- c(out[[k]], v)
+    }
+  }
+  return(out)
+}
+
 #' Parse --plot specs: 'x:y' or 'id=x:y'
 #'
 #' The id is cosmetic -- it names the page -- because thresholds are keyed to
@@ -605,6 +701,10 @@
   } else {
     utils::read.delim(path, stringsAsFactors = FALSE, check.names = FALSE)
   }
+  # A spreadsheet saving "UTF-8" may put a byte-order mark first. Left on, it
+  # becomes part of the first column's name -- invisibly, so "no 'series_id'
+  # column" names one that looks present. Tsv.read() drops it on the Groovy side.
+  if (ncol(df)) colnames(df)[1] <- sub("^\xef\xbb\xbf", "", colnames(df)[1], useBytes = TRUE)
   if (!nrow(df)) stop(what, " is empty: ", path, call. = FALSE)
   return(df)
 }
@@ -816,6 +916,30 @@
   return(v)
 }
 
+#' Where a series' `_config.txt` is looked for: beside the inputs, then beside
+#' the features file, its parent, and a `segmentation/` beside that
+.cli_config_dirs <- function(features_path, res_dirs) {
+  here <- dirname(features_path)
+  return(unique(c(res_dirs, here, file.path(here, ".."), file.path(here, "..", "segmentation"))))
+}
+
+#' The `_config.txt` fields a centroid table carries above its header
+#'
+#' What the step after annotate needs from the Fiji run and cannot get from the
+#' features: `frames_analysed` is the time axis -- a frame where nothing was
+#' found has no feature row, yet is still a time point to a tracker -- and
+#' `pixel_depth` is what `z` was computed with. Copied as the config writes
+#' them, so there is no second spelling to drift; absent keys are left out.
+#'
+#' @return named character, possibly empty
+.cli_centroid_stamp <- function(sid, features_path, res_dirs) {
+  cfg <- .cli_read_config(.cli_find_config(sid, .cli_config_dirs(features_path, res_dirs)))
+  keys <- c("frames_analysed", "pixel_depth")
+  if (is.null(cfg)) return(character(0))
+  out <- trimws(cfg[intersect(keys, names(cfg))])
+  return(out[!is.na(out)])
+}
+
 #' The z step of the series in a features table, from the `_config.txt` Fiji
 #' wrote beside them
 #'
@@ -838,10 +962,7 @@
 #' @return a positive number, or NA_real_ (with attr "conflict" on a clash)
 .cli_z_step_for <- function(feats, features_path, res_dirs) {
   tab <- if (inherits(feats, "sf")) sf::st_drop_geometry(feats) else feats
-  here <- dirname(features_path)
-  dirs <- unique(c(res_dirs, here,
-                   file.path(here, ".."),
-                   file.path(here, "..", "segmentation")))
+  dirs <- .cli_config_dirs(features_path, res_dirs)
   vals <- c()
   for (sid in unique(tab$series_id)) {
     cfg <- .cli_read_config(.cli_find_config(sid, dirs))
@@ -929,7 +1050,7 @@
 .RLIB_REQUIRED <- c("read_fiji_result", "polygonize_roi_df", "define_feature_group",
                     "find_ROI_z_intersect", "assign_feature_parent",
                     "union_features", "plot_features_topView",
-                    "feature_centroids", "qc_id_colours", "join_tracks")
+                    "feature_centroids", "qc_id_colours", "qc_labels", "join_tracks")
 
 #' Source scripts/R/ into the global environment
 #'
