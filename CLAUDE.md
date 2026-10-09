@@ -20,6 +20,12 @@ sharing a common library, not one program.
    plausible and is wrong.
    - Changing anything that writes the output files ⇒ re-run a reference and
      **diff**. The ROI counts agreeing is not the check; the files agreeing is.
+     **Known exception: multi-page TIFFs that R writes through magick** (the
+     `feature_outline` montage, `annotate`'s QC TIFF). They are not
+     byte-reproducible: the same code run twice differs in 2–3 bytes of padding
+     the TIFF writer leaves uninitialised, outside every strip and directory.
+     Compare them **page by page on pixels** (`image_data()`), and check that the
+     differing bytes are padding, never pixels.
    - A new option that should change nothing when off ⇒ prove it changes nothing
      when off, and *separately* prove it does something when on. Identical
      output can mean "correctly did nothing" or "silently never ran" — those
@@ -28,17 +34,27 @@ sharing a common library, not one program.
    - Never report a pass that could not have failed. Print the value observed,
      not the word "OK".
    - Say which R ran; the suite's counts differ between 4.4 and 4.6.
-5. **Commit** with the reasoning, not the diff. Why it was wrong and how the
+5. **Review** before calling it done: read the change cold, as if someone else
+   wrote it. Tests written with the code share its blind spots — they check the
+   cases its author already had in mind — so trace each claim through the real
+   code path, and ask what the code will actually be handed rather than what it
+   was written for: malformed, empty, unexpected or hand-edited input.
+   **Reproduce each finding on the code as it stands before fixing it, and show
+   that the fix's test fails without the fix** — otherwise a fix and its test
+   can be wrong together. Spend effort in proportion to what a mistake would
+   cost: a change that writes a file people edit, or a format another step
+   reads, gets a full pass; a one-line fix gets one look.
+6. **Commit** with the reasoning, not the diff. Why it was wrong and how the
    failure showed up is what is worth reading in a year. Note explicitly what
    was *not* verified.
-6. **PR, squash merge**, tag if releasing (bump `VERSION` in the tagged commit).
+7. **PR, squash merge**, tag if releasing (bump `VERSION` in the tagged commit).
    A milestone that changes the contract over several PRs may have a **home
    branch** instead (`time_axis`): its PRs are `<home>-<what>` branches
    squash-merged into it, it carries `VERSION` `<next>-dev` so its output cannot
    pass for the last release, and it is merged into `main` — a normal merge —
    once all of them are in, with the release `VERSION` as its last commit and
    the merge commit tagged. `main` then never holds a half-changed contract.
-7. **Doc-sync.** Two different things, and they are not handled the same way.
+8. **Doc-sync.** Two different things, and they are not handled the same way.
 
    **a. Format documentation travels with the change — write it, do not
    propose it.** If the work altered any table this repo reads or writes — a
@@ -95,7 +111,7 @@ dangerous. Two things depend on it and break silently if changed:
 these are what lets the R side reconstruct the image frame — the bounding box of
 the detected objects is not the frame, and a QC panel drawn without them is
 cropped differently from the Fiji overview PNG it is meant to sit beside.
-`montage_qc_cli.r` warns loudly rather than producing a misaligned montage.
+`feature_outline_cli.r` warns loudly rather than producing a misaligned montage.
 `pixel_depth` is blank for a single plane rather than ImageJ's default 1.0 — a
 z step that does not exist must not arrive as a usable-looking number. The file
 is also **readable back in** as a run's parameters (`RunConfig.groovy`), which
@@ -197,6 +213,20 @@ loop, including how to diff.
 
   The line between `Make_` and `Run_` is judgement, not rule. Do not invent a
   fifth verb without adding it here.
+- **`Make_FeatureTracks.groovy` links annotate's features across time**, with
+  TrackMate's LAP tracker driven without an image. The round trip is R → Fiji →
+  R because features exist only after R's grouping and the tracker is Java. It
+  writes **links, not ids**: `join_tracks()` (`scripts/R/feature_tracks.r`)
+  numbers lineages (`track_id`) and branches (`branch_id`) every time R reads
+  them, so no id is stored where it could go stale, and applies the hand edits
+  in `_track_edits.tsv` there too — refused, never applied to other nuclei,
+  when they were made on another annotation. ⚠️ **The tracker's time axis is
+  the run's `frames_analysed`**, stamped on the centroid table by `annotate`,
+  not the time points that hold a feature: TrackMate skips a frame with no
+  spots, so a frame where nothing was found would vanish and a link across it
+  look adjacent — a division across it recorded as a split or not depending on
+  whether some *other* nucleus was found that frame. Such a frame gets a
+  placeholder spot for the run only.
 - `Inspect_ImageFile.groovy` lists what is inside a file without opening it —
   series, dimensions, calibration — and with `checkPixels` reports the
   percentage of non-zero pixels per series. That last one matters: a series that
@@ -330,8 +360,8 @@ loop, including how to diff.
   (outlines → features, containment, + QC plot), `count_features_cli.r`
   (features → tidy counts, the oocyte deliverable), `feature_stat_cli.r`
   (per-feature statistics and their distributions), `feature_scatter_cli.r`
-  (two statistics against each other) and `montage_qc_cli.r` (the 3-panel
-  check).
+  (two statistics against each other) and `feature_outline_cli.r` (one series'
+  features outlined on its image, by class, id or track).
 
   **`feature_stat_cli.r` is the threshold-finding step**, and the unit is the
   feature, not the ROI — adjacent z-slices of one object share signal through
@@ -356,7 +386,7 @@ loop, including how to diff.
   cell, grid, title, scale bar, and `mg_write()`. Two things it settles. Its
   `full_width` is *given*, never inferred from the first cell: the group montage
   passes `cell * ncol` so a group of one still comes out the width of a full
-  grid, while `montage_qc_cli.r` passes nothing, because its three panels are
+  grid, while `feature_outline_cli.r` passes nothing, because its three panels are
   three renderings of one image scaled to a common height and padding them apart
   would put gaps into a strip meant to be read across. And `mg_write()` states
   the bit depth, because magick composes in 16 bits and appending a title band

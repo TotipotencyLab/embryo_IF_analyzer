@@ -1,10 +1,10 @@
 # Implementation plan: time-series support
 
 **Status: `luxendo` done (v0.6.0, amended after it — §4); `vocab` done
-(v0.7.0, both PRs, §4); `time_axis` done (v0.8.0, all five PRs, §4); nothing
-after it implemented.** The design was revised on 2026-10-02 (**a series is a
-whole position, time included**; §3.1, §6.17) and the sections below say so
-where it changed.
+(v0.7.0, both PRs, §4); `time_axis` done (v0.8.0, all five PRs, §4);
+`tracking` done (v0.9.0, all six PRs, §4); nothing after it implemented.**
+The design was revised on 2026-10-02 (**a series is a whole position, time
+included**; §3.1, §6.17) and the sections below say so where it changed.
 Delete this file when all milestones land — but migrate the surviving decisions
 first, into `note/data_formats.md` (shapes) or `note/luxendo_file_format.md`
 (that format's facts). `CLAUDE.md` only for the few that are standing hazards
@@ -140,7 +140,7 @@ one (position, time point), and that is what §6.17 records reversing.
 | `series_id` | one series — one row of the series table | the series table | `Make_SeriesSheet` / `Make_LuxendoSheets` |
 | `t` | which time point, within a series | a `series_id` | the frame index, written by Fiji into the output tables (`time_axis`) |
 | `feature_id` | one object **at one time point** | a `series_id` | `define_feature_group()` |
-| `track_id` | a **lineage**: features connected by links, divisions and merges included | a `series_id` | `tracking`: computed from `<series_id>_tracks.tsv` at use (§4) |
+| `track_id` | a **lineage**: features connected by links, divisions and merges included | a `series_id` | `tracking`: computed from `<series_id>_<feature_type>_tracks.tsv` at use (§4) |
 | `branch_id` | one object **through time**: a stretch of a track with no division or merge in it, at most one feature per `t` | a `series_id` | `tracking`, computed alongside `track_id` (§4) |
 
 🔒 `feature_id` = `<feature_type>_<NNNN>`, numbered **globally within a series**
@@ -1033,15 +1033,16 @@ home branch is for provenance — output from half-built tracking must not claim
 
 **The data flow gains a Fiji step**, accepted by the user: Fiji detection → R
 `annotate` (features, and their centroids) → Fiji `Make_FeatureTracks`
-(TrackMate) → `<series_id>_tracks.tsv` → R joins it at use. Features exist only
+(TrackMate) → `<series_id>_<feature_type>_tracks.tsv` → R joins it at use. Features exist only
 after R's grouping, and TrackMate is Java, so the round trip is inherent.
 
 **Files**, one of each per series, beside the feature table:
 
 ```
 <series_id>_feature_centroids.tsv   annotate      what TrackMate links
-<series_id>_tracks.tsv              Fiji          the links it made, one row per link
-<series_id>_track_edits.tsv         a person      corrections; seeded empty, never overwritten
+<series_id>_<type>_tracks.tsv       Fiji          the links it made, one row per link
+<series_id>_<type>_track_edits.tsv  a person      corrections; seeded empty, kept once it holds edits
+<series_id>_<type>_track_params.txt Fiji          the tracker settings used
 ```
 
 🔒 **`_tracks.tsv` is the only store of tracks, joined at use — never copied
@@ -1185,7 +1186,7 @@ index, so its wobble is well under one 5 µm step. Brought back, as a third
 value, only if real data shows both fail. A default is chosen when a properly
 segmented time-lapse exists (`note/wishlist.md`).
 
-- [ ] **PR 1 — `tracking-centroids` (R).** `annotate` writes
+- [x] **PR 1 — `tracking-centroids` (R).** ✅ done. `annotate` writes
       `<series_id>_feature_centroids.tsv`: `series_id`, `feature_id`, `t`,
       `feature_type`, `run_id`, centroid `x`, `y`, `z` in calibrated µm
       (area-weighted over the feature's ROIs), a size, and the edit
@@ -1208,7 +1209,24 @@ segmented time-lapse exists (`note/wishlist.md`).
       so this is mostly wiring. A fixed default palette, plus named
       RColorBrewer/viridis ones; colours cycle for 100 objects, in shuffled
       order so neighbouring ids differ, and the label settles a clash.
-- [ ] **PR 2 — `tracking-trackmate` (Groovy).** `Make_FeatureTracks.groovy`:
+      **As built** (2026-10-08): `scripts/R/feature_centroids.r`
+      (`feature_centroids()`, `feature_fingerprint()`); `.cli_z_step_for()` in
+      `cli_helpers.r`, `feature_stat`'s `.z_step_for()` now a wrapper keeping
+      its warning. Bridge ROIs are set aside, as `feature_stat` does. The
+      single-plane rule (`z = 0`) is in the library but **unreachable through
+      `annotate` today**: a lone ROI per object overlaps nothing in z, so
+      `define_feature_group()` makes no feature from a single plane
+      (`failed_<type>_overlap`) — the 2-D features of the N-feature wishlist
+      entry. `montage_qc_cli.r` takes the QC options without the `qc_` prefix
+      (`--color_by class|feature_id`, `--label`, `--palette`), refuses
+      `--color_by feature_id` beside `--color_map`/`--feature_class_by`, and
+      refuses an ambiguous type rather than defaulting to one. Palettes are
+      base R (`palette.pals()`, `hcl.pals()`), no new package. Verified:
+      default outputs unchanged against `tracking` bd3cd67 on the fixture
+      (`features.tsv`, `.rds`, QC PNG byte-identical; montage pixel-identical,
+      the PNG differing in its write-time chunk only) and on a synthetic
+      2-frame series (QC TIFF pixel-identical, both pages); R 4.6.1 1127/0.
+- [x] **PR 2 — `tracking-trackmate` (Groovy).** ✅ done. `Make_FeatureTracks.groovy`:
       a series' centroid table → `SparseLAPTrackerFactory` (§5.2) →
       `_tracks.tsv`, the settings used, and the seeded `_track_edits.tsv`.
       Calibrated units, never pixels (§5.4); `useZ` required, and `true`
@@ -1222,7 +1240,38 @@ segmented time-lapse exists (`note/wishlist.md`).
       so in the log. Tracks one feature
       type, named by the caller, never `nucleus` by assumption (the N-feature
       refactor, `note/wishlist.md`); after `--rename`, the renamed name.
-- [ ] **PR 3 — `tracking-join` (R).** `join_tracks()` (above) and its callers.
+      **As built** (2026-10-08): `scripts/groovy/FeatureTracks.groovy` (the
+      library) and `Make_FeatureTracks.groovy` (`#@` block + one call).
+      **Two departures from the text above, both from tracking one type at a
+      time:** the files are `<series_id>_<feature_type>_tracks.tsv`,
+      `_track_edits.tsv` and `_track_params.txt` — with the type in the name,
+      as the outline tables have it, so tracking a second type writes beside
+      the first instead of over it (R's join takes the type); and the edits
+      table's fingerprint is a **column on every edit row**, the seed being a
+      header, explanatory comments and one commented-out template row carrying
+      it — "seeded empty with the fingerprint filled in" and "an edit row
+      without it is refused" read literally, and a person copies the line
+      rather than typing a hash. `_tracks.tsv` columns are `series_id`, `t`,
+      `feature_id`, `prev_feature_id`, `run_id`. **Time points are passed to
+      TrackMate as their rank** in the series, `t` restored on the way out:
+      TrackMate counts gaps and splits in frame numbers, so a batch run with
+      `frames=1,10,20` would otherwise never gap-close and never record a
+      division (a split must span one frame) — measured, and held by a raw-`t`
+      control in the test. Every input is read and checked before anything is
+      written. Settings default to TrackMate's (15 µm, `MAX_FRAME_GAP` 2 =
+      one missing time point). TrackMate facts measured on the way, now in the
+      library's header and `note/data_formats.md`: a time point holding no
+      spot is not a gap, it is absent; distances must be strictly below the
+      maximum; a feature linked to nothing frame to frame is never gap-closed
+      or split onto; results do not depend on thread count or input order.
+      Verified: `Test_FeatureTracks` (every case in the verification list
+      below, the refusals, the edits seeding, determinism, the front end
+      through a `Binding`); end to end on synthetic outlines through
+      `annotate_features_cli.r` and the real headless command line (two
+      movers and a division over four frames → exactly those links; `useZ`
+      omitted → refused, not hung). **Not verified:** real data — none can
+      validate tracking yet (below).
+- [x] **PR 3 — `tracking-join` (R).** ✅ done. `join_tracks()` (above) and its callers.
       **Track QC lives in `montage_qc_cli.r`, not `annotate`**: `annotate`
       writes the features before any track exists, so colouring by track there
       would mean re-running it after Fiji. `montage_qc_cli.r` already reads
@@ -1236,20 +1285,155 @@ segmented time-lapse exists (`note/wishlist.md`).
       means: features per `(track_id, t)`, counted, never averaged — a track
       can hold two cells at one `t`, and averaging them would be the
       frames-summed-into-a-count mistake again.
-- [ ] **PR 4 — `tracking-edits` (R).** `_track_edits.tsv` (the table above),
+      **As built** (2026-10-08): `scripts/R/feature_tracks.r` —
+      `read_tracks()`, `check_track_links()`, `number_tracks()`,
+      `join_tracks()`. Joins `track_id`, `branch_id` and `branch_merged`, and
+      returns one row per branch (`parent_branch_id`, `first_t`, `last_t`,
+      `n_features`) as an attribute. Departures, all small: **the `run_id`
+      guard is shared, not called through `join_feature_table()`** — its
+      check moved into `check_run_id()` (`feature_join.r`), which both joins
+      call, because `join_tracks()`'s own completeness checks are stricter
+      than the rest of `join_feature_table()` and a second pass would only
+      repeat a forced warning; features with no `run_id` are refused too.
+      The montage option is `--color_by track_id|branch_id` (the montage's
+      existing flag, not `--qc_color_by`), with `--tracks_dir`; labels show
+      the track (`0003`) or branch (`0003b02`), and `--label 3` selects a
+      track. `feature_stat_cli.r --track_type <type>` (+ `--tracks_dir`,
+      `--force`) puts the three columns on every row and writes
+      `branches.tsv` — merged branches **included and flagged** there, since
+      it is the lineage rather than a summary; the "left out by default" rule
+      applies where a per-cell summary is made, `--group_by branch_id`
+      (`--keep_merged_branches` keeps them; untracked features are left out
+      too, counted). `--group_by track_id` is refused, pointing at the count:
+      `count_features_cli.r --feature_table feature_stats.tsv
+      --feature_class_by track_id` gives features per track per `t` with no
+      code change. A series with no tracks table, and an empty table meeting
+      features, are refused. Verified: the plan's A/A1/A2/B example to the id;
+      a merge's branch flagged with both parents; numbering independent of
+      input order and identical across joins; each refusal; the CLIs end to
+      end on a synthetic time course (montage page colours by branch and by
+      track, untracked grey, the grey shown absent under `feature_id`);
+      `Make_FeatureTracks`' own output read by both CLIs. Default outputs
+      unchanged against `tracking` 146e42a on the fixture (tables
+      byte-identical; annotate QC and both montages 0 pixels differing).
+      Code review (the workflow's step 5) found two, each reproduced and its
+      test shown failing without the fix: `--feature_table` with a
+      `--track_type` stats table was refused by the tracks join, and an empty
+      tracks table was reported with a blank `run_id`.
+- [x] **PR 4 — `tracking-edits` (R).** ✅ done. `_track_edits.tsv` (the table above),
       applied by `join_tracks()`, strict, fingerprint-checked.
+      **As built** (2026-10-09): `read_track_edits()` and
+      `apply_track_edits()` in `scripts/R/feature_tracks.r`, called by
+      `join_tracks()` between the completeness checks and numbering, so both
+      CLIs apply edits with no new option. Two things the table above left
+      open, settled: edits apply **in file order**, each against the links the
+      rows above left (`cut X Y` then `join X Z`), and the first bad row stops
+      the join, named by its line in the file. A wrong fingerprint on any row
+      refuses the whole file, with no `--force` (strict, as decided); moving
+      the file aside tracks without it. The fingerprint is recomputed from the
+      per-ROI features with PR 1's `feature_fingerprint()` -- the same
+      function that wrote it into the centroid table the seed copies it from.
+      `track_source` is a column of `branches.tsv`, after `track_id`: `edited`
+      for every track an edit named a feature of (both halves of a cut), else
+      `auto`. A feature an edit leaves linked to nothing has no track, by the
+      existing rule. Code review (step 5) found two, each reproduced on
+      `Make_FeatureTracks`' own seed and its test shown failing without the
+      fix: a row typed with spaces was refused as having "no fingerprint",
+      and a spreadsheet's UTF-8 byte-order mark hid the first comment's `#`,
+      so the file was refused (R) or reported unreadable (Groovy). Rows short
+      of the fingerprint column now say "separated by tabs?"; the mark is
+      dropped in R and in `Tsv.read()`, which every Groovy table reader uses.
+      Verified: each action; file order; a merge and a division by hand; a
+      `join` undoing a `cut` to the same ids; the daughter's-break `join`
+      accepted with her sister sharing its `t`s, and `join` refused off a
+      branch end in either direction; a backwards and a same-`t` `link`
+      refused; an empty edits file accepted, a stale or blank fingerprint
+      refused, a regrouping re-annotation refused, a `VERSION` bump accepted;
+      the centroid table's fingerprint accepted end to end through
+      `feature_stat_cli.r`, and `Make_FeatureTracks`' own seed, uncommented
+      by hand, applied by both CLIs. With only the seed present, output is
+      identical to PR 3's but for the new column.
+- [x] **PR 5 — `tracking-rename` (R, docs).** ✅ done. Added 2026-10-09, after
+      PR 4: `montage_qc_cli.r` → **`feature_outline_cli.r`**. Colouring by
+      track made the old name mislead — "QC" never said what was checked, and
+      a track check was not where anyone would look for one. The name now says
+      what it draws; class, id, track and branch are `--color_by` modes of one
+      picture. A separate track-QC script was rejected: it would duplicate the
+      panels, scale bar and labels for the sake of one flag. No behaviour
+      change: the montage of a real time course, by class and by branch with
+      labels, is byte-identical before and after. README gains "Tracking a
+      time course", the five steps in order, since the workflow crosses the
+      README's Fiji/R split. Entries above keep the old name: they record what
+      was built then.
+- [x] **PR 6 — `tracking-review-fixes`.** ✅ done. Added 2026-10-09: a review
+      of the whole milestone before release (three reviewers in parallel —
+      Groovy, R core, CLIs and docs — each finding reproduced). Fixed:
+      - **The tracker's time axis is the run's `frames_analysed`**, which
+        `annotate` now stamps above the centroid table's header
+        (`# frames_analysed: …`, `# pixel_depth: …`, copied from Fiji's
+        `_config.txt`). Before, the steps were the time points holding a
+        feature of the type, so a frame where none was found vanished: a link
+        across it looked adjacent (not gap-closed, allowed at `maxFrameGap` 1)
+        and a division across it was recorded as a split — **depending on
+        whether some other nucleus was found that frame**. Reading the
+        config in Groovy was rejected: `annotate` already pairs each series
+        with its config, and a second pairing could pick another run's.
+        TrackMate skips a frame holding no spots, so each such frame gets a
+        placeholder spot for the run only — out of reach of every feature,
+        never written, and a link to one stops the run. A table of several
+        time points without the stamp, or with a `t` it does not name, is
+        refused. (Options weighed: steps from every type's time points, or
+        documenting the old behaviour; the axis from the run was chosen as the
+        only one where a track depends on nothing but the object.)
+      - `feature_stat --group_by branch_id` drew two series' same-numbered
+        branches as one box; with several series a branch is labelled with
+        its `series_id`.
+      - One series with no valid feature of the tracked type stopped the whole
+        `feature_stat` run (and the montage): it now gets NA ids; a type found
+        in no input is still refused.
+      - The documented per-lineage count lacked `--feature <type>`, so other
+        types were counted as `unclassified` beside the untracked nuclei.
+      - Branch numbers are three digits (`_b001`): a lineage from one cell to
+        64 has 127 branches, and `b100` sorted after `b10`.
+      - Smaller: a NaN distance was accepted by the library (`NaN > 0` is true
+        in Groovy); a blank fingerprint before a trailing tab was reported as a
+        spacing problem; R refused a series sheet saved with a byte-order mark
+        that Groovy accepts; docs — `NA` not blank in `feature_stats.tsv`,
+        "two or more" merge parents, the z step per series, `--feature` in
+        the README's check step.
+      - **Labels: `--label_by` says what, `--label` says which** (raised by
+        the user while choosing hand edits: no picture showed feature ids and
+        branches together). `--label_by feature_id track_id branch_id`, any
+        of them stacked in one label in the outline's colour; `--label` an
+        optional OR-filter of `key=values` (`feature_id=7,3 branch_id=3b2`).
+        A bare number is refused in `feature_outline` — under branch
+        colouring the old `--label nucleus_0005` kept only the number and
+        labelled TRACK 5, another object — and means a feature in
+        `annotate --qc_label`, through the same parser with a default key
+        (`.cli_label_spec()`). One focus type kept; the multi-panel redesign
+        is in the wishlist.
+      Verified: each fix's test fails on the code before it (run against an
+      export of `tracking` at PR 5), passes after. Left for later, in
+      `note/wishlist.md`: `number_tracks` quadratic in branches, several
+      misleading messages and silent no-op flag combinations, and no R test
+      reading a tracks file Groovy actually wrote.
 - [ ] *Not in this milestone* (moved out 2026-10-08): **the overlap-core
       refactor** (§7) — with the in-house frame-to-frame linker out of scope,
       it has one caller and nothing above needs it; a standalone cleanup, any
       time. Also out: that linker as a cross-check (low priority), and
-      **bridge features in time** — `note/wishlist.md`.
+      **bridge features in time**. All three are recorded in
+      `note/wishlist.md`.
 
 **The division-after-a-gap case.** At nuclear envelope breakdown a mother
 nucleus may go undetected for a frame or two (mitotic DNA fails a circularity
 filter) before two daughters appear. Whether TrackMate's LAP tracker records
 that as a split, or gap-closes one daughter and starts the other as a new
 track, is **not known** — it decides whether such divisions need PR 4's hand
-edits. PR 2's synthetic tests find out rather than assume.
+edits. PR 2's synthetic tests find out rather than assume. **Answered by PR 2
+(2026-10-08): not a split.** One daughter is gap-closed onto the mother, the
+other starts a track of its own — TrackMate splits only across adjacent
+frames. Such divisions need a `link` edit (PR 4), and `Test_FeatureTracks`
+pins the behaviour so a TrackMate upgrade that changes it is noticed.
 
 **Verification.** Synthesised, PR 2: two objects moving apart over four frames
 → two tracks, not one and not four; a dividing object → two features sharing a
@@ -1364,6 +1548,50 @@ a library class and the `Open_*` script is a thin caller — same division as
       cannot do this — Bio-Formats has no Luxendo reader — and the HDF5 import
       opens one channel per file (`note/luxendo_file_format.md` §5). Added
       2026-10-02.
+- [ ] **One index-list grammar, read and written everywhere** (raised
+      2026-10-09, during `tracking`'s review). Lists of indices are typed and
+      written in several spellings today, each with its own parser:
+      - **t** — the batch's and `Make_LuxendoTiff`'s `frames` (`1,48,96`,
+        `1-4`; `TiffAssembler.parseFrames`), `feature_outline_cli.r --t` (a
+        second parser in R), and, written: `_config.txt`'s `frames_analysed`
+        (`1 2 3 … 96`, space-separated), the centroid table's stamp (a copy of
+        it), the track params' `frames` and `frames_without_feature`.
+        Readers of `frames_analysed`: the batch's resume check
+        (`BatchRunner`), `feature_outline_cli.r`'s page matching,
+        `FeatureTracks.parseAxis`.
+      - **z** — `zSpec` on `Run_NucleusSelector`, `Run_Overview`,
+        `Run_Overview_Batch` (`1-20,35-40`).
+      - **c** — `channelsCsv` (`1,2,3`, commas only, no ranges).
+      - **series** — `seriesSpec` on `Inspect_ImageFile` (`1030-1069`,
+        `3 7 9`, `name:…`) and `Open_LifFile` (`1,4, 6-8`), two more parsers.
+        ⚠️ `series_index` counts from **0** (Bio-Formats owns it); t, z and c
+        from 1. One grammar, the base per index.
+      - **Pipeline ids** (`series_id`, the sources key, `feature_id`) — check
+        whether any input takes a list of them; none does in a `#@` today.
+
+      ⚠️ **On the R side argparser splits a value on commas before any of
+      our code sees it** (`--x 1,3` arrives as `1`, `3`; the
+      `r-cli-convention` skill), so every R parser of this grammar must
+      re-join the pieces first, as `feature_outline_cli.r --t` and
+      `.cli_label_spec()` (PR 6) already do. Index lists then reach `--label`
+      and `--qc_label` values (`feature_id=1-20`) through that one function.
+      Proposed: SLURM-array style — `5`, `1-96`, `10-90:10` (a step), pieces
+      joined by commas — parsed by **one** function per language, so Groovy
+      and R cannot drift. Writers emit one canonical, shortest form (a step
+      run only for 3 or more), so a 96-frame run writes `1-96` and a missing
+      70th frame shows as `1-69,71-96` instead of hiding in 96 numbers. Note
+      that the sampling used so far (1, 10, 20 … 90) is `1,10-90:10`, not
+      `1-90:10` (that is 1, 11, 21 …).
+      🔒 **Every older spelling stays readable** — the space-separated
+      `frames_analysed` in every `_config.txt` already written, and the Fiji
+      style inputs (`1,48,96`, `1-4`) people already type. Comparisons are on
+      the parsed list, never the text: the resume check compares
+      `frames_analysed` today, and a text compare would re-run finished
+      series. Round-trip tests: parse(format(x)) == x on random sets, and
+      every old spelling parsed to the same list as before.
+      Not adopted with it: a `frames_failed`-style key. It is not a setting,
+      and a frame absent from `frames_analysed` is one that errored, which the
+      batch summary already records.
 - [ ] `Open_SeriesRow.groovy` — open row N of a series table. (Named for
       `series.tsv`, not the retired "sample sheet".)
       🔒 **1-based** (it is a table row; `series_index` stays 0-based because

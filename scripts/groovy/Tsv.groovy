@@ -21,7 +21,7 @@ class Tsv {
         if (!f.isFile()) {
             throw new IllegalArgumentException("No such table: " + f.getAbsolutePath())
         }
-        def lines = f.getText("UTF-8").readLines().findAll { it.trim() && !it.trim().startsWith("#") }
+        def lines = stripBom(f.getText("UTF-8")).readLines().findAll { it.trim() && !it.trim().startsWith("#") }
         if (!lines) {
             throw new IllegalArgumentException("Table is empty: " + f.getName())
         }
@@ -41,6 +41,15 @@ class Tsv {
             out << row
         }
         return out
+    }
+
+    /**
+     * A file a spreadsheet saved as "UTF-8" may begin with a byte-order mark.
+     * Left on, it becomes part of the first column's name -- or hides the `#`
+     * of a first comment, which is then read as the header.
+     */
+    static String stripBom(String text) {
+        return (text != null && text.startsWith("\uFEFF")) ? text.substring(1) : text
     }
 
     /**

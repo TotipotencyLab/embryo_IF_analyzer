@@ -145,6 +145,17 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = "regex the input basenames must match [default: the Fiji output contract]")
   p <- add_argument(p, "--qc_plot", short = "-q", flag = TRUE,
                     help = "also write a QC plot of the detected features")
+  p <- add_argument(p, "--qc_color_by", short = "-C", type = "character", default = "feature_type",
+                    help = paste("QC outline colour: feature_type, or feature_id -- each feature",
+                                 "of the first --feature type its own colour, other types grey"))
+  p <- add_argument(p, "--qc_label", short = "-L", type = "character", nargs = Inf, default = NULL,
+                    help = paste("label QC outlines of the first --feature type with their number:",
+                                 "'all', or some of them (7,3 0007 nucleus_0007, or",
+                                 "feature_id=7,3 as feature_outline_cli.r's --label takes it)"))
+  p <- add_argument(p, "--qc_palette", short = "-p", type = "character", default = NA,
+                    help = paste("palette for --qc_color_by feature_id [default: Tableau 10]:",
+                                 "a grDevices::palette.pals() set (cycled) or an hcl.pals() ramp",
+                                 "(Viridis, Blues, ...)"))
   p <- add_argument(p, "--rlib_path", short = "-R", type = "character",
                     help = "path to scripts/R [default: alongside this script]")
   
@@ -160,6 +171,11 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   
   features <- .cli_resolve_arg(argv$feature, "--feature")
   if (!length(features)) features <- "nucleus"
+
+  # --- QC options ---------------------------------------------------------------
+  # Checked now, before any file is read: a typo in a palette name should cost
+  # one message, not a whole annotation run and then a failure at the plot.
+  qc <- .annotate_qc_options(argv)
   
   # These set of args accept different settings for different features e.g., --max_z_dist 'nucleus=3' 'nucleous=2'
   # The actual setting used at the run-time is resolved by .cli_param_for function
@@ -179,6 +195,10 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   if (length(rename) && any(is.na(names(rename)))) {
     stop("--rename needs 'old=new' tokens, e.g. 'nucleus=oocyte'", call. = FALSE)
   }
+
+  # The type --qc_color_by feature_id and --qc_label act on: the first
+  # --feature, under its reporting name. Never `nucleus` by assumption.
+  qc$focus <- if (features[1] %in% names(rename)) unname(rename[[features[1]]]) else features[1]
 
   # 'child=parent'. The biology is the caller's to declare -- nothing here knows
   # that a nucleolus belongs in a nucleus.
@@ -414,17 +434,38 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     rds_path <- file.path(outdir, paste0(sid, "_features.rds"))
     saveRDS(series_sf, rds_path)
     message("    -> ", basename(rds_path))
+
+    # --- centroids ------------------------------------------------------------
+    # One point per feature, what tracking links (note/time_series_plan.md §4).
+    # z needs the z step, from the _config.txt Fiji wrote beside the INPUTS --
+    # not beside the .rds, which is this run's output. None to be had is not an
+    # error here: annotate needs no config and runs on data that has none, so z
+    # is left blank and the step that uses z refuses it.
+    z_step <- .cli_z_step_for(series_sf, rds_path, unique(dirname(sid_jobs$path)))
+    cen <- feature_centroids(series_sf, z_step = as.numeric(z_step))
+    cen_path <- file.path(outdir, paste0(sid, "_feature_centroids.tsv"))
+    # The Fiji run's time axis rides above the header (`# frames_analysed: ...`):
+    # a frame where nothing was found has no row, and tracking needs to know it
+    # was there. Without a config the table is written without it, and tracking
+    # several frames refuses it.
+    stamp <- .cli_centroid_stamp(sid, rds_path, unique(dirname(sid_jobs$path)))
+    con <- file(cen_path, "w")
+    if (length(stamp)) writeLines(paste0("# ", names(stamp), ": ", stamp), con)
+    utils::write.table(cen, con, sep = "\t", quote = FALSE, row.names = FALSE, na = "")
+    close(con)
+    message("    -> ", basename(cen_path), " (", nrow(cen), " feature(s); ",
+            .centroid_z_note(cen, z_step), ")")
     
     # One picture per image, so one per FRAME of a time course: drawn together,
     # the same nucleus at 96 time points reads as one blot. The frames are the
     # pages of one TIFF -- 96 PNGs per series is clutter.
     n_frames <- length(unique(series_sf$t))
     if (argv$qc_plot && n_frames > 1) {
-      path <- .qc_plot_frames(series_sf, sid, outdir)
+      path <- .qc_plot_frames(series_sf, sid, outdir, qc)
       message("    -> ", basename(path), " (", n_frames, " pages, one per frame)")
     } else if (argv$qc_plot) {
       png_path <- file.path(outdir, paste0(sid, "_features_qc.png"))
-      .qc_plot(series_sf, sid, png_path)
+      .qc_plot(series_sf, sid, png_path, qc)
       message("    -> ", basename(png_path))
     }
     
@@ -528,7 +569,75 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   roi_df
 }
 
-.qc_plot <- function(series_sf, sid, path) {
+#' Resolve the --qc_* options; refuse the impossible before anything runs
+.annotate_qc_options <- function(argv) {
+  color_by <- argv$qc_color_by
+  if (!color_by %in% c("feature_type", "feature_id")) {
+    stop("--qc_color_by takes feature_type or feature_id; got '", color_by, "'", call. = FALSE)
+  }
+  # The same grammar as feature_outline_cli.r's --label, through the same
+  # parser; annotate has features only, so a bare number IS a feature.
+  label <- .cli_label_spec(argv$qc_label, "--qc_label", keys = "feature_id",
+                           default_key = "feature_id",
+                           hint = " (annotate has no tracks: label them in feature_outline_cli.r)")
+  palette <- if (is.na(argv$qc_palette)) QC_DEFAULT_PALETTE else argv$qc_palette
+  qc_palette_colours(palette)                       # stops on an unknown name
+  given <- c(if (color_by != "feature_type") "--qc_color_by",
+             if (!is.null(label)) "--qc_label",
+             if (!is.na(argv$qc_palette)) "--qc_palette")
+  if (length(given) && !argv$qc_plot) {
+    warning(paste(given, collapse = ", "), " given without --qc_plot: no QC plot is drawn, ",
+            "so they do nothing", call. = FALSE)
+  }
+  if (!is.na(argv$qc_palette) && color_by != "feature_id") {
+    warning("--qc_palette applies to --qc_color_by feature_id only; feature types keep ",
+            "ggplot's colours", call. = FALSE)
+  }
+  return(list(color_by = color_by, label = label, palette = palette, focus = NA_character_))
+}
+
+#' What the centroid table's z column holds, for the log
+.centroid_z_note <- function(cen, z_step) {
+  if (!nrow(cen)) return("no features")
+  if (all(!is.na(cen$z) & cen$z == 0)) return("single plane, z = 0")
+  if (all(is.na(cen$z))) {
+    clash <- attr(z_step, "conflict")
+    return(if (is.null(clash)) {
+      "z BLANK: no pixel_depth in a _config.txt beside the inputs"
+    } else {
+      paste0("z BLANK: the inputs' _config.txt files disagree on pixel_depth (",
+             paste(clash, collapse = ", "), ")")
+    })
+  }
+  return(paste0("z in calibrated units, step ", as.numeric(z_step)))
+}
+
+#' Colour key, palette and labels for the unioned outlines, per the --qc_* options
+#'
+#' Computed over the WHOLE series, so a feature keeps its colour on every page
+#' of a time course.
+#'
+#' @return list(unioned with qc_key and qc_label columns, palette, color_by
+#'   column name, legend)
+.qc_style <- function(unioned, all_unioned, qc) {
+  if (qc$color_by == "feature_id") {
+    keys <- qc_id_colours(all_unioned$feature_id, all_unioned$feature_type,
+                          qc$focus, qc$palette)
+    key_of <- stats::setNames(as.character(keys$values), all_unioned$feature_id)
+    unioned$qc_key <- factor(unname(key_of[unioned$feature_id]), levels = levels(keys$values))
+    palette <- keys$palette; color_by <- "qc_key"; legend <- FALSE
+  } else {
+    palette <- NULL; color_by <- "feature_type"; legend <- TRUE
+  }
+  # Over the whole series, like the colours: per page, an id from another
+  # frame would warn as missing on every page but its own.
+  labs <- qc_labels(sf::st_drop_geometry(all_unioned), qc$focus, qc$label, "feature_id")
+  unioned$qc_label <- unname(stats::setNames(labs, all_unioned$feature_id)[unioned$feature_id])
+  return(list(unioned = unioned, palette = palette, color_by = color_by, legend = legend,
+              label_by = if (!is.null(qc$label)) "qc_label" else NULL))
+}
+
+.qc_plot <- function(series_sf, sid, path, qc) {
   # Per-slice ROIs faintly underneath, the z-aware union on top in colour.
   # plot_features_topView() is the library function; it uses geom_sf (a union
   # can be a MULTIPOLYGON or carry holes) and puts y in image orientation.
@@ -538,8 +647,11 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     return(invisible(NULL))
   }
   unioned <- union_features(valid)
-  
-  p <- plot_features_topView(series_sf, unioned, color_by = "feature_type") +
+  sty <- .qc_style(unioned, unioned, qc)
+
+  p <- plot_features_topView(series_sf, sty$unioned, color_by = sty$color_by,
+                             palette = sty$palette, label_by = sty$label_by,
+                             legend = sty$legend) +
     ggplot2::labs(
       title = sid,
       subtitle = paste0(nrow(series_sf), " ROIs -> ", nrow(unioned), " features"))
@@ -558,7 +670,7 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 #' missing from a run of 96 is not something anyone notices.
 #'
 #' @return The path written.
-.qc_plot_frames <- function(series_sf, sid, outdir) {
+.qc_plot_frames <- function(series_sf, sid, outdir, qc) {
   .cli_need("magick")
   bb  <- sf::st_bbox(series_sf)
   pad <- 0.02 * max(bb["xmax"] - bb["xmin"], bb["ymax"] - bb["ymin"])
@@ -571,6 +683,9 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   # ggplot's own default colours for the full set of types, fixed, so a frame
   # lacking one type does not shift the colours of the rest.
   palette <- stats::setNames(scales::hue_pal()(length(types)), types)
+  # Every feature of the series, so colour-by-id is stable from page to page.
+  all_valid <- .cli_valid_rows(series_sf)
+  all_unioned <- if (nrow(all_valid)) union_features(all_valid) else NULL
 
   frames <- sort(unique(series_sf$t))
   pages <- vector("list", length(frames))
@@ -580,8 +695,14 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     fr <- series_sf[series_sf$t == t, ]
     valid <- .cli_valid_rows(fr)
     unioned <- if (nrow(valid)) union_features(valid) else NULL
-    p <- plot_features_topView(fr, unioned, color_by = "feature_type", y_ref = y_ref,
-                               xlim = xlim, ylim = ylim, palette = palette) +
+    sty <- if (is.null(unioned)) {
+      list(unioned = NULL, palette = palette, color_by = "feature_type", legend = TRUE,
+           label_by = NULL)
+    } else .qc_style(unioned, all_unioned, qc)
+    if (sty$color_by == "feature_type") sty$palette <- palette
+    p <- plot_features_topView(fr, sty$unioned, color_by = sty$color_by, y_ref = y_ref,
+                               xlim = xlim, ylim = ylim, palette = sty$palette,
+                               label_by = sty$label_by, legend = sty$legend) +
       ggplot2::labs(
         title = sid,
         subtitle = paste0("t = ", t, " (frame ", match(t, frames), " of ", length(frames), "): ",

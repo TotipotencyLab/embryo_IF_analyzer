@@ -613,6 +613,94 @@ test_that("annotate writes the documented columns", {
                     tsv$parent_match %in% c("direct", "gap_filled")))
 })
 
+test_that("annotate writes the documented feature centroid columns", {
+  skip_if_no_sf()
+  skip_if_no_pkg("argparser")
+  skip_if_no_fixture(fixture_file("nucleus", "outline"))
+  source_cli("annotate_features_cli.r")
+
+  out <- withr::local_tempdir()
+  suppressMessages(annotate_features_cli(c(
+    "--input", fixture_dir(), "--feature", "nucleus", "nucleolus", "--outdir", out,
+    "--min_z_span", "default=5", "nucleolus=2")))
+  tsv <- file.path(out, "GRV_Position010_feature_centroids.tsv")
+  written <- names(read.delim(tsv, nrows = 1, comment.char = "#"))
+
+  # The doc's table, row by row: a cell may name two columns ("`x`, `y`").
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  start <- grep("^#### `<series_id>_feature_centroids.tsv`", doc)
+  expect_length(start, 1L)
+  body <- doc[(start + 1):length(doc)]
+  body <- body[seq_len(which(grepl("^#{2,4} ", body))[1] - 1)]
+  rows <- grep("^\\| `", body, value = TRUE)
+  first <- sub("^\\| ([^|]*)\\|.*$", "\\1", rows)
+  documented <- unlist(regmatches(first, gregexpr("(?<=`)[a-z_]+(?=`)", first, perl = TRUE)))
+  expect_identical(written, documented)
+})
+
+test_that("the tracks tables are documented as FeatureTracks.groovy writes them", {
+  # Groovy writes these and R will read them, so neither language's tests run
+  # the other: the column lists are read out of the Groovy source and held
+  # against the doc's tables. The reader's side too -- what FeatureTracks needs
+  # from a centroid table must be columns the centroid table documents (and the
+  # centroid test above holds those to what annotate writes).
+  ft <- file.path(repo_root(), "scripts", "groovy", "FeatureTracks.groovy")
+  skip_if_not(file.exists(ft), "FeatureTracks.groovy not found")
+  src <- paste(readLines(ft, warn = FALSE), collapse = "\n")
+  groovy_list <- function(name){
+    m <- regmatches(src, regexpr(paste0(name, "\\s*=\\s*\\[[^]]*\\]"), src))
+    expect_length(m, 1L)
+    unlist(regmatches(m, gregexpr('(?<=")[a-z_]+(?=")', m, perl = TRUE)))
+  }
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  doc_columns <- function(heading){
+    start <- grep(paste0("^#### `", heading, "`"), doc, fixed = FALSE)
+    expect_length(start, 1L)
+    body <- doc[(start + 1):length(doc)]
+    body <- body[seq_len(which(grepl("^#{2,4} ", body))[1] - 1)]
+    first <- sub("^\\| ([^|]*)\\|.*$", "\\1", grep("^\\| `", body, value = TRUE))
+    unlist(regmatches(first, gregexpr("(?<=`)[a-z_]+(?=`)", first, perl = TRUE)))
+  }
+  expect_identical(groovy_list("TRACK_COLUMNS"),
+                   doc_columns("<series_id>_<feature_type>_tracks.tsv"))
+  expect_identical(groovy_list("EDIT_COLUMNS"),
+                   doc_columns("<series_id>_<feature_type>_track_edits.tsv"))
+  need <- groovy_list("CENTROID_NEED")
+  expect_true(length(need) > 5L)
+  expect_identical(setdiff(need, doc_columns("<series_id>_feature_centroids.tsv")), character(0))
+  # The suffix the Groovy side looks for is the name annotate writes.
+  expect_match(src, 'CENTROID_SUFFIX = "_feature_centroids.tsv"', fixed = TRUE)
+})
+
+test_that("branches.tsv and the track columns are documented as join_tracks() makes them", {
+  source_r_scripts(c("feature_join.r", "feature_tracks.r"))
+  d <- withr::local_tempdir()
+  feats <- data.frame(series_id = "S", feature_id = sprintf("nucleus_%04d", 1:3),
+                      feature_type = "nucleus", t = c(1L, 2L, 2L), run_id = "r1")
+  utils::write.table(data.frame(series_id = "S", t = c(1L, 2L, 2L),
+                                feature_id = sprintf("nucleus_%04d", 1:3),
+                                prev_feature_id = c("", "nucleus_0001", "nucleus_0001"),
+                                run_id = "r1"),
+                     tracks_path(d, "S", "nucleus"), sep = "\t", quote = FALSE, row.names = FALSE)
+  out <- join_tracks(feats, "nucleus", d)
+  written <- colnames(attr(out, "branches"))
+
+  doc <- readLines(file.path(repo_root(), "note", "data_formats.md"), warn = FALSE)
+  start <- grep("^##### `<output_prefix>branches.tsv`", doc)
+  expect_length(start, 1L)
+  body <- doc[(start + 1):length(doc)]
+  body <- body[seq_len(which(grepl("^#{2,5} ", body))[1] - 1)]
+  first <- sub("^\\| ([^|]*)\\|.*$", "\\1", grep("^\\| `", body, value = TRUE))
+  documented <- unlist(regmatches(first, gregexpr("(?<=`)[a-z_]+(?=`)", first, perl = TRUE)))
+  expect_identical(written, documented)
+
+  # The three columns join_tracks() adds are the ones feature_stats.tsv documents.
+  added <- setdiff(colnames(out), colnames(feats))
+  row <- grep("^\\| `track_id`, `branch_id`, `branch_merged` \\|", doc, value = TRUE)
+  expect_length(row, 1L)
+  expect_identical(added, c("track_id", "branch_id", "branch_merged"))
+})
+
 test_that("feature_id uses the documented vocabulary", {
   skip_if_no_sf()
   skip_if_no_pkg(c("argparser", "ggplot2"))

@@ -58,7 +58,8 @@ flip_y_breaks <- function(y_ref){
 
 plot_features_topView <- function(st_df, union_df=NULL, color_by="feature_type",
                                   y_ref=NULL, line_width=0.7, background_width=0.2,
-                                  xlim=NULL, ylim=NULL, bare=FALSE, palette=NULL){
+                                  xlim=NULL, ylim=NULL, bare=FALSE, palette=NULL,
+                                  label_by=NULL, label_size=2.6, legend=TRUE){
   # Top view of annotated features, drawn with geom_sf.
   #
   # Use this, not plot_outline_topView(), for anything that has been unioned:
@@ -68,6 +69,11 @@ plot_features_topView <- function(st_df, union_df=NULL, color_by="feature_type",
   #
   #   st_df    per-ROI features (drawn faintly underneath); may be NULL
   #   union_df one row per feature (drawn on top); may be NULL
+  #   label_by a union_df column of text drawn on each feature, in its own
+  #            outline colour; NA rows get none (qc_labels())
+  #   legend   FALSE drops the colour legend -- for colour-by-feature_id, where
+  #            a hundred keys would be a legend bigger than the plot and the
+  #            labels name the outlines instead
   if(is.null(st_df) && is.null(union_df)){
     stop("Nothing to plot: both st_df and union_df are NULL")
   }
@@ -85,6 +91,22 @@ plot_features_topView <- function(st_df, union_df=NULL, color_by="feature_type",
   if(!is.null(union_df)){
     p <- p + geom_sf(data=flip_y_image(union_df, y_ref),
                      mapping=aes(colour=.data[[color_by]]), fill=NA, linewidth=line_width)
+    if(!is.null(label_by)){
+      lab <- union_df[!is.na(union_df[[label_by]]), , drop=FALSE]
+      if(nrow(lab)){
+        # At a point ON the outline's surface (geom_sf_text's default), not the
+        # centroid: a crescent's centroid lies outside it, and a label beside
+        # an object names its neighbour.
+        # On a translucent white box: a light outline colour (Tableau's yellow,
+        # a viridis end) is unreadable as bare text over the grey per-ROI
+        # outlines, and the box keeps the label in the outline's colour.
+        p <- p + geom_sf_label(data=flip_y_image(lab, y_ref),
+                               mapping=aes(label=.data[[label_by]], colour=.data[[color_by]]),
+                               size=label_size, fontface="bold", show.legend=FALSE,
+                               fill=grDevices::adjustcolor("white", alpha.f=0.75),
+                               border.colour=NA, label.padding=grid::unit(0.1, "lines"))
+      }
+    }
   }
 
   # A complete map, never a partial one -- see class_palette().
@@ -111,9 +133,182 @@ plot_features_topView <- function(st_df, union_df=NULL, color_by="feature_type",
       scale_y_continuous(breaks=flip_y_breaks(y_ref), labels=flip_y_labels(y_ref)) +
       theme_minimal() +
       labs(x="x (um)", y="y (um)", colour=NULL)
+    if(!legend) p <- p + theme(legend.position="none")
   }
 
   return(p)
+}
+
+# --- colour and label by feature ------------------------------------------------
+
+# A qualitative palette with its grey taken out: in colour-by-id mode grey means
+# "a feature of another type", so a palette entry that is grey would make one
+# feature look like it belonged to the background.
+QC_DEFAULT_PALETTE <- "Tableau 10"
+QC_OTHER_GREY <- "grey60"
+
+#' The colours of a named palette, minus anything achromatic or near-white
+#'
+#' Two families, both in base R, so no package is needed for either:
+#'   - grDevices::palette.pals(): qualitative sets (Okabe-Ito, Tableau 10,
+#'     Polychrome 36, and RColorBrewer's Set 1-3, Dark 2, Paired, ...). A fixed
+#'     list of distinct colours, CYCLED over the features.
+#'   - grDevices::hcl.pals(): sequential and diverging ramps (Viridis, Plasma,
+#'     RColorBrewer's Blues, YlOrRd, ...). n colours along the ramp.
+#' A name in both (Dark 2, Set 2, ...) means the qualitative one. Matched
+#' ignoring case, spaces and punctuation.
+#'
+#' @return list(colours, kind = "qualitative" | "ramp", name)
+qc_palette_colours <- function(name = QC_DEFAULT_PALETTE, n = 1L){
+  norm <- function(x) tolower(gsub("[^A-Za-z0-9]", "", x))
+  qual <- grDevices::palette.pals()
+  ramp <- grDevices::hcl.pals()
+  if(norm(name) %in% norm(qual)){
+    nm <- qual[match(norm(name), norm(qual))]
+    cols <- grDevices::palette.colors(palette = nm)
+    kind <- "qualitative"
+  }else if(norm(name) %in% norm(ramp)){
+    nm <- ramp[match(norm(name), norm(ramp))]
+    # A few more than needed, so dropping a near-white end still leaves n.
+    cols <- grDevices::hcl.colors(max(2L, as.integer(n)) + 2L, palette = nm)
+    kind <- "ramp"
+  }else{
+    stop("Unknown palette '", name, "'. Qualitative (cycled): ",
+         paste(qual, collapse = ", "), ". Ramps: see grDevices::hcl.pals(), e.g. ",
+         "Viridis, Plasma, Blues, YlOrRd.", call. = FALSE)
+  }
+  rgb <- grDevices::col2rgb(cols)
+  chroma <- apply(rgb, 2, max) - apply(rgb, 2, min)
+  usable <- chroma >= 40 & apply(rgb, 2, min) < 225
+  cols <- unname(cols[usable])
+  if(length(cols) < 2L){
+    stop("Palette '", nm, "' has fewer than two colours that are neither grey nor ",
+         "near-white; grey is reserved for features of other types.", call. = FALSE)
+  }
+  return(list(colours = substr(toupper(cols), 1, 7), kind = kind, name = nm))
+}
+
+#' One colour per feature of the focus type; every other type one grey
+#'
+#' Colours are assigned in feature_id order, so a feature keeps its colour on
+#' every page of a time course as long as the set of ids is the same -- callers
+#' pass every id in the series, not one frame's. A qualitative palette is cycled
+#' (id i takes colour i mod k): consecutive ids differ, and ids k apart share a
+#' colour, which the label settles. A ramp is strided -- ids i and i+1 sit far
+#' apart along it -- so that neighbouring ids, which are often neighbouring
+#' objects, do not get two nearly identical shades.
+#'
+#' The ids need not be feature ids: a track_id or branch_id per outline
+#' colours by lineage or by branch the same way. An NA id (a feature no track
+#' reaches) is drawn grey with the other types.
+#'
+#' @param feature_id,feature_type vectors, one per outline
+#' @param focus_type the type coloured by id
+#' @param palette    a palette name, see qc_palette_colours()
+#' @return list(values = factor key per outline (its feature_id, or "other"),
+#'         palette = complete named colour vector over the keys)
+qc_id_colours <- function(feature_id, feature_type, focus_type,
+                          palette = QC_DEFAULT_PALETTE, other_colour = QC_OTHER_GREY){
+  is_focus <- feature_type == focus_type & !is.na(feature_id)
+  ids <- sort(unique(feature_id[is_focus]))
+  pal <- qc_palette_colours(palette, n = length(ids))
+  k <- length(pal$colours)
+  n <- length(ids)
+  idx <- if(!n){
+    integer(0)
+  }else if(pal$kind == "qualitative"){
+    (seq_len(n) - 1L) %% k + 1L
+  }else{
+    # Stride through the ramp by the integer nearest k/phi that is coprime with
+    # k, which visits every colour once before repeating.
+    step <- max(1L, round(k / 1.618))
+    while(step > 1L && .gcd(step, k) != 1L) step <- step - 1L
+    ((seq_len(n) - 1L) * step) %% k + 1L
+  }
+  colour_of <- stats::setNames(pal$colours[idx], ids)
+  others <- any(!is_focus)
+  key <- ifelse(is_focus, feature_id, "other")
+  lev <- c(if(others) "other", ids)
+  values <- c(if(others) c(other = other_colour), colour_of)
+  return(list(values = factor(key, levels = lev), palette = values))
+}
+
+.gcd <- function(a, b){ while(b) { t <- b; b <- a %% b; a <- t }; a }
+
+#' The short label of an id: `nucleus_0007` -> `0007`, a track
+#' `nucleus_track_0003` -> `0003`, a branch `nucleus_track_0003_b002` -> `0003b002`
+qc_short_label <- function(feature_id){
+  out <- sub("^.*_track_([0-9]+)_b([0-9]+)$", "\\1b\\2", feature_id)
+  plain <- !is.na(feature_id) & out == feature_id
+  out[plain] <- sub("^.*_", "", feature_id[plain])
+  out
+}
+
+#' The label written on each outline
+#'
+#' Only the focus type is labelled -- labelling every nucleolus inside every
+#' nucleus would cover the picture it is meant to explain. WHAT a label says is
+#' `label_by`: one or more of feature_id, track_id, branch_id, stacked one per
+#' line (`0005` over `0001b002`); a kind an outline lacks (an untracked
+#' feature's branch) is left out of its label. WHICH outlines get one is
+#' `spec`, from .cli_label_spec(): all of them, or the union of the features,
+#' tracks and branches it names. A number is completed with the focus type
+#' (`7` -> nucleus_0007, `3b2` -> nucleus_track_0003_b002); a full id of
+#' another type is refused, because it would match nothing and say so only as
+#' a warning.
+#'
+#' @param tab      one row per outline: feature_id, feature_type, and the
+#'                 track_id / branch_id columns that label_by or spec use
+#' @param spec     NULL (no labels), list(all = TRUE), or ids per kind
+#' @return a character vector, one per outline: the label, or NA
+qc_labels <- function(tab, focus_type, spec, label_by = "feature_id"){
+  n <- nrow(tab)
+  if(is.null(spec)) return(rep(NA_character_, n))
+  need <- unique(c(label_by, setdiff(names(spec), "all")))
+  absent <- setdiff(need, colnames(tab))
+  if(length(absent)){
+    stop("Labels need ", paste(absent, collapse = ", "), ": the tracks are not joined",
+         call. = FALSE)
+  }
+  focus <- !is.na(tab$feature_type) & tab$feature_type == focus_type
+  parts <- lapply(label_by, function(k) qc_short_label(tab[[k]]))
+  lab <- vapply(seq_len(n), function(i){
+    p <- vapply(parts, `[`, character(1), i)
+    p <- p[!is.na(p)]
+    if(length(p)) paste(p, collapse = "\n") else NA_character_
+  }, character(1))
+  lab[!focus] <- NA_character_
+  if(isTRUE(spec$all)) return(lab)
+
+  full <- function(k, v){
+    num <- !grepl("_", v, fixed = TRUE)
+    out <- v
+    out[num] <- switch(k,
+      feature_id = sprintf("%s_%04d", focus_type, as.integer(v[num])),
+      track_id   = sprintf("%s_track_%04d", focus_type, as.integer(v[num])),
+      branch_id  = sprintf("%s_track_%04d_b%03d", focus_type,
+                           as.integer(sub("b.*$", "", v[num])), as.integer(sub("^[0-9]+b", "", v[num]))))
+    alien <- out[!startsWith(out, paste0(focus_type, "_"))]
+    if(length(alien)){
+      stop(alien[1], ": labels act on the focus type, ", focus_type, ". Name ",
+           sub("_(track_)?[0-9]+(_b[0-9]+)?$", "", alien[1]),
+           " first in --feature to label it", call. = FALSE)
+    }
+    out
+  }
+  pick <- rep(FALSE, n)
+  for(k in setdiff(names(spec), "all")){
+    want <- unique(full(k, spec[[k]]))
+    hit <- focus & !is.na(tab[[k]]) & tab[[k]] %in% want
+    gone <- setdiff(want, tab[[k]][focus])
+    if(length(gone)){
+      warning("No ", sub("_id$", "", k), " ", paste(gone, collapse = ", "), " to label",
+              call. = FALSE)
+    }
+    pick <- pick | hit
+  }
+  lab[!pick] <- NA_character_
+  return(lab)
 }
 
 union_features <- function(st_df, group_cols=c("feature_id", "feature_type")){

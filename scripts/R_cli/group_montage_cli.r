@@ -32,7 +32,7 @@ suppressWarnings({
   .warn_option <- NULL
 })
 
-# Directory of THIS file, resolved at source time. See montage_qc_cli.r for why
+# Directory of THIS file, resolved at source time. See feature_outline_cli.r for why
 # this is a top-level assignment rather than a function called later.
 .THIS_DIR <- (function() {
   for (i in seq_len(sys.nframe())) {

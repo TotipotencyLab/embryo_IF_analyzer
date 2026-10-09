@@ -250,3 +250,55 @@ Output byte-identical to the current code on the fixture and on the FUCCI
 frames; `Test_BuildMask`'s in-place and stack-identity checks still pass (in
 place means the instance survives); and the interleaved 4-frame timing above
 re-run, all three arms.
+
+---
+
+## 6. `find_overlap_roi_features()` pairs features across time points, and scores against the smaller ROI
+
+**Severity: wrong pairs, silently, on two kinds of input.** Found in the
+`tracking` plan's review of the function (`time_series_plan.md` §7, R1 and R5).
+Reproduced 2026-10-09 on synthetic ROIs, under R 4.6.1. No CLI calls it; the
+callers are `tests/testthat/test-spatial.R` and the PLA scripts, and the README
+lists it as the helper for overlap between feature types.
+`relate_features.r` already does containment correctly and is what the CLIs use.
+
+### Mechanism
+
+- **Time points are not kept apart (R5).** Two ROIs count as overlapping when
+  their geometries intersect and `z_1 == z_2` -- nothing else partitions them.
+  On a time course, a nucleolus at t = 2 is paired with whichever nucleus sat
+  in the same place at t = 1.
+- **The ratio is taken over the smaller ROI (R1).** `int_ratio = int_area /
+  pmin(area_1, area_2)`, so it is "fraction of the child inside the parent" only
+  while the child's ROI is the smaller one. On a slice where the parent's ROI is
+  smaller -- a nucleus's tapering end slice under a nucleolus, or two features of
+  similar size -- it measures the parent inside the child instead.
+
+### Evidence
+
+Square ROIs, all at `z = 5`, `feature_1_regex = "nucleolus"`, `feature_2_regex =
+"nucleus"`:
+
+| case | pairs returned | want |
+|---|---|---|
+| nucleolus at t = 2 inside where nucleus was at t = 1 | 1 | 0 |
+| nucleolus 10 × 10, nucleus ROI 4 × 4 inside it: 16 % of the child inside, `min_intersect_ratio = 0.5` | 1 | 0 |
+| control: nucleolus 3 × 3 wholly inside nucleus 10 × 10 | 1 | 1 |
+| control: nucleolus 4 × 4, 25 % inside the nucleus | 0 | 0 |
+
+So the usual shape -- a small child inside a large parent at one time point --
+comes out right. Whether R1 changed any pair in the published PLA analysis was
+**not checked**; it would need a slice where a nucleus ROI is smaller than a
+nucleolus ROI it overlaps.
+
+### Proposed fix
+
+The overlap-core refactor in `note/wishlist.md`: extract `relate_features.r`'s
+containment core with a directional denominator and the partition keys (`z`,
+`t`) as an argument, then retire this function. Until then, do not call it on a
+table holding more than one time point.
+
+### Verifying the fix
+
+The four cases above, plus a time-course case through the replacement with `t`
+among the partition keys.

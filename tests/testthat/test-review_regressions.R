@@ -117,7 +117,7 @@ test_that("the shipped template has no reserved column names", {
 
 test_that("a config without pixel size does not yield a pixel-space extent", {
   skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
-  source_cli("montage_qc_cli.r")
+  source_cli("feature_outline_cli.r")
 
   d <- withr::local_tempdir()
   cfg <- file.path(d, "c.txt")
@@ -153,7 +153,7 @@ test_that("a partially loaded scripts/R is detected, not mistaken for loaded", {
 
 test_that("all three CLIs resolve their own directory the same way", {
   # They diverged once; a CLI that cannot find scripts/R fails only at run time.
-  for (f in c("annotate_features_cli.r", "count_features_cli.r", "montage_qc_cli.r")) {
+  for (f in c("annotate_features_cli.r", "count_features_cli.r", "feature_outline_cli.r")) {
     src <- readLines(cli_path(f))
     expect_true(any(grepl("\\.THIS_DIR <- \\(function\\(\\)", src)), info = f)
     expect_true(any(grepl("rstudioapi", src)), info = f)

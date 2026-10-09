@@ -504,7 +504,7 @@ Written by `Run_NucleusSelector.groovy` (when "Save overview PNG" is on) and by
 | `_overlay` | the same projection with detected outlines drawn on |
 
 **The suffix is what makes the two coexist.** They shared one name until now, so
-writing either destroyed the other — and `montage_qc_cli.r` needs both at once,
+writing either destroyed the other — and `feature_outline_cli.r` needs both at once,
 as `--projection` and `--overlay`.
 
 `Run_NucleusSelector` writes both, for the DNA channel **plus every channel in
@@ -676,7 +676,7 @@ grep the R CLIs:
 |---|---|
 | **writes** | `NucleusPipeline` (via `RoiExport.saveRunConfig()`) — the only writer |
 | **reads as parameters** | `RunConfig.readParams()`, called by `Run_NucleusSelector_Batch.groovy`. Unknown key ⇒ error; absent key ⇒ the default |
-| **reads individual fields** | `montage_qc_cli.r` (`image_width`/`image_height`, `pixel_width`/`pixel_height`) · `feature_stat_cli.r` (`pixel_depth` ⇒ `--z_step`) · `cli_helpers.r` (`.cli_read_config()`) |
+| **reads individual fields** | `feature_outline_cli.r` (`image_width`/`image_height`, `pixel_width`/`pixel_height`) · `feature_stat_cli.r` (`pixel_depth` ⇒ `--z_step`) · `cli_helpers.r` (`.cli_read_config()`) |
 | **schema** | `NucleusPipeline.PARAM_TYPES` (parameters) + `RunConfig.PROVENANCE_KEYS` (everything else) |
 | **template** | `config/nucleus_config_template.txt`, generated from `NucleusPipeline.DEFAULTS` |
 
@@ -689,7 +689,7 @@ Fields that other code depends on:
 
 | Field | Used by |
 |---|---|
-| `image_width`, `image_height` | **pixels.** `montage_qc_cli.r`, to draw its panel over the same frame as the Fiji PNG |
+| `image_width`, `image_height` | **pixels.** `feature_outline_cli.r`, to draw its panel over the same frame as the Fiji PNG |
 | `pixel_width`, `pixel_height`, `pixel_unit` | the same, to convert that frame to µm |
 | `image_frames` | how many frames the image had. **Since v0.8.0**; absent means one |
 | `frames_analysed` | which of them these results hold, space-separated: the frames asked for (the batch's `frames`), less any that failed — `batch_summary.tsv` says why. `1` for a single frame. **Since v0.8.0** |
@@ -709,7 +709,7 @@ Fields that other code depends on:
 
 Everything else is a record of the run's parameters. A key that is absent must
 be handled, not assumed: configs written before a field existed are still valid
-input (`montage_qc_cli.r` warns and degrades rather than failing).
+input (`feature_outline_cli.r` warns and degrades rather than failing).
 
 ⚠️ **That tolerance is also the trap.** Because an absent key is legal, a
 parameter the writer forgets silently becomes its *default* on the next run
@@ -869,6 +869,187 @@ a channel holding only noise has that noise stretched to full range and saves a
 convincing picture of nothing. A narrow range beside a wide one on another
 channel is the tell — but only if it is written down, and opening every PNG to
 find the few that went wrong is what this column exists to avoid.
+
+### Feature tracks — `Make_FeatureTracks.groovy`
+
+Links `annotate`'s features across time with TrackMate's LAP tracker, driven
+without an image (`note/time_series_plan.md` §4 `tracking`, §5.2). It reads
+every `<series_id>_feature_centroids.tsv` (§3) in `annotate`'s output
+directory — one series per file, each tracked on its own — and writes, beside
+each, for the **one feature type** the run names (macOS `._` files, which a Mac
+leaves beside files on a non-Mac volume, are skipped):
+
+```
+<series_id>_<feature_type>_tracks.tsv        the links: one row per link, a start row per feature nothing leads to
+<series_id>_<feature_type>_track_edits.tsv   hand corrections: seeded empty, kept once it holds edits
+<series_id>_<feature_type>_track_params.txt  the settings used, and what they made
+```
+
+The feature type is in the name, as in the outline tables, so tracking a
+second type writes beside the first rather than over it. (`<series_id>` is
+strictly the centroid file's stem, which `annotate` names after the series id.)
+
+**Tracks are not copied into the feature table.** `_tracks.tsv` is the only
+store of them, and R joins it at use, which is also where track and branch ids
+are numbered — `join_tracks()` in `scripts/R/feature_tracks.r`, called by
+`feature_stat_cli.r --track_type` and `feature_outline_cli.r --color_by
+track_id|branch_id` (§3). Nothing here holds a `track_id`: TrackMate's own are
+internal integers.
+
+**What R refuses before it numbers anything**, each naming what it found and
+saying to re-run `Make_FeatureTracks`, because each is a tracks table that
+would otherwise join cleanly onto the wrong nuclei or shrink a track without a
+word: a `run_id` other than the features' (the guard every per-feature join
+uses; `--force` warns instead); no `run_id` column, or a blank one; a row naming
+a feature that does not exist, or linking from one; a feature with no row; a
+repeated row; a feature with both a start row and a link; a row whose `t` is
+not its feature's; a link that does not go forward in time; a series with no
+tracks table at all.
+
+**How the ids are numbered**, deterministically — identical links give
+identical ids. A **track** is everything connected by links, numbered
+`<feature_type>_track_NNNN` in order of its first feature by `t`, then
+`feature_id`. A **branch** starts at a track's first feature, at each daughter
+of a division, and at a merged feature, and runs on while each feature has one
+successor and that successor one predecessor — so it holds at most one feature
+per `t`. Branches are numbered `<track_id>_bNNN` within their track, the same
+way. A feature linked to nothing has neither id. An edit can renumber both, so
+an id noted down holds for one set of links.
+
+#### `<series_id>_<feature_type>_tracks.tsv`
+
+One row per **link**, and every feature of the type has at least one row. A
+feature with no predecessor has one row with `prev_feature_id` blank (the
+start of a track, or a feature linked to nothing at all); a feature with two
+predecessors — a merge, only with `allowMerging` — has two. A **division** is
+two features sharing one `prev_feature_id`; a link whose `prev_feature_id` is
+more than one time point back is **gap-closed**. No `(feature_id,
+prev_feature_id)` pair repeats. Sorted by `t`, `feature_id`,
+`prev_feature_id`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `series_id` | chr | from the centroid table's content |
+| `t` | int | the feature's time point, from 1 |
+| `feature_id` | chr | `<feature_type>_NNNN`, as in the feature table |
+| `prev_feature_id` | chr | the feature it was linked from, always at an earlier `t`; blank when nothing leads to it |
+| `run_id` | chr | the annotate run of the centroids — what R checks the table against before joining it |
+
+A series with one time point has nothing to link and gets start rows only; a
+series holding no feature of the type gets the header alone. The log says
+which.
+
+#### `<series_id>_<feature_type>_track_edits.tsv`
+
+Corrections a person makes to the links, applied by R's `join_tracks()` every
+time it joins the tracks — before anything is numbered, so an edit written in
+`feature_id`s stays valid while track and branch ids move. **Make_FeatureTracks
+writes it only while it holds
+nothing**: absent, it is seeded; holding nothing but comments, blank lines and
+exactly the header below, it is rewritten with the current fingerprint.
+Anything else is left exactly as it is — judged by what the file holds, not by
+whether it parses, so a file with a duplicated column or a deleted header line
+keeps its edits — and the log warns when the file cannot be read as an edits
+table, or holds rows made against another annotation. The seed is a header,
+comment lines explaining the actions, and one commented-out template row
+carrying the fingerprint — an edit is that line copied with its leading `# `
+removed.
+
+| Column | Type | Notes |
+|---|---|---|
+| `action` | chr | `link` (the second follows the first), `cut` (remove that link), `join` (the first ends a branch, the second starts one: one object) |
+| `from_feature_id` | chr | the earlier feature |
+| `to_feature_id` | chr | the later feature |
+| `fingerprint` | chr | the centroid table's `fingerprint`: the annotation the edit was made on. A row whose fingerprint is not the current one is **refused**, never applied to whichever features now hold those ids |
+| `note` | chr | free text |
+
+Columns are separated by **tabs**; `#` lines and blank lines are skipped, a
+spreadsheet's UTF-8 byte-order mark and Windows line endings are fine.
+
+**Applied in file order**, each row against the links as the rows above it left
+them — so `cut X Y` then `join X Z` works, X having no successor by then:
+
+| action | does | refused when |
+|---|---|---|
+| `link X Y` | Y follows X. A division by hand is two `link`s from one X, a merge two into one Y | `t(X) ≥ t(Y)` (a link goes forward in time, which also rules out a cycle), or X → Y is already linked |
+| `cut X Y` | removes the link X → Y | there is no such link |
+| `join X Y` | X ends a branch and Y starts one, and they are one object: a link | X already leads somewhere, Y is already led to, or `t(X) ≥ t(Y)`. Branch **ends**, not whole tracks: a daughter whose track broke shares `t`s with her sister, and a whole-track check would refuse the commonest repair |
+
+**Strict, all of it.** Any row whose `fingerprint` is not the features' own —
+the edits were made on another annotation, whose `feature_id`s may name other
+nuclei — refuses the **whole file**, as does a row with none; there is no
+`--force` for it. So does an unknown action, a `feature_id` that is not a
+tracked feature of the series, or a row with fewer columns than up to
+`fingerprint` (typed with spaces). Each refusal names the file's line. A
+`VERSION` bump changes `run_id` but not the fingerprint, so the tracks are
+regenerated and the edits still apply. To track without them, move the file
+aside.
+
+A feature an edit leaves linked to nothing has no track, as always. Every
+track an edit named a feature of is `track_source = edited` in `branches.tsv`
+(§3) — both halves, when a `cut` splits one.
+
+#### `<series_id>_<feature_type>_track_params.txt`
+
+`parameter` / `value`, like `_config.txt`: `repo_version`,
+`trackmate_version`, the centroid table and its `run_id` and `fingerprint`,
+every tracker setting (below, plus `allow_gap_closing` and
+`allow_track_splitting`, always `true`), the `frames` tracked (the time axis),
+`frames_without_feature` (the time points on it where no feature of the type
+was found), and the counts — `n_features`, `n_links`, `n_gap_closed`,
+`n_divisions`, `n_merges`.
+
+#### The settings
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `featureType` | — | the type to track, **required**; after `--rename`, the new name |
+| `useZ` | — | `true` (calibrated 3-D distance) or `false` (x-y only). **Required, no default**: with a 5 µm z step one slice of centroid wobble costs 5 µm, which can break the track of a nucleus that never moved (plan §5.4). `true` is refused on a table with blank `z` |
+| `linkingMaxDistance` | 15.0 | frame to frame, in the centroid table's units (µm). A link must be **strictly shorter** |
+| `maxFrameGap` | 2 | how far a link may reach when a feature goes missing: **2 bridges one missing time point, 1 bridges none** |
+| `gapClosingMaxDistance` | 15.0 | for those links |
+| `splittingMaxDistance` | 15.0 | mother to daughter, at a division |
+| `allowMerging` | false | off: two features becoming one ends one track there. On: both lead into it — the record when two objects really are segmented as one for a while, as pronuclei are |
+| `mergingMaxDistance` | 15.0 | for those links |
+
+Gap closing and splitting are always on. Defaults are TrackMate's own.
+
+**What a "frame" is to the tracker.** The time points the run **analysed**, in
+order — `frames_analysed`, which `annotate` copies above the centroid table's
+header from Fiji's `_config.txt` — not frame numbers. TrackMate counts gaps and
+splits in frame numbers, so time points sampled `1,10,20` (a batch run with
+`frames=`) would be nine frames apart to it: nothing gap-closed, no division
+recorded. Each time point is given to it as its rank and `t` restored
+afterwards, so one step is one analysed time point.
+
+**A time point where no feature of the type was found is still a step.** Taking
+the steps from the features instead would make a link across such a frame
+look adjacent: not counted as gap-closed, allowed at `maxFrameGap` 1, and a
+division across it recorded as a split — and whether it did would depend on
+whether some *other* nucleus happened to be found that frame. TrackMate itself
+skips a frame holding no spots, so such a frame is given a placeholder spot,
+out of reach of every feature and every distance setting, for the run only:
+it is never written, and a link to one stops the run. The log and the params
+file name these time points (`frames_without_feature`).
+
+A centroid table holding several time points **without** the
+`frames_analysed` line is refused — re-run `annotate` with Fiji's
+`_config.txt` beside its inputs — and so is one holding a `t` the line does
+not name: the centroids and that config are from different runs.
+
+**What TrackMate does that the settings do not say**, measured on synthetic
+features (`tests/groovy/Test_FeatureTracks.groovy` pins each):
+
+- A feature linked to nothing frame to frame is never gap-closed or split onto:
+  a daughter seen at one time point only starts a track of its own.
+- **A division after a gap is not recorded as one.** When the mother is lost
+  for a time point (envelope breakdown) before two daughters appear, one
+  daughter is gap-closed onto the mother and the other starts a new track. A
+  `link` edit repairs it.
+- With merging off, the merged feature keeps one predecessor and the other
+  track ends; the object splits again on the far side either way.
+- Two stationary nuclei stacked in z, tracked with `useZ=false`, are linked
+  across each other every frame: x-y cannot tell them apart.
 
 ### Group montage — `group_montage_cli.r` writes two things
 
@@ -1049,10 +1230,11 @@ both runners give identical per-feature statistics and identical channel signals
 ### `annotate_features_cli.r`
 
 ```
-<outdir>/<series_id>_features.rds     sf, one row per ROI      <- canonical
-<outdir>/<series_id>_features_qc.png  only with --qc_plot, one frame
-<outdir>/<series_id>_features_qc.tif  only with --qc_plot, several frames: a page each
-<outdir>/<output_prefix>features.tsv  the same, geometry dropped
+<outdir>/<series_id>_features.rds           sf, one row per ROI      <- canonical
+<outdir>/<series_id>_feature_centroids.tsv  one row per feature: where it is (since 0.9.0)
+<outdir>/<series_id>_features_qc.png        only with --qc_plot, one frame
+<outdir>/<series_id>_features_qc.tif        only with --qc_plot, several frames: a page each
+<outdir>/<output_prefix>features.tsv        the same, geometry dropped
 ```
 
 The `.rds` is the canonical object; the TSV is the same table for anything that
@@ -1086,6 +1268,86 @@ clutter). Every page is drawn over the same extent and in the same colours, so
 that flicking through them shows the objects moving rather than the axes. A
 frame with no valid feature still gets its page. `--within` relates each frame on its own: the same nucleus one time
 point later sits in nearly the same place, so it would score, and could win.
+
+**Colour and labels by feature** (since 0.9.0), so a problem outline can be
+named. Both act on **one** feature type: the first `--feature`, under its
+reporting name — never `nucleus` by assumption.
+
+- `--qc_color_by feature_id` gives each feature of that type its own colour
+  and draws every other type grey, with no legend (a hundred keys would be
+  bigger than the plot). The default, `feature_type`, is the plot as before.
+- `--qc_label all`, or some numbers (`7 0007 nucleus_0007` all mean feature 7),
+  writes the short id on the outline, in the outline's colour.
+- `--qc_palette`: a `grDevices::palette.pals()` set (`Tableau 10`, the
+  default; `Okabe-Ito`, `Set 1`, `Dark 2`, `Polychrome 36`, …), **cycled**, or
+  an `hcl.pals()` ramp (`Viridis`, `Plasma`, `Blues`, …), **strided** so that
+  consecutive ids do not get near-identical shades. Grey and near-white
+  entries are dropped: grey means "another type". Base R only, no package.
+
+Colours are assigned in `feature_id` order over the **whole series**, so a
+feature keeps its colour on every page of a time course. With a qualitative
+palette, ids `k` apart share a colour; the label settles which is which.
+`feature_outline_cli.r` takes the same choices without the `qc_` prefix
+(`--color_by feature_id`, `--label`, `--palette`) for panel (iii), except that
+its colour-by-type mode is called `class` rather than `feature_type`.
+`--qc_label` is parsed by the same function as `--label` (`.cli_label_spec()`):
+`all`, `feature_id=7,3`, or — since annotate has features only — bare numbers
+(`7 3`), which mean features here and nothing else.
+
+#### `<series_id>_feature_centroids.tsv`
+
+One row per **real** feature (`<feature_type>_NNNN`; not `invalid_`, `failed_`
+or `NA`) — what `Make_FeatureTracks.groovy` hands to TrackMate (§2, Feature
+tracks). Written for every series, single frames included.
+
+| Column | Type | Notes |
+|---|---|---|
+| `series_id` | chr | |
+| `t` | int | the feature's frame, from 1 |
+| `feature_type` | chr | reporting name, after `--rename` |
+| `feature_id` | chr | |
+| `x`, `y` | dbl | calibrated units, like the outline tables: the **area-weighted** mean of the feature's per-slice polygon centroids |
+| `z` | dbl | calibrated: (area-weighted mean slice − 1) × `pixel_depth`, slice 1 at 0 as ImageJ calibrates it. **`0`** for a single-plane series. **Blank** when the z step is unknown — never slice numbers a reader would take for µm |
+| `n_roi` | int | ROIs that placed it |
+| `area_sum`, `area_max` | dbl | µm², over those ROIs |
+| `run_id` | chr | the annotate run, as in the features table — what a tracks table made from these is checked against |
+| `fingerprint` | chr | 10 hex characters, one per (series, feature type): see below |
+
+**Bridge ROIs are set aside**, as `feature_stat` sets them aside for every
+statistic (§5): they hold an object together but are not evidence of where it
+is. Weighting by area puts the centroid at the object's bulk, and as a
+weighted mean its z is not stuck on whole slices.
+
+**The z step** is `pixel_depth` from the `_config.txt` Fiji wrote beside the
+**input** outline tables (then beside the `.rds` and its parent). `annotate`
+needs no config and runs on data without one (`PLA_analysis/`), so a missing
+step is not an error here: `z` is left blank, the log says why, and the step
+that would use z refuses it. Each series takes the step from its own config --
+pixel size varies between series of one file -- so two series in one run may
+have different steps.
+
+**Above the header**, the same config's `frames_analysed` and `pixel_depth`,
+copied as it writes them:
+
+```
+# frames_analysed: 1 10 20 30 40 50 60 70 80 90
+# pixel_depth: 5.0
+series_id	t	feature_type	...
+```
+
+`frames_analysed` is the run's **time axis**, which the rows cannot give: a
+frame where nothing was found has no row, yet is still a time point to a
+tracker. `Make_FeatureTracks` refuses a table holding several time points
+without it, and a `t` it does not name (§2, Feature tracks). A key the config
+lacks is left out, and without a config there are no such lines. Read with
+`comment.char = "#"` in R.
+
+**`fingerprint`** is a hash of the sorted `(feature_id, t, roi)` triples of the
+type's real features, bridges included — *what the features are*. It changes
+exactly when a re-annotation regroups ROIs, needs no config to recompute, and,
+unlike `run_id`, does **not** change with `VERSION`, a parameter that moved
+nothing, or another series joining the run. That is what hand edits to tracks
+are keyed on.
 
 ### `count_features_cli.r`
 
@@ -1152,6 +1414,7 @@ genuinely has few objects.
 <outdir>/<output_prefix>feature_stats.tsv     one row per detected FEATURE
 <outdir>/<output_prefix>feature_rejects.tsv   what did not become one
 <outdir>/<output_prefix>feature_stats.pdf     one page per statistic, unless --no_plot
+<outdir>/<output_prefix>branches.tsv          one row per branch, only with --track_type
 ```
 
 The unit is the feature, not the ROI: adjacent z-slices of one object share
@@ -1174,6 +1437,7 @@ rejects table instead of being folded in.
 | `circ_med`, `circ_min` | only when the `_res.txt` was found |
 | `ch<N>_signal` | one column per channel measured; only when the `_res.txt` was found |
 | `class` | the `--class` a feature matched, or `unclassified`; only when `--class` was given |
+| `track_id`, `branch_id`, `branch_merged` | only with `--track_type`: the feature's lineage, its object-through-time, and whether that branch was formed by a merge (§2, Feature tracks). `NA` for a feature of another type or linked to nothing, as for any absent value in this file |
 | *metadata* | every non-`series_id` series-table column, when supplied. `is_bridge` is **not** carried through: it is an ROI-level fact that varies within a feature, and `n_bridge` / `frac_bridge` are the feature-level answer |
 
 ⚠️ Every statistic above **excludes bridge ROIs** (`n_roi` and `n_z`
@@ -1219,6 +1483,43 @@ whose span is wide enough that a log axis may help, restricted to the
 statistics that actually get a panel. A logged panel says `(log10)` on its
 axis, and one that would have to drop a zero falls back to linear **with a
 warning**.
+
+#### `--track_type` — statistics per object through time
+
+`--track_type nucleus` joins the tracks `Make_FeatureTracks.groovy` wrote for
+that type (beside each features file, or `--tracks_dir`) onto every feature
+before summarising, refusing a stale or broken tracks table as §2 describes
+(`--force` overrides a `run_id` mismatch only). Each row is still one object at
+one time point; `branch_id` is what strings a cell's rows together over `t`.
+
+**The branch is the unit for anything per cell.** `--group_by branch_id` plots
+each branch's distribution over its time points, and leaves out the features
+on **merged** branches (they describe two objects; `--keep_merged_branches`
+draws them) and those **in no branch**, saying how many. `--group_by track_id`
+is **refused**: a lineage holds two cells at one `t` once it divides, and a
+distribution pooled over it is the frames-summed-into-a-count mistake again.
+What a lineage supports is a count — `count_features_cli.r --feature_table
+<this feature_stats.tsv> --feature nucleus --feature_class_by track_id` counts
+features per track per `t`. **`--feature` is not optional here**: the counts
+have no `feature_type` column, so without it every feature of another type
+(each nucleolus) lands in `unclassified` beside the untracked nuclei.
+
+##### `<output_prefix>branches.tsv`
+
+One row per branch, merged ones included and flagged — the lineage itself,
+with no statistic averaged over time. Sorted by series, track, branch.
+
+| Column | Notes |
+|---|---|
+| `series_id` | |
+| `feature_type` | the tracked type |
+| `track_id` | `<feature_type>_track_NNNN` |
+| `track_source` | `edited` when a hand edit named any feature of its track (§2, the edits table), else `auto` |
+| `branch_id` | `<track_id>_bNNN` |
+| `parent_branch_id` | the branch its first feature was linked from: blank for a track's first branch, two or more ids joined by `;` for a merged branch |
+| `branch_merged` | `TRUE` when its first feature has two predecessors |
+| `first_t`, `last_t` | its first and last time point; a gap-closed branch has fewer features than the span |
+| `n_features` | features in it, at most one per `t` |
 
 #### `--class` — naming the kinds of object, from their own statistics
 
@@ -1355,9 +1656,9 @@ invites more confidence than the data supports.
 Several `--input` tables gain a `source_file` column automatically, so runs with
 different settings can be compared with `--facet source_file`.
 
-### `montage_qc_cli.r`
+### `feature_outline_cli.r`
 
-Three renderings of one image. A features file holding **several frames** gets
+`montage_qc_cli.r` until 0.9.0. Three renderings of one image. A features file holding **several frames** gets
 one montage per frame, as the pages of one 8-bit TIFF — `--output` must then end
 `.tif`, and naming a `.png` is refused rather than drawing the frames on top of
 each other. `--t` chooses frames (`2,11,21`, `1-4`, from 1, as `t` counts); one
@@ -1373,6 +1674,42 @@ the series', the same on every page; each page's title adds `t = <t>`.
 Panel (iii) takes the same `--feature_table` / `--feature_class_by` /
 `--class_sep` as `count_features_cli.r`, so an outline can be coloured by
 `class` rather than by `feature_type`.
+
+**`--color_by track_id` or `branch_id`** colours panel (iii) by lineage or by
+object-through-time, over every page of the series, so a nucleus keeps its
+colour from frame to frame and **a tracking error shows as a colour jump** —
+the visual check of tracking. The tracks are read from beside `--features`
+(or `--tracks_dir`) and checked as §2 describes; features linked to nothing
+are grey, as are other types.
+
+**Labels: `--label_by` says what, `--label` says which.** Both act on the focus
+type only (the first `--feature`); other types are never labelled.
+
+- `--label_by feature_id track_id branch_id` — any of them, **stacked one per
+  line** in one label (`0005` over `0001b002`), drawn in the outline's colour,
+  on every outline of the type. A kind an outline lacks (an untracked
+  feature's branch) is left out of its label. Default, when only `--label` is
+  given: the `--color_by` id, or `feature_id` under class colouring — the
+  labels as they were before `--label_by`. When the labels name something
+  other than what is coloured, the caption says so (`labels: feature, branch`).
+- `--label` narrows that to the outlines named, **any of them** (OR):
+  `all`, or `key=values` tokens — `feature_id=7,3 track_id=2 branch_id=3b2`.
+  Values are numbers (zeros optional), a branch's short form (`3b2` =
+  `0003b002`; a branch needs its track, and `track_id=3` is all of track 3's
+  branches), or full ids. A token without `=` belongs to the key before it,
+  which is also what argparser makes of a comma: `feature_id=7,3,1` arrives as
+  `feature_id=7`, `3`, `1`. A full id or `3b2` names its own kind, and is
+  refused under a key of another kind. **A bare number with no key before it
+  is refused** — under branch colouring, `7` could be feature 7 or track 7,
+  and reading `nucleus_0005` as track 5 is what the old `--label` did. An id
+  of another type is refused, naming the `--feature` order that would label
+  it; one that matches nothing warns.
+
+The tracks are read whenever `--color_by`, `--label_by` or `--label` involves
+`track_id` or `branch_id`, so `--color_by class --label_by branch_id` works.
+For choosing hand edits: `--color_by branch_id --label_by feature_id
+branch_id` — the colour shows where a track breaks, the labels give the two
+`feature_id`s to `join`.
 
 `--color_map 'growing=red' 'small=blue'` highlights the classes under
 inspection. Everything else — including orphans — is drawn as a single `other`
@@ -1482,7 +1819,8 @@ alone, one object's frames would join into a single feature — and numbered on
 from the last frame: if frame 1 ends at `nucleus_0006`, frame 2 starts at
 `nucleus_0007`. So a `feature_id` names one object at one time point, and is
 unique in the series. It does **not** follow an object through time: that is a
-track, which is a separate column (the `tracking` milestone).
+track, which lives in its own table, `<series_id>_<feature_type>_tracks.tsv`
+(§2), joined at use rather than written into the feature table.
 
 `<feature>` here is the **reporting** name, which `--rename 'nucleus=oocyte'`
 changes. The `roi` column keeps Fiji's original prefix either way, because that

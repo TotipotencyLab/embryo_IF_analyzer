@@ -119,7 +119,7 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                                        else c("unclassified", "other"), collapse = " and "),
                                  "-- the first is what a feature matching no class is called,",
                                  "the second is the group the plots fold unmapped classes",
-                                 "into. Both are settable in montage_qc_cli.r --color_map"))
+                                 "into. Both are settable in feature_outline_cli.r --color_map"))
   p <- add_argument(p, "--drop_orphan_feature", short = "-D", flag = TRUE,
                     help = paste("drop features matching no --class [default: keep them,",
                                  "class =", paste0("'", if (exists("CLASS_UNCLASSIFIED"))
@@ -133,6 +133,17 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                     help = "any of box, violin, quasirandom [default: box quasirandom]")
   p <- add_argument(p, "--colour_by", short = "-C", type = "character",
                     help = "column mapped to point colour")
+  p <- add_argument(p, "--track_type", short = "-y", type = "character", default = NA,
+                    help = paste("join the tracks Make_FeatureTracks wrote for this feature type:",
+                                 "adds track_id, branch_id, branch_merged to every row and",
+                                 "writes <prefix>branches.tsv"))
+  p <- add_argument(p, "--tracks_dir", short = "-K", type = "character", default = NA,
+                    help = "where the tracks tables are [default: beside each features file]")
+  p <- add_argument(p, "--force", short = "-U", flag = TRUE,
+                    help = "join the tracks even when their run_id disagrees")
+  p <- add_argument(p, "--keep_merged_branches", short = "-M", flag = TRUE,
+                    help = paste("with --group_by branch_id, plot merged branches too",
+                                 "(they describe two objects, so they are left out by default)"))
   p <- add_argument(p, "--output_prefix", short = "-X", type = "character", default = "",
                     help = "prefix for the output files")
   p <- add_argument(p, "--plot_width", short = "-W", type = "double", default = 8,
@@ -171,6 +182,24 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   want_stats <- .cli_resolve_arg(argv$stat, "--stat")
   res_dirs <- .cli_resolve_arg(argv$res_dir, "--res_dir")
 
+  track_type <- if (is.na(argv$track_type)) NA_character_ else argv$track_type
+  if (is.na(track_type)) {
+    for (o in c("tracks_dir", "force", "keep_merged_branches")) {
+      if (!identical(argv[[o]], NA) && !identical(argv[[o]], FALSE)) {
+        warning("--", o, " does nothing without --track_type", call. = FALSE)
+      }
+    }
+  }
+  # A track can hold two cells at one t (a mother's daughters), so a statistic
+  # pooled over it averages different objects -- the frames-summed-into-a-count
+  # mistake again. What a lineage supports is a count, which count_features does.
+  if ("track_id" %in% group_by) {
+    stop("--group_by track_id would pool a lineage's cells into one distribution. ",
+         "Group by branch_id (one object through time), or count features per track ",
+         "and t: count_features_cli.r --feature_table <this feature_stats.tsv> ",
+         "--feature <type> --feature_class_by track_id", call. = FALSE)
+  }
+
   files <- .cli_resolve_input_path(argv$input, "_features\\.rds$")
   message("Summarising ", length(files), " feature file(s)")
 
@@ -186,6 +215,7 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   # --- summarise ---------------------------------------------------------------
   per_file <- list()
   rejects <- list()
+  branches <- list()
   # Say why a column is absent, rather than leaving the reader to hunt for it in
   # --show_avail_stats and find nothing. area_med only stands in for size while
   # the object is a sphere, so the volume route matters for irregular ones.
@@ -203,6 +233,14 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     if (length(keep_features)) {
       feats <- feats[feats$feature_type %in% keep_features, , drop = FALSE]
       if (!nrow(feats)) next
+    }
+
+    # Joined before summarising, so the three columns ride through as
+    # per-feature metadata like any sheet column.
+    if (!is.na(track_type)) {
+      tdir <- if (is.na(argv$tracks_dir)) dirname(path) else argv$tracks_dir
+      feats <- join_tracks(feats, track_type, tdir, force = argv$force)
+      branches[[path]] <- attr(feats, "branches")
     }
 
     res <- .read_res_for(feats, path, res_dirs)
@@ -309,10 +347,28 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
          "\n  available: ", paste(colnames(stats), collapse = ", "), call. = FALSE)
   }
 
+  # join_tracks() gives a series with no valid feature of the type NA ids --
+  # an empty position is a result. A type found in NO input is a typo.
+  if (!is.na(track_type) && !track_type %in% stats$feature_type) {
+    stop("--track_type ", track_type, ": no feature of that type in any input; types present: ",
+         paste(sort(unique(stats$feature_type)), collapse = ", "), call. = FALSE)
+  }
+
   # --- write --------------------------------------------------------------------
   tsv <- file.path(outdir, paste0(argv$output_prefix, "feature_stats.tsv"))
   utils::write.table(stats, tsv, sep = "\t", quote = FALSE, row.names = FALSE)
   message("  -> ", basename(tsv))
+
+  if (!is.na(track_type)) {
+    br <- dplyr::bind_rows(branches)
+    br_path <- file.path(outdir, paste0(argv$output_prefix, "branches.tsv"))
+    utils::write.table(br, br_path, sep = "\t", quote = FALSE, row.names = FALSE, na = "")
+    n_untracked <- sum(stats$feature_type == track_type & is.na(stats$track_id))
+    message("  ", length(unique(paste(br$series_id, br$track_id))), " ", track_type,
+            " track(s), ", nrow(br), " branch(es), ", sum(br$branch_merged),
+            " of them merged; ", n_untracked, " feature(s) linked to nothing")
+    message("  -> ", basename(br_path))
+  }
 
   rej <- dplyr::bind_rows(rejects)
   if (nrow(rej)) {
@@ -342,8 +398,12 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
     plots <- list()
     for (g in group_by) {
+      data_g <- stats
+      if (g == "branch_id") {
+        data_g <- .branch_rows(stats, track_type, argv$keep_merged_branches)
+      }
       pl <- plot_feature_stat_list(
-        stats, value_cols = if (length(want_stats)) want_stats else NULL,
+        data_g, value_cols = if (length(want_stats)) want_stats else NULL,
         group_col = g, types = plot_types,
         colour_by = if (is.na(argv$colour_by)) NULL else argv$colour_by,
         log_cols = log_cols)
@@ -359,45 +419,61 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
 # --- private helpers ----------------------------------------------------------
 
+#' The rows a per-branch plot is drawn from, labelled so that a box is one cell
+#'
+#' A per-branch distribution is a per-cell summary: a merged branch is two
+#' objects, and an untracked feature -- or one of another type -- is in no
+#' branch at all, so those are left out (merged ones kept on request). Branch
+#' ids are numbered per series, so with several series each is prefixed with
+#' its series_id: nucleus_track_0001_b001 in two series is two cells, and one
+#' box for both would pool them.
+#'
+#' @return `stats` restricted to the rows drawn, branch_id relabelled when needed
+.branch_rows <- function(stats, track_type, keep_merged) {
+  other <- !(stats$feature_type %in% track_type)
+  untracked <- !other & is.na(stats$branch_id)
+  merged <- !other & !is.na(stats$branch_id) & stats$branch_merged %in% TRUE
+  drop <- other | untracked | (merged & !keep_merged)
+  if (any(drop)) {
+    message("  --group_by branch_id: left out ", sum(drop), " feature(s) -- ",
+            sum(other), " of another type, ", sum(untracked), " in no branch, ",
+            if (keep_merged) 0L else sum(merged), " on merged branches")
+  }
+  if (keep_merged && any(merged)) {
+    message("  --group_by branch_id: ", sum(merged), " feature(s) on merged branches drawn ",
+            "(--keep_merged_branches)")
+  }
+  out <- stats[!drop, , drop = FALSE]
+  if (length(unique(out$series_id)) > 1L) {
+    out$branch_id <- paste(out$series_id, out$branch_id)
+    message("  --group_by branch_id: ", length(unique(out$series_id)), " series, so each branch ",
+            "is labelled with its series_id (branch ids restart in every series)")
+  }
+  return(out)
+}
+
+#' The z step for one features file: `.cli_z_step_for()` (cli_helpers.r), with
+#' this CLI's own warning when the series in it disagree -- a volume pooled
+#' over two instruments' z steps is not in either one's units.
+#'
+#' @return a positive number, or NA_real_
+.z_step_for <- function(feats, features_path, res_dirs) {
+  z <- .cli_z_step_for(feats, features_path, res_dirs)
+  clash <- attr(z, "conflict")
+  if (!is.null(clash)) {
+    warning("Series in ", basename(features_path), " record different ",
+            "pixel_depth values (", paste(clash, collapse = ", "),
+            "); no volume inferred. Pass --z_step to choose one.", call. = FALSE)
+  }
+  return(as.numeric(z))
+}
+
 #' Find and read the Fiji measurement table matching a feature table
 #'
 #' Looked up by the ROI PREFIX, not by feature_type: after --rename the
 #' reporting name is the new one while the file on disk still carries the name
 #' Fiji wrote. The `roi` column keeps that original prefix for exactly this
 #' reason.
-#' The z step for one features file, from the Fiji config that produced it
-#'
-#' `pixel_depth` is written per image, so this is asked per file -- and a
-#' features .rds is written per series, so per file IS per series in anything
-#' the pipeline produced. A hand-built file holding several series that
-#' disagree gets no inference rather than an arbitrary one of them: pixel size
-#' varies 4x within a single .lif here, so "they are all about the same" is not
-#' a safe assumption to make quietly.
-#'
-#' @return a positive number, or NA_real_
-.z_step_for <- function(feats, features_path, res_dirs) {
-  tab <- sf::st_drop_geometry(feats)
-  here <- dirname(features_path)
-  dirs <- unique(c(res_dirs, here,
-                   file.path(here, ".."),
-                   file.path(here, "..", "segmentation")))
-  vals <- c()
-  for (sid in unique(tab$series_id)) {
-    cfg <- .cli_read_config(.cli_find_config(sid, dirs))
-    v <- .cli_config_num(cfg, "pixel_depth")
-    # Blank for a single plane, by design on the Fiji side: no z axis, no volume.
-    if (!is.na(v) && v > 0) vals[[sid]] <- v
-  }
-  if (!length(vals)) return(NA_real_)
-  if (length(unique(unlist(vals))) > 1L) {
-    warning("Samples in ", basename(features_path), " record different ",
-            "pixel_depth values (", paste(sort(unique(unlist(vals))), collapse = ", "),
-            "); no volume inferred. Pass --z_step to choose one.", call. = FALSE)
-    return(NA_real_)
-  }
-  return(unname(unlist(vals))[1])
-}
-
 .read_res_for <- function(feats, features_path, res_dirs) {
   tab <- sf::st_drop_geometry(feats)
   here <- dirname(features_path)
