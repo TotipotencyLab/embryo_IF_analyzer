@@ -20,6 +20,12 @@ sharing a common library, not one program.
    plausible and is wrong.
    - Changing anything that writes the output files ⇒ re-run a reference and
      **diff**. The ROI counts agreeing is not the check; the files agreeing is.
+     **Known exception: multi-page TIFFs that R writes through magick** (the
+     `feature_outline` montage, `annotate`'s QC TIFF). They are not
+     byte-reproducible: the same code run twice differs in 2–3 bytes of padding
+     the TIFF writer leaves uninitialised, outside every strip and directory.
+     Compare them **page by page on pixels** (`image_data()`), and check that the
+     differing bytes are padding, never pixels.
    - A new option that should change nothing when off ⇒ prove it changes nothing
      when off, and *separately* prove it does something when on. Identical
      output can mean "correctly did nothing" or "silently never ran" — those
