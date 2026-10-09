@@ -1369,7 +1369,8 @@ segmented time-lapse exists (`note/wishlist.md`).
       refactor** (§7) — with the in-house frame-to-frame linker out of scope,
       it has one caller and nothing above needs it; a standalone cleanup, any
       time. Also out: that linker as a cross-check (low priority), and
-      **bridge features in time** — `note/wishlist.md`.
+      **bridge features in time**. All three are recorded in
+      `note/wishlist.md`.
 
 **The division-after-a-gap case.** At nuclear envelope breakdown a mother
 nucleus may go undetected for a frame or two (mitotic DNA fails a circularity
