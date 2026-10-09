@@ -5,7 +5,7 @@
 # the wrong nuclei, or shrink a track without a word.
 
 source_cli("cli_helpers.r")
-source_r_scripts(c("feature_join.r", "feature_tracks.r"))
+source_r_scripts(c("feature_join.r", "feature_centroids.r", "feature_tracks.r"))
 
 .f <- function(n) sprintf("nucleus_%04d", n)
 
@@ -258,9 +258,10 @@ test_that("feature_stat --track_type: ids on every row, a branch table, the summ
     utils::read.delim(file.path(st, "feature_stats.tsv"), nrows = 1))))
   br <- utils::read.delim(file.path(st, "branches.tsv"), stringsAsFactors = FALSE)
   expect_identical(nrow(br), 4L)
-  expect_identical(colnames(br), c("series_id", "feature_type", "track_id", "branch_id",
-                                   "parent_branch_id", "branch_merged", "first_t", "last_t",
-                                   "n_features"))
+  expect_identical(colnames(br), c("series_id", "feature_type", "track_id", "track_source",
+                                   "branch_id", "parent_branch_id", "branch_merged", "first_t",
+                                   "last_t", "n_features"))
+  expect_identical(unique(br$track_source), "auto")               # no edits here
 
   # Without --track_type nothing about tracks appears (the option off changes nothing).
   s0 <- run()
@@ -380,4 +381,198 @@ test_that("montage --color_by branch_id: one colour per branch over every page, 
   expect_no_error(run("--output", ft, "--color_by", "branch_id",
                       "--feature_table", file.path(st, "feature_stats.tsv")))
   expect_identical(.page_colours(ft), br)
+})
+
+
+# --- hand edits (PR 4) -------------------------------------------------------------
+
+# An edits table as Make_FeatureTracks seeds it (comments, the header, the
+# commented-out template) with `rows` -- list(c(action, from, to), ...) --
+# filled in below it, each carrying `fp`.
+.fp <- function(feats = .feats()) feature_fingerprint(feats)$fingerprint[1]
+.write_edits <- function(dir, rows, fp = .fp(), sid = "S", eol = "\n"){
+  lines <- c("# Hand corrections to the tracks beside this file, applied by join_tracks() in R",
+             "# Keep the fingerprint as written.",
+             paste(EDIT_COLUMNS, collapse = "\t"),
+             paste("#", paste(c("link", "nucleus_0001", "nucleus_0002", fp, "why"), collapse = "\t")))
+  for(r in rows) lines <- c(lines, paste(c(r, fp, "test"), collapse = "\t"))
+  path <- track_edits_path(dir, sid, "nucleus")
+  writeBin(charToRaw(paste0(paste(lines, collapse = eol), eol)), path)
+  path
+}
+.ids <- function(out){
+  u <- unique(out[startsWith(out$feature_id, "nucleus_"), c("feature_id", "track_id", "branch_id")])
+  u[order(u$feature_id), ]
+}
+
+test_that("no edits, an absent edits file, and the seed alone all change nothing", {
+  d <- withr::local_tempdir(); .write_tracks(d)
+  base <- join_tracks(.feats(), "nucleus", d)
+  .write_edits(d, list(), fp = "a_stale_fp")       # the seed: only a commented template
+  expect_identical(join_tracks(.feats(), "nucleus", d), base)
+  expect_identical(unique(attr(base, "branches")$track_source), "auto")
+})
+
+test_that("cut: a link removed; a feature left linked to nothing has no track", {
+  d <- withr::local_tempdir(); .write_tracks(d)
+  # 9 (A2 at t5) had one link, from 6: cut, it is linked to nothing -- NA, not
+  # a track of one -- and A's lineage, which the cut touched, is 'edited'.
+  .write_edits(d, list(c("cut", .f(6), .f(9))))
+  expect_message(out <- join_tracks(.feats(), "nucleus", d), "1 hand edit\\(s\\) applied")
+  ids <- .ids(out)
+  expect_true(is.na(ids$track_id[ids$feature_id == .f(9)]))
+  expect_identical(ids$branch_id[ids$feature_id == .f(6)], "nucleus_track_0001_b03")
+  src <- unique(attr(out, "branches")[, c("track_id", "track_source")])
+  expect_identical(src$track_source, c("edited", "auto"))
+  # Cutting A from both daughters splits the lineage in three -- A1 and A2 are
+  # connected only through A -- numbered after B (their first features are at
+  # t3), and every piece the cuts touched is 'edited'.
+  .write_edits(d, list(c("cut", .f(3), .f(5)), c("cut", .f(3), .f(6))))
+  out <- suppressMessages(join_tracks(.feats(), "nucleus", d))
+  ids <- .ids(out)
+  expect_identical(ids$track_id[ids$feature_id %in% .f(c(5, 8))], rep("nucleus_track_0003", 2))
+  expect_identical(ids$track_id[ids$feature_id %in% .f(c(6, 9))], rep("nucleus_track_0004", 2))
+  src <- unique(attr(out, "branches")[, c("track_id", "track_source")])
+  expect_identical(src$track_source[match(sprintf("nucleus_track_%04d", 1:4), src$track_id)],
+                   c("edited", "auto", "edited", "edited"))
+})
+
+test_that("edits apply in file order: cut, then link the freed feature elsewhere", {
+  d <- withr::local_tempdir(); .write_tracks(d)
+  # A2's later self (9) is really B's: cut it from A2, link it after B at t3.
+  .write_edits(d, list(c("cut", .f(6), .f(9)), c("link", .f(7), .f(9))))
+  ids <- .ids(suppressMessages(join_tracks(.feats(), "nucleus", d)))
+  expect_identical(ids$branch_id[ids$feature_id == .f(9)], ids$branch_id[ids$feature_id == .f(7)])
+  # The same two rows the other way round: link first makes 9 a merge, then
+  # the cut leaves it B's alone -- the same links, so the same ids.
+  .write_edits(d, list(c("link", .f(7), .f(9)), c("cut", .f(6), .f(9))))
+  expect_identical(.ids(suppressMessages(join_tracks(.feats(), "nucleus", d))), ids)
+})
+
+test_that("link: a merge by hand -- two predecessors, one lineage, the branch flagged", {
+  d <- withr::local_tempdir(); .write_tracks(d)
+  .write_edits(d, list(c("link", .f(7), .f(9))))
+  out <- suppressMessages(join_tracks(.feats(), "nucleus", d))
+  expect_identical(length(unique(stats::na.omit(out$track_id))), 1L)
+  expect_true(unique(out$branch_merged[out$feature_id == .f(9)]))
+})
+
+test_that("join undoes a cut exactly: the same ids, the track marked edited", {
+  d <- withr::local_tempdir(); .write_tracks(d)
+  base <- join_tracks(.feats(), "nucleus", d)
+  .write_edits(d, list(c("cut", .f(6), .f(9)), c("join", .f(6), .f(9))))
+  out <- suppressMessages(join_tracks(.feats(), "nucleus", d))
+  expect_identical(.ids(out), .ids(base))
+  expect_identical(attr(out, "branches")$track_source, c("edited", "edited", "edited", "auto"))
+})
+
+test_that("join across a daughter's break is accepted although her sister shares its t's", {
+  # A divides at t3 into A1 (3) and A2 (4). A2 is lost at t4 and comes back as
+  # D (7, 9) at t5-6 -- a track of its own -- while A1 (5, 6, 8) runs on
+  # through t4-6. A whole-track check would see D overlap A's track in t5-6.
+  feats <- data.frame(series_id = "S", roi = paste0("r", 1:9), feature_id = .f(1:9),
+                      t = c(1L, 2L, 3L, 3L, 4L, 5L, 5L, 6L, 6L), feature_type = "nucleus",
+                      run_id = "r1")
+  d <- withr::local_tempdir()
+  tr <- data.frame(series_id = "S", t = feats$t, feature_id = feats$feature_id,
+                   prev_feature_id = c("", .f(1), .f(2), .f(2), .f(3), .f(5), "", .f(6), .f(7)),
+                   run_id = "r1")
+  utils::write.table(tr, tracks_path(d, "S", "nucleus"), sep = "\t", quote = FALSE, row.names = FALSE)
+  fp <- .fp(feats)
+  .write_edits(d, list(c("join", .f(4), .f(7))), fp = fp)
+  out <- suppressMessages(join_tracks(feats, "nucleus", d))
+  ids <- .ids(out)
+  expect_identical(length(unique(ids$track_id)), 1L)
+  expect_identical(ids$branch_id[ids$feature_id == .f(9)], ids$branch_id[ids$feature_id == .f(4)])
+  # join checks branch ENDS: 3 leads on to 5, and 7 is now led to by 4.
+  .write_edits(d, list(c("join", .f(3), .f(7))), fp = fp)
+  expect_error(join_tracks(feats, "nucleus", d), "does not end a branch: it leads to nucleus_0005")
+  .write_edits(d, list(c("join", .f(4), .f(7)), c("join", .f(4), .f(9))), fp = fp)
+  expect_error(join_tracks(feats, "nucleus", d), "line 6 \\(join nucleus_0004 nucleus_0009\\)")
+  .write_edits(d, list(c("join", .f(4), .f(9))), fp = fp)                 # 9 follows 7
+  expect_error(join_tracks(feats, "nucleus", d), "nucleus_0009 does not start a branch")
+})
+
+test_that("each malformed edit is refused, naming its line", {
+  d <- withr::local_tempdir(); .write_tracks(d)
+  cases <- list(
+    "a link must go forward in time; t\\(nucleus_0008\\) = 4" = list(c("link", .f(8), .f(3))),
+    "forward in time; t\\(nucleus_0005\\) = 3, t\\(nucleus_0006\\) = 3" = list(c("link", .f(5), .f(6))),
+    "nucleus_0001 -> nucleus_0003 is already linked"           = list(c("link", .f(1), .f(3))),
+    "there is no link nucleus_0001 -> nucleus_0004 to cut"     = list(c("cut", .f(1), .f(4))),
+    "the action must be one of link, cut, join"                = list(c("merge", .f(1), .f(3))),
+    "nucleus_0099 is not a tracked feature"                    = list(c("link", .f(1), .f(99))),
+    "invalid_nucleus_0001 is not a tracked feature"            = list(c("link", "invalid_nucleus_0001", .f(3))),
+    "\\(blank\\) is not a tracked feature"                     = list(c("cut", .f(1), "")))
+  for(msg in names(cases)){
+    .write_edits(d, cases[[msg]])
+    expect_error(join_tracks(.feats(), "nucleus", d), msg, info = msg)
+  }
+  .write_edits(d, list(c("cut", .f(6), .f(9)), c("cut", .f(6), .f(9))))
+  expect_error(join_tracks(.feats(), "nucleus", d), "line 6 \\(cut")      # the second, after the first
+})
+
+test_that("edits made on another annotation are refused; on the same one after a VERSION bump, kept", {
+  d <- withr::local_tempdir(); .write_tracks(d)
+  .write_edits(d, list(c("cut", .f(6), .f(9))), fp = "0123456789")
+  expect_error(join_tracks(.feats(), "nucleus", d), "1 of 1 edit\\(s\\) were made on another annotation")
+  # A re-annotation that regrouped ROIs: the same ids now hold other ROIs.
+  regrouped <- .feats(); regrouped$roi[1:2] <- regrouped$roi[3:4]
+  .write_edits(d, list(c("cut", .f(6), .f(9))))
+  expect_error(join_tracks(regrouped, "nucleus", d), "made on another annotation")
+  # A VERSION bump changes run_id, not what the features are: tracks are
+  # regenerated (their run_id must follow), and the edits still apply.
+  .write_tracks(d, run_id = "run0000cccc")
+  expect_message(join_tracks(.feats(run_id = "run0000cccc"), "nucleus", d), "1 hand edit")
+  # An edit row with no fingerprint at all.
+  e <- .write_edits(d, list(c("cut", .f(6), .f(9))))
+  writeLines(sub("\t[0-9a-f]{10}\ttest$", "\t\ttest", readLines(e)), e)
+  expect_error(join_tracks(.feats(run_id = "run0000cccc"), "nucleus", d),
+               "line 5 \\(cut nucleus_0006 nucleus_0009\\): no fingerprint")
+})
+
+test_that("an edits file that cannot be read is refused, not guessed at; CRLF is fine", {
+  d <- withr::local_tempdir(); .write_tracks(d)
+  e <- .write_edits(d, list(c("cut", .f(6), .f(9))))
+  txt <- readLines(e)
+  writeLines(sub("\tnote$", "\tnote\tnote", txt), e)
+  expect_error(join_tracks(.feats(), "nucleus", d), "duplicate column\\(s\\): note")
+  writeLines(txt[!startsWith(txt, "action")], e)
+  expect_error(join_tracks(.feats(), "nucleus", d), "line 4 is not the header")
+  .write_edits(d, list(c("cut", .f(6), .f(9))), eol = "\r\n")
+  expect_message(join_tracks(.feats(), "nucleus", d), "1 hand edit")
+  # Code review, PR 4, each reproduced on Make_FeatureTracks' own seed first.
+  # A row typed with spaces was refused for "no fingerprint" -- plainly there
+  # on the line; it now says what is wrong.
+  e <- .write_edits(d, list(c("cut", .f(6), .f(9))))
+  txt <- readLines(e)
+  writeLines(c(txt[1:4], gsub("\t", " ", txt[5])), e)
+  expect_error(join_tracks(.feats(), "nucleus", d), "line 5 has 1 column\\(s\\) where 4 are needed.*separated by tabs")
+  # A spreadsheet's UTF-8 byte-order mark hid the first comment's `#`, and the
+  # whole file was refused as having no header. It is dropped now.
+  e <- .write_edits(d, list(c("cut", .f(6), .f(9))))
+  writeBin(c(as.raw(c(0xef, 0xbb, 0xbf)), readBin(e, "raw", file.size(e))), e)
+  expect_message(join_tracks(.feats(), "nucleus", d), "1 hand edit")
+})
+
+test_that("end to end: the centroid table's fingerprint is the one join_tracks checks edits against", {
+  # The fingerprint a person copies comes from annotate's centroid table, via
+  # the seed Make_FeatureTracks writes; join_tracks() recomputes it from the
+  # features. If the two were computed differently every edit would be refused.
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2"))
+  source_cli(c("annotate_features_cli.r", "feature_stat_cli.r"))
+  d <- withr::local_tempdir(); out <- withr::local_tempdir(); st <- withr::local_tempdir()
+  .time_course(d)
+  suppressMessages(annotate_features_cli(c("--input", d, "--feature", "nucleus", "--outdir", out,
+                                           "--min_z_span", "nucleus=2")))
+  k <- .tracks_for(out, "TC")
+  a2 <- k$id_at(3, 15); a2_later <- k$id_at(5, 15); b3 <- k$id_at(3, 60)
+  .write_edits(out, list(c("cut", a2, a2_later), c("link", b3, a2_later)),
+               fp = k$cen$fingerprint[1], sid = "TC")
+  s <- suppressWarnings(suppressMessages(feature_stat_cli(c(
+    "--input", out, "--outdir", st, "--no_plot", "--track_type", "nucleus"))))
+  expect_identical(s$branch_id[s$feature_id == a2_later], s$branch_id[s$feature_id == b3])
+  br <- utils::read.delim(file.path(st, "branches.tsv"), stringsAsFactors = FALSE)
+  expect_identical(sort(unique(br$track_source)), c("edited"))   # both lineages touched
 })

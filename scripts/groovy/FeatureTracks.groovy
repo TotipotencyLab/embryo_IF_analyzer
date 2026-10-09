@@ -256,9 +256,14 @@ class FeatureTracks {
         return out
     }
 
+    /** Text without the byte-order mark a spreadsheet may save first (as Tsv.read() drops it). */
+    static String bomless(String text) {
+        return (text != null && text.startsWith("\uFEFF")) ? text.substring(1) : text
+    }
+
     /** A table's header as Tsv.read() finds it: the first line not blank and not a comment. */
     static List<String> headerOf(File f) {
-        def line = f.getText("UTF-8").readLines().find { it.trim() && !it.trim().startsWith("#") }
+        def line = bomless(f.getText("UTF-8")).readLines().find { it.trim() && !it.trim().startsWith("#") }
         return line == null ? [] : line.split("\t", -1).collect { it.trim() }
     }
 
@@ -436,7 +441,7 @@ class FeatureTracks {
      */
     String seedEdits(File dest, String fingerprint, String type, Closure log) {
         if (dest.isFile()) {
-            def content = dest.getText("UTF-8").readLines().findAll { it.trim() && !it.trim().startsWith("#") }
+            def content = bomless(dest.getText("UTF-8")).readLines().findAll { it.trim() && !it.trim().startsWith("#") }
             boolean onlyHeader = content.isEmpty() ||
                 (content.size() == 1 && content[0].split("\t", -1).collect { it.trim() } == EDIT_COLUMNS)
             if (!onlyHeader) {
