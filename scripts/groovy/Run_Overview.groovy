@@ -89,7 +89,7 @@ if (roiSource == "ROI zip file(s)") {
 // --- output name ------------------------------------------------------------
 // The raw projection and the outlined one are different pictures, and they used
 // to be written to the same name -- so producing either destroyed the other,
-// and montage_qc_cli.r wants both at once.
+// and feature_outline_cli.r wants both at once.
 //
 // "(auto)" derives the suffix from whether outlines will actually be drawn,
 // rather than defaulting to blank. A blank default would just relocate the

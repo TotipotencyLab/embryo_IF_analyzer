@@ -119,7 +119,7 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                                        else c("unclassified", "other"), collapse = " and "),
                                  "-- the first is what a feature matching no class is called,",
                                  "the second is the group the plots fold unmapped classes",
-                                 "into. Both are settable in montage_qc_cli.r --color_map"))
+                                 "into. Both are settable in feature_outline_cli.r --color_map"))
   p <- add_argument(p, "--drop_orphan_feature", short = "-D", flag = TRUE,
                     help = paste("drop features matching no --class [default: keep them,",
                                  "class =", paste0("'", if (exists("CLASS_UNCLASSIFIED"))

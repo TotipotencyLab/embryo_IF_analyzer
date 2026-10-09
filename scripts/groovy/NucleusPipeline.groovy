@@ -535,7 +535,7 @@ class NucleusPipeline {
         //
         // TWO files per channel, raw and outlined. They used to share one name,
         // which made them mutually exclusive: writing either destroyed the
-        // other, and montage_qc_cli.r wants both side by side. One prepare()
+        // other, and feature_outline_cli.r wants both side by side. One prepare()
         // serves both saves -- savePng() flattens into a NEW image and leaves
         // the view untouched, so the raw copy can go out before the outlines
         // are added.

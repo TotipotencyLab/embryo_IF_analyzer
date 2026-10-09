@@ -504,7 +504,7 @@ Written by `Run_NucleusSelector.groovy` (when "Save overview PNG" is on) and by
 | `_overlay` | the same projection with detected outlines drawn on |
 
 **The suffix is what makes the two coexist.** They shared one name until now, so
-writing either destroyed the other — and `montage_qc_cli.r` needs both at once,
+writing either destroyed the other — and `feature_outline_cli.r` needs both at once,
 as `--projection` and `--overlay`.
 
 `Run_NucleusSelector` writes both, for the DNA channel **plus every channel in
@@ -676,7 +676,7 @@ grep the R CLIs:
 |---|---|
 | **writes** | `NucleusPipeline` (via `RoiExport.saveRunConfig()`) — the only writer |
 | **reads as parameters** | `RunConfig.readParams()`, called by `Run_NucleusSelector_Batch.groovy`. Unknown key ⇒ error; absent key ⇒ the default |
-| **reads individual fields** | `montage_qc_cli.r` (`image_width`/`image_height`, `pixel_width`/`pixel_height`) · `feature_stat_cli.r` (`pixel_depth` ⇒ `--z_step`) · `cli_helpers.r` (`.cli_read_config()`) |
+| **reads individual fields** | `feature_outline_cli.r` (`image_width`/`image_height`, `pixel_width`/`pixel_height`) · `feature_stat_cli.r` (`pixel_depth` ⇒ `--z_step`) · `cli_helpers.r` (`.cli_read_config()`) |
 | **schema** | `NucleusPipeline.PARAM_TYPES` (parameters) + `RunConfig.PROVENANCE_KEYS` (everything else) |
 | **template** | `config/nucleus_config_template.txt`, generated from `NucleusPipeline.DEFAULTS` |
 
@@ -689,7 +689,7 @@ Fields that other code depends on:
 
 | Field | Used by |
 |---|---|
-| `image_width`, `image_height` | **pixels.** `montage_qc_cli.r`, to draw its panel over the same frame as the Fiji PNG |
+| `image_width`, `image_height` | **pixels.** `feature_outline_cli.r`, to draw its panel over the same frame as the Fiji PNG |
 | `pixel_width`, `pixel_height`, `pixel_unit` | the same, to convert that frame to µm |
 | `image_frames` | how many frames the image had. **Since v0.8.0**; absent means one |
 | `frames_analysed` | which of them these results hold, space-separated: the frames asked for (the batch's `frames`), less any that failed — `batch_summary.tsv` says why. `1` for a single frame. **Since v0.8.0** |
@@ -709,7 +709,7 @@ Fields that other code depends on:
 
 Everything else is a record of the run's parameters. A key that is absent must
 be handled, not assumed: configs written before a field existed are still valid
-input (`montage_qc_cli.r` warns and degrades rather than failing).
+input (`feature_outline_cli.r` warns and degrades rather than failing).
 
 ⚠️ **That tolerance is also the trap.** Because an absent key is legal, a
 parameter the writer forgets silently becomes its *default* on the next run
@@ -892,7 +892,7 @@ strictly the centroid file's stem, which `annotate` names after the series id.)
 **Tracks are not copied into the feature table.** `_tracks.tsv` is the only
 store of them, and R joins it at use, which is also where track and branch ids
 are numbered — `join_tracks()` in `scripts/R/feature_tracks.r`, called by
-`feature_stat_cli.r --track_type` and `montage_qc_cli.r --color_by
+`feature_stat_cli.r --track_type` and `feature_outline_cli.r --color_by
 track_id|branch_id` (§3). Nothing here holds a `track_id`: TrackMate's own are
 internal integers.
 
@@ -1270,7 +1270,7 @@ Colours are assigned in `feature_id` order over the **whole series**, so a
 feature keeps its colour on every page of a time course. With a qualitative
 palette, ids `k` apart share a colour; the label settles which is which. The
 same options, without the `qc_` prefix (`--color_by`, `--label`,
-`--palette`), colour panel (iii) of `montage_qc_cli.r`.
+`--palette`), colour panel (iii) of `feature_outline_cli.r`.
 
 #### `<series_id>_feature_centroids.tsv`
 
@@ -1615,9 +1615,9 @@ invites more confidence than the data supports.
 Several `--input` tables gain a `source_file` column automatically, so runs with
 different settings can be compared with `--facet source_file`.
 
-### `montage_qc_cli.r`
+### `feature_outline_cli.r`
 
-Three renderings of one image. A features file holding **several frames** gets
+`montage_qc_cli.r` until 0.9.0. Three renderings of one image. A features file holding **several frames** gets
 one montage per frame, as the pages of one 8-bit TIFF — `--output` must then end
 `.tif`, and naming a `.png` is refused rather than drawing the frames on top of
 each other. `--t` chooses frames (`2,11,21`, `1-4`, from 1, as `t` counts); one

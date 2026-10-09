@@ -223,6 +223,27 @@ This means the Groovy scripts may have to defined into different levels:
   - Not built until data shows TrackMate's own gap closing is not enough;
     `tracking` PR 2's synthetic division-after-a-gap test is the first
     evidence either way.
+- **The overlap-core refactor, and an overlap linker to cross-check TrackMate**
+  (moved out of `tracking` 2026-10-08). `find_overlap_roi_features()` scores
+  an overlap against the *smaller* of the two areas, so its ratio means
+  "fraction of the child inside the parent" only when one object is much
+  larger than the other. It also throws its scores away, lets one failing
+  slice kill a match, never resolves matches one-to-one, and does not keep
+  time points apart. `relate_features.r` already gets containment right. The
+  fix is to extract that core into one shared function -- a directional
+  denominator, the scores kept, one-to-one matching with ties recorded, and
+  the partition keys (`z`, `t`) as an argument -- and retire the old one. The
+  review, R1-R5, and the callers (`test-spatial.R` and PLA scripts; PLA is
+  published, so edit those for future work only) are in
+  `time_series_plan.md` §7. Two of those findings give wrong pairs today (R1,
+  R5); their reproduction is `known_issue.md` (`find_overlap_roi_features` topic).
+  - Its second caller was to be a frame-to-frame linker matching features by
+    how much their outlines overlap: the in-house alternative to TrackMate.
+    With TrackMate doing the linking, that is worth building only as a
+    **cross-check** (low priority), and this refactor is its prerequisite.
+  - Until then it is a standalone cleanup with one real caller. It would also
+    delete the old function's `if(F){...}` block, a test scratchpad with a
+    hardcoded `/Volumes/pool-toti-imaging/...` path.
 - **A real time-lapse fixture for tracking** (2026-10-08). `tracking` can only
   be verified on synthesised data: the FUCCI acquisition's nuclear channel is
   sparse and dim at later time points, and its per-frame segmentation is

@@ -1,8 +1,8 @@
 #!/usr/bin/env Rscript
 
-# montage_qc_cli.r
+# feature_outline_cli.r
 #
-# Three-panel QC montage for one series:
+# One series' features outlined on its image, as a montage of up to three panels:
 #   (i)   raw z-projection                 (PNG from Run_Overview, roiMode none)
 #   (ii)  z-projection + Fiji outlines     (PNG from Run_Overview, roiMode merged)
 #   (iii) outlines from R, unioned per feature
@@ -13,7 +13,12 @@
 # z they are. R unions per feature_id, which was assigned z-aware. Seeing them
 # side by side is the point of the montage.
 #
-#   ./montage_qc_cli.r --features out/S_features.rds \
+# Panel (iii) is coloured by one column -- --color_by class, feature_id,
+# track_id or branch_id -- so the same picture checks detection, classes,
+# individual features or tracks. Named for what it draws rather than for one of
+# those checks (it was montage_qc_cli.r until 0.9.0).
+#
+#   ./feature_outline_cli.r --features out/S_features.rds \
 #       --projection S_overview_ch1.png --overlay S_merged_ch1.png \
 #       --config data/S_config.txt --output S_montage.png
 #
@@ -21,7 +26,7 @@
 # the Fiji panels come from the batch's multi-frame overview TIFFs, page by
 # page, and panel (iii) from that frame's features alone. --t chooses frames.
 #
-#   ./montage_qc_cli.r --features out/S_features.rds \
+#   ./feature_outline_cli.r --features out/S_features.rds \
 #       --projection S_overview_ch1.tif --overlay S_overview_ch1_overlay.tif \
 #       --config data/S_config.txt --output S_montage.tif --t 1-10
 #
@@ -71,7 +76,7 @@ suppressPackageStartupMessages({
   return(NA_character_)
 })()
 
-.montage_source_helpers <- function() {
+.fo_source_helpers <- function() {
   if (!exists(".cli_resolve_arg", mode = "function")) {
     if (is.na(.THIS_DIR)) stop("cannot locate cli_helpers.r", call. = FALSE)
     sys.source(file.path(.THIS_DIR, "cli_helpers.r"), envir = globalenv())
@@ -89,21 +94,21 @@ suppressPackageStartupMessages({
 }
 
 #' One value, or a default. See group_montage_cli.r's .gm_one for why.
-.mqc_one <- function(v, default = NA_character_) {
+.fo_one <- function(v, default = NA_character_) {
   if (length(v) == 0L) return(default)
   return(as.character(v)[1])
 }
 
 # ------------------------------------------------------------------------------
 
-montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
+feature_outline_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   .warn_option <- options(warn = 1)
   on.exit(options(.warn_option), add = TRUE)
 
-  .montage_source_helpers()
+  .fo_source_helpers()
 
-  p <- arg_parser("Three-panel QC montage of nuclear detection", hide.opts = TRUE)
+  p <- arg_parser("One series' features outlined on its image: by class, id, track or branch", hide.opts = TRUE)
   p <- add_argument(p, "--features", short = "-F", type = "character",
                     help = "the *_features.rds written by annotate_features_cli.r")
   p <- add_argument(p, "--output", short = "-o", type = "character",
@@ -191,7 +196,7 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
   # --- colour and labels by feature ------------------------------------------------
   # Decided before any panel is read, so a bad option costs one message.
-  qc <- .mqc_id_options(argv, feats, keep_features)
+  qc <- .fo_id_options(argv, feats, keep_features)
 
   # --- which frames --------------------------------------------------------------
   # Three renderings of ONE image per page. A time course's frames would be drawn
@@ -199,7 +204,7 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   # page of the overview TIFFs and its own features.
   has_t <- "t" %in% colnames(feats)
   all_t <- if (has_t) sort(unique(as.integer(feats$t))) else integer(0)
-  want_t <- .mqc_parse_t(.cli_resolve_arg(argv$t, "--t"))
+  want_t <- .fo_parse_t(.cli_resolve_arg(argv$t, "--t"))
   if (length(want_t) && !has_t) {
     stop("--t given, but ", basename(argv$features), " has no t column", call. = FALSE)
   }
@@ -236,7 +241,7 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   if (!is.na(argv$overlay)) {
     fiji[["z-projection + Fiji outline"]] <- .read_panel(argv$overlay, "--overlay")
   }
-  page_of <- .mqc_pages(fiji, frames, per_frame, cfg_path)
+  page_of <- .fo_pages(fiji, frames, per_frame, cfg_path)
 
   valid <- .cli_valid_rows(feats)
 
@@ -368,7 +373,7 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                                         qc$focus, qc$label)
   }
 
-  ttl <- .mqc_one(.cli_resolve_arg(argv$title, "--title"), sid)
+  ttl <- .fo_one(.cli_resolve_arg(argv$title, "--title"), sid)
   pages <- lapply(seq_along(frames), function(i) {
     t <- frames[i]
     if (is.na(t)) {
@@ -445,7 +450,7 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     })
     montage <- mg_grid(imgs, ncol = length(imgs))
 
-    # A title, because a QC montage on its own says nothing about WHICH series it
+    # A title, because a montage on its own says nothing about WHICH series it
     # is: the panel captions name the panels, and the filename is only visible
     # from outside the picture. Opened from a folder of them, or pasted into a
     # note, an untitled montage is unattributable. A page also says its frame.
@@ -478,7 +483,7 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
 #' Frames named on the command line: 2,11,21 or 1-4, and mixtures. Counted
 #' from 1, as t is. integer(0) when none were given.
-.mqc_parse_t <- function(v) {
+.fo_parse_t <- function(v) {
   if (is.null(v) || !length(v) || all(is.na(v))) return(integer(0))
   parts <- trimws(unlist(strsplit(paste(v, collapse = ","), "[,[:space:]]+")))
   parts <- parts[nzchar(parts)]
@@ -505,7 +510,7 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 #' matched by position. A single-page panel (a PNG) cannot serve a time course.
 #'
 #' @return a list t -> page index, or NULL when not per frame / no panels.
-.mqc_pages <- function(fiji, frames, per_frame, cfg_path) {
+.fo_pages <- function(fiji, frames, per_frame, cfg_path) {
   if (!per_frame || !length(fiji)) return(NULL)
   cfg <- .cli_read_config(cfg_path)
   fa <- if (is.null(cfg) || !"frames_analysed" %in% names(cfg)) NA_character_ else cfg[["frames_analysed"]]
@@ -599,7 +604,7 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 #' The type they act on is the first --feature, or the only type in the file.
 #' Several types and no --feature is refused rather than guessed: colouring
 #' `nucleus` by default is the assumption the N-feature work removes.
-.mqc_id_options <- function(argv, feats, keep_features) {
+.fo_id_options <- function(argv, feats, keep_features) {
   color_by <- argv$color_by
   by_id <- c("feature_id", "track_id", "branch_id")
   if (!color_by %in% c("class", by_id)) {
@@ -689,4 +694,4 @@ montage_qc_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   return(invisible(path))
 }
 
-if (!interactive() && sys.nframe() == 0L) montage_qc_cli()
+if (!interactive() && sys.nframe() == 0L) feature_outline_cli()

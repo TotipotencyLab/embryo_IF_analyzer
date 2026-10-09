@@ -1,4 +1,4 @@
-# count_features_cli.r and montage_qc_cli.r.
+# count_features_cli.r and feature_outline_cli.r.
 #
 # The counting test asserts that invalid groups are REPORTED rather than
 # dropped: a series whose nuclei mostly failed the z-span filter must not look
@@ -113,11 +113,11 @@ test_that("an annotate output from before v0.7.0 is refused, naming the version"
 
 # --- montage ------------------------------------------------------------------
 
-test_that("montage_qc_cli composes one panel per input plus the R panel", {
+test_that("feature_outline_cli composes one panel per input plus the R panel", {
   skip_if_no_sf()
   skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
   skip_if_no_fixture(fixture_file("nucleus", "outline"))
-  source_cli("montage_qc_cli.r")
+  source_cli("feature_outline_cli.r")
 
   feat_dir <- annotated_fixture()
   rds <- file.path(feat_dir, "GRV_Position010_features.rds")
@@ -128,7 +128,7 @@ test_that("montage_qc_cli composes one panel per input plus the R panel", {
   }
 
   out <- file.path(d, "montage.png")
-  suppressWarnings(suppressMessages(montage_qc_cli(c(
+  suppressWarnings(suppressMessages(feature_outline_cli(c(
     "--features", rds, "--feature", "nucleus",
     "--projection", file.path(d, "proj.png"),
     "--overlay", file.path(d, "overlay.png"),
@@ -143,12 +143,12 @@ test_that("montage_qc_cli composes one panel per input plus the R panel", {
 })
 
 test_that("the montage is titled with the series id, and --no_title restores the old shape", {
-  # A QC montage on its own does not say WHICH series it is: the captions name
+  # A montage on its own does not say WHICH series it is: the captions name
   # the panels and the filename is only visible from outside the picture.
   skip_if_no_sf()
   skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
   skip_if_no_fixture(fixture_file("nucleus", "outline"))
-  source_cli("montage_qc_cli.r")
+  source_cli("feature_outline_cli.r")
 
   feat_dir <- annotated_fixture()
   rds <- file.path(feat_dir, "GRV_Position010_features.rds")
@@ -158,7 +158,7 @@ test_that("the montage is titled with the series id, and --no_title restores the
   }
   run <- function(name, extra = character(0)) {
     o <- file.path(d, name)
-    suppressWarnings(suppressMessages(montage_qc_cli(c(
+    suppressWarnings(suppressMessages(feature_outline_cli(c(
       "--features", rds, "--feature", "nucleus",
       "--projection", file.path(d, "proj.png"),
       "--overlay", file.path(d, "overlay.png"),
@@ -192,7 +192,7 @@ test_that("the montage is written 8-bit, whether or not it has a title", {
   skip_if_no_sf()
   skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
   skip_if_no_fixture(fixture_file("nucleus", "outline"))
-  source_cli("montage_qc_cli.r")
+  source_cli("feature_outline_cli.r")
 
   feat_dir <- annotated_fixture()
   d <- withr::local_tempdir()
@@ -204,7 +204,7 @@ test_that("the montage is written 8-bit, whether or not it has a title", {
   }
   for (nm in c("d_title.png", "d_plain.png")) {
     o <- file.path(d, nm)
-    suppressWarnings(suppressMessages(montage_qc_cli(c(
+    suppressWarnings(suppressMessages(feature_outline_cli(c(
       "--features", file.path(feat_dir, "GRV_Position010_features.rds"),
       "--feature", "nucleus",
       "--projection", file.path(d, "proj.png"),
@@ -215,29 +215,29 @@ test_that("the montage is written 8-bit, whether or not it has a title", {
   }
 })
 
-test_that("montage_qc_cli warns loudly when the image extent is unknown", {
+test_that("feature_outline_cli warns loudly when the image extent is unknown", {
   # Without image_width/image_height the R panel is cropped to the features'
   # bounding box and does NOT align with the Fiji panels. Producing that
   # silently would defeat the purpose of putting them side by side.
   skip_if_no_sf()
   skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
   skip_if_no_fixture(fixture_file("nucleus", "outline"))
-  source_cli("montage_qc_cli.r")
+  source_cli("feature_outline_cli.r")
 
   feat_dir <- annotated_fixture()   # no _config.txt is copied here
   rds <- file.path(feat_dir, "GRV_Position010_features.rds")
   out <- file.path(withr::local_tempdir(), "m.png")
 
-  expect_warning(suppressMessages(montage_qc_cli(c(
+  expect_warning(suppressMessages(feature_outline_cli(c(
     "--features", rds, "--feature", "nucleus", "--output", out))),
     "will NOT align")
 })
 
-test_that("montage_qc_cli reads the image extent from a Fiji config", {
+test_that("feature_outline_cli reads the image extent from a Fiji config", {
   skip_if_no_sf()
   skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
   skip_if_no_fixture(fixture_file("nucleus", "outline"))
-  source_cli("montage_qc_cli.r")
+  source_cli("feature_outline_cli.r")
 
   feat_dir <- annotated_fixture()
   rds <- file.path(feat_dir, "GRV_Position010_features.rds")
@@ -256,7 +256,7 @@ test_that("montage_qc_cli reads the image extent from a Fiji config", {
 
   out <- file.path(withr::local_tempdir(), "m.png")
   # No "will NOT align" warning this time -- the extent is known.
-  expect_no_warning(suppressMessages(montage_qc_cli(c(
+  expect_no_warning(suppressMessages(feature_outline_cli(c(
     "--features", rds, "--feature", "nucleus", "--output", out,
     "--projection", file.path(d, "proj.png"),
     "--overlay", file.path(d, "overlay.png")))))
@@ -270,7 +270,7 @@ test_that(".image_extent converts pixels to calibrated units", {
                                        "pixel_width", "pixel_height"),
                          value = c("1024", "512", "0.5", "0.25")),
               cfg, sep = "\t", quote = FALSE, row.names = FALSE)
-  source_cli("montage_qc_cli.r")
+  source_cli("feature_outline_cli.r")
   got <- .image_extent(cfg)
   expect_equal(got$xmax, 512)
   expect_equal(got$ymax, 128)
@@ -402,7 +402,7 @@ test_that("a colour the device cannot use is refused before ggplot sees it", {
   skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
   skip_if_no_fixture(fixture_file("nucleus", "outline"))
   source_cli("annotate_features_cli.r")
-  source_cli("montage_qc_cli.r")
+  source_cli("feature_outline_cli.r")
 
   feat <- withr::local_tempdir()
   suppressMessages(annotate_features_cli(c(
@@ -410,7 +410,7 @@ test_that("a colour the device cannot use is refused before ggplot sees it", {
   out <- file.path(withr::local_tempdir(), "m.png")
 
   expect_error(
-    suppressMessages(montage_qc_cli(c(
+    suppressMessages(feature_outline_cli(c(
       "--features", file.path(feat, "GRV_Position010_features.rds"),
       "--output", out, "--color_map", "nucleus=chartreuseX"))),
     "unusable colour")
@@ -422,7 +422,7 @@ test_that("the montage labels outlines by class and names the rest in the captio
   skip_if_no_fixture(fixture_file("nucleus", "outline"))
   source_cli("annotate_features_cli.r")
   source_cli("feature_stat_cli.r")
-  source_cli("montage_qc_cli.r")
+  source_cli("feature_outline_cli.r")
 
   feat <- withr::local_tempdir()
   suppressMessages(annotate_features_cli(c(
@@ -433,7 +433,7 @@ test_that("the montage labels outlines by class and names the rest in the captio
     "--class", "big:area_med=140:Inf", "small:area_med=0:140")))
 
   out <- file.path(withr::local_tempdir(), "m.png")
-  expect_no_error(suppressMessages(suppressWarnings(montage_qc_cli(c(
+  expect_no_error(suppressMessages(suppressWarnings(feature_outline_cli(c(
     "--features", file.path(feat, "GRV_Position010_features.rds"),
     "--output", out,
     "--feature_table", file.path(st, "feature_stats.tsv"),
@@ -484,7 +484,7 @@ test_that("a series with no VALID feature still draws, showing what was rejected
   skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
   skip_if_no_fixture(fixture_file("nucleus", "outline"))
   source_cli("annotate_features_cli.r")
-  source_cli("montage_qc_cli.r")
+  source_cli("feature_outline_cli.r")
 
   # A z span nothing can satisfy: every ROI is grouped, then rejected.
   feat <- withr::local_tempdir()
@@ -501,7 +501,7 @@ test_that("a series with no VALID feature still draws, showing what was rejected
     magick::image_write(magick::image_blank(300, 300, color = "gray30"), file.path(d, f))
   }
   out <- file.path(d, "m.png")
-  suppressWarnings(suppressMessages(montage_qc_cli(c(
+  suppressWarnings(suppressMessages(feature_outline_cli(c(
     "--features", rds, "--projection", file.path(d, "proj.png"),
     "--overlay", file.path(d, "overlay.png"),
     "--config", file.path(fixture_dir(), "GRV_Position010_config.txt"),
@@ -519,7 +519,7 @@ test_that("the rejected drawing says so, and says why they were rejected", {
   skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
   skip_if_no_fixture(fixture_file("nucleus", "outline"))
   source_cli("annotate_features_cli.r")
-  source_cli("montage_qc_cli.r")
+  source_cli("feature_outline_cli.r")
 
   feat <- withr::local_tempdir()
   suppressWarnings(suppressMessages(annotate_features_cli(c(
@@ -532,7 +532,7 @@ test_that("the rejected drawing says so, and says why they were rejected", {
                       file.path(d, "proj.png"))
   out <- file.path(d, "m.png")
   expect_message(
-    suppressWarnings(montage_qc_cli(c(
+    suppressWarnings(feature_outline_cli(c(
       "--features", rds, "--projection", file.path(d, "proj.png"),
       "--config", file.path(fixture_dir(), "GRV_Position010_config.txt"),
       "--output", out))),
@@ -553,7 +553,7 @@ test_that("rejected geometry stays in the grey layer, never the feature layer", 
   skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
   skip_if_no_fixture(fixture_file("nucleus", "outline"))
   source_cli("annotate_features_cli.r")
-  source_cli("montage_qc_cli.r")
+  source_cli("feature_outline_cli.r")
 
   feat <- withr::local_tempdir()
   suppressWarnings(suppressMessages(annotate_features_cli(c(
@@ -568,7 +568,7 @@ test_that("rejected geometry stays in the grey layer, never the feature layer", 
   writeLines(c("parameter\tvalue", "image_width\t1400", "image_height\t1400",
                "pixel_width\t0.1414", "pixel_height\t0.1414"), cfg)
   out <- file.path(d, "m.png")
-  suppressWarnings(suppressMessages(montage_qc_cli(c(
+  suppressWarnings(suppressMessages(feature_outline_cli(c(
     "--features", rds, "--projection", file.path(d, "proj.png"),
     "--config", cfg, "--output", out))))
 
@@ -585,7 +585,7 @@ test_that("no features at all draws an empty frame, given the image extent", {
   skip_if_no_sf()
   skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
   skip_if_no_fixture(fixture_file("nucleus", "outline"))
-  source_cli("montage_qc_cli.r")
+  source_cli("feature_outline_cli.r")
 
   feat_dir <- annotated_fixture()
   feats <- readRDS(file.path(feat_dir, "GRV_Position010_features.rds"))
@@ -605,7 +605,7 @@ test_that("no features at all draws an empty frame, given the image extent", {
                "pixel_width\t0.1414", "pixel_height\t0.1414"), cfg)
 
   out <- file.path(d, "m.png")
-  suppressWarnings(suppressMessages(montage_qc_cli(c(
+  suppressWarnings(suppressMessages(feature_outline_cli(c(
     "--features", empty_rds, "--projection", file.path(d, "proj.png"),
     "--config", cfg, "--output", out))))
   expect_true(file.exists(out))
@@ -614,7 +614,7 @@ test_that("no features at all draws an empty frame, given the image extent", {
   # Fiji PNGs it does not match. Refused, and it says why.
   out2 <- file.path(d, "m2.png")
   expect_error(
-    suppressWarnings(suppressMessages(montage_qc_cli(c(
+    suppressWarnings(suppressMessages(feature_outline_cli(c(
       "--features", empty_rds, "--projection", file.path(d, "proj.png"),
       "--output", out2)))),
     "unknown size")
@@ -698,10 +698,10 @@ left_grey <- function(img) {
 test_that("a time course is one page per frame, each from its own overview page", {
   skip_if_no_sf()
   skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
-  source_cli("montage_qc_cli.r")
+  source_cli("feature_outline_cli.r")
   fx <- timecourse_fixture()
   out <- file.path(withr::local_tempdir(), "tc_montage.tif")
-  msgs <- testthat::capture_messages(suppressWarnings(montage_qc_cli(c(fx$args, "--output", out))))
+  msgs <- testthat::capture_messages(suppressWarnings(feature_outline_cli(c(fx$args, "--output", out))))
 
   m <- magick::image_read(out)
   expect_identical(length(m), 3L)
@@ -718,15 +718,15 @@ test_that("a time course is one page per frame, each from its own overview page"
 test_that("--t draws chosen frames, and one frame is a PNG", {
   skip_if_no_sf()
   skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
-  source_cli("montage_qc_cli.r")
+  source_cli("feature_outline_cli.r")
   fx <- timecourse_fixture()
   out <- file.path(withr::local_tempdir(), "t11.png")
-  suppressWarnings(suppressMessages(montage_qc_cli(c(fx$args, "--output", out, "--t", "11"))))
+  suppressWarnings(suppressMessages(feature_outline_cli(c(fx$args, "--output", out, "--t", "11"))))
   m <- magick::image_read(out)
   expect_identical(length(m), 1L)
   expect_identical(left_grey(m), 127L)                 # the page of t = 11, the 2nd
   out2 <- file.path(withr::local_tempdir(), "two.tif")
-  suppressWarnings(suppressMessages(montage_qc_cli(c(fx$args, "--output", out2, "--t", "11,21"))))
+  suppressWarnings(suppressMessages(feature_outline_cli(c(fx$args, "--output", out2, "--t", "11,21"))))
   m2 <- magick::image_read(out2)
   expect_identical(vapply(seq_along(m2), function(i) left_grey(m2[i]), integer(1)), c(127L, 204L))
 })
@@ -734,9 +734,9 @@ test_that("--t draws chosen frames, and one frame is a PNG", {
 test_that("a per-frame montage refuses what it cannot match", {
   skip_if_no_sf()
   skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
-  source_cli("montage_qc_cli.r")
+  source_cli("feature_outline_cli.r")
   fx <- timecourse_fixture()
-  run <- function(...) suppressWarnings(suppressMessages(montage_qc_cli(c(...))))
+  run <- function(...) suppressWarnings(suppressMessages(feature_outline_cli(c(...))))
   expect_error(run(fx$args, "--output", file.path(withr::local_tempdir(), "m.png")),
                "3 frames make a multi-page montage")
   expect_error(run(fx$args, "--output", file.path(withr::local_tempdir(), "m.tif"), "--t", "5"),

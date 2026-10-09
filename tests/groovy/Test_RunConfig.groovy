@@ -90,7 +90,7 @@ check("records image_height",                  src.contains("image_height"), tru
 check("reads them from the series source",     src.contains("src.width") && src.contains("src.height"), true)
 
 // The overview pair. The raw projection and the outlined one used to share one
-// file name, which made them mutually exclusive; montage_qc_cli.r needs both.
+// file name, which made them mutually exclusive; feature_outline_cli.r needs both.
 check("records overview_channels",             src.contains("overview_channels"), true)
 // The suffix string itself lives in Overview.groovy, so the two runners cannot
 // drift apart -- a literal here would be a second source of truth.

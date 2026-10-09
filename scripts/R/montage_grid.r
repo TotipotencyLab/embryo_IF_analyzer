@@ -186,7 +186,7 @@ mg_cell <- function(path, cell_w, cell_h, label = "", draw_w = NULL, draw_h = NU
 #' library defaults to.
 #'
 #' Cells need NOT all be the same size. The group montage pads every cell to a
-#' common square before calling this; montage_qc_cli.r does not, because its
+#' common square before calling this; feature_outline_cli.r does not, because its
 #' three panels are three renderings of ONE image scaled to a common height, and
 #' padding them to a common width would put gaps between panels that are meant
 #' to be read as a strip. A single row of equal-height cells therefore passes
@@ -295,10 +295,10 @@ mg_scale_bar <- function(img, um_per_px, frac = 0.18, color = "black",
 #'
 #' ⚠️ magick composes in 16 bits internally, and a montage whose pixels all fit
 #' in 8 is nonetheless written as 16-bit once a blank is appended to it -- which
-#' is what adding a title band does. Measured on the QC montage: 8-bit without a
-#' title, 16-bit with one, the file about twice the size, and every flat grey
-#' shifted by 1/255 on the way back out. Invisible, and still a changed file for
-#' no gain.
+#' is what adding a title band does. Measured on feature_outline's montage:
+#' 8-bit without a title, 16-bit with one, the file about twice the size, and
+#' every flat grey shifted by 1/255 on the way back out. Invisible, and still a
+#' changed file for no gain.
 #'
 #' Both callers build their montages from 8-bit PNGs (Fiji's overviews, and a
 #' ggplot panel rendered to PNG), so 8 is not a downgrade here -- it is the
