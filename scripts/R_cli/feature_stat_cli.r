@@ -197,7 +197,7 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     stop("--group_by track_id would pool a lineage's cells into one distribution. ",
          "Group by branch_id (one object through time), or count features per track ",
          "and t: count_features_cli.r --feature_table <this feature_stats.tsv> ",
-         "--feature_class_by track_id", call. = FALSE)
+         "--feature <type> --feature_class_by track_id", call. = FALSE)
   }
 
   files <- .cli_resolve_input_path(argv$input, "_features\\.rds$")
@@ -347,6 +347,13 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
          "\n  available: ", paste(colnames(stats), collapse = ", "), call. = FALSE)
   }
 
+  # join_tracks() gives a series with no valid feature of the type NA ids --
+  # an empty position is a result. A type found in NO input is a typo.
+  if (!is.na(track_type) && !track_type %in% stats$feature_type) {
+    stop("--track_type ", track_type, ": no feature of that type in any input; types present: ",
+         paste(sort(unique(stats$feature_type)), collapse = ", "), call. = FALSE)
+  }
+
   # --- write --------------------------------------------------------------------
   tsv <- file.path(outdir, paste0(argv$output_prefix, "feature_stats.tsv"))
   utils::write.table(stats, tsv, sep = "\t", quote = FALSE, row.names = FALSE)
@@ -393,18 +400,7 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     for (g in group_by) {
       data_g <- stats
       if (g == "branch_id") {
-        # A per-branch distribution is a per-cell summary: a merged branch is
-        # two objects, and an untracked feature is in no branch at all.
-        drop <- is.na(data_g$branch_id) |
-          (!argv$keep_merged_branches & data_g$branch_merged %in% TRUE)
-        if (any(drop)) {
-          message("  --group_by branch_id: left out ", sum(drop), " feature(s) -- ",
-                  sum(is.na(data_g$branch_id)), " in no branch, ",
-                  sum(data_g$branch_merged %in% TRUE & !is.na(data_g$branch_id)),
-                  " on merged branches",
-                  if (argv$keep_merged_branches) " (kept: --keep_merged_branches)" else "")
-        }
-        data_g <- data_g[!drop, , drop = FALSE]
+        data_g <- .branch_rows(stats, track_type, argv$keep_merged_branches)
       }
       pl <- plot_feature_stat_list(
         data_g, value_cols = if (length(want_stats)) want_stats else NULL,
@@ -422,6 +418,39 @@ feature_stat_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 }
 
 # --- private helpers ----------------------------------------------------------
+
+#' The rows a per-branch plot is drawn from, labelled so that a box is one cell
+#'
+#' A per-branch distribution is a per-cell summary: a merged branch is two
+#' objects, and an untracked feature -- or one of another type -- is in no
+#' branch at all, so those are left out (merged ones kept on request). Branch
+#' ids are numbered per series, so with several series each is prefixed with
+#' its series_id: nucleus_track_0001_b001 in two series is two cells, and one
+#' box for both would pool them.
+#'
+#' @return `stats` restricted to the rows drawn, branch_id relabelled when needed
+.branch_rows <- function(stats, track_type, keep_merged) {
+  other <- !(stats$feature_type %in% track_type)
+  untracked <- !other & is.na(stats$branch_id)
+  merged <- !other & !is.na(stats$branch_id) & stats$branch_merged %in% TRUE
+  drop <- other | untracked | (merged & !keep_merged)
+  if (any(drop)) {
+    message("  --group_by branch_id: left out ", sum(drop), " feature(s) -- ",
+            sum(other), " of another type, ", sum(untracked), " in no branch, ",
+            if (keep_merged) 0L else sum(merged), " on merged branches")
+  }
+  if (keep_merged && any(merged)) {
+    message("  --group_by branch_id: ", sum(merged), " feature(s) on merged branches drawn ",
+            "(--keep_merged_branches)")
+  }
+  out <- stats[!drop, , drop = FALSE]
+  if (length(unique(out$series_id)) > 1L) {
+    out$branch_id <- paste(out$series_id, out$branch_id)
+    message("  --group_by branch_id: ", length(unique(out$series_id)), " series, so each branch ",
+            "is labelled with its series_id (branch ids restart in every series)")
+  }
+  return(out)
+}
 
 #' The z step for one features file: `.cli_z_step_for()` (cli_helpers.r), with
 #' this CLI's own warning when the series in it disagree -- a volume pooled

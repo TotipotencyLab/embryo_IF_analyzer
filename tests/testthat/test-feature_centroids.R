@@ -22,7 +22,7 @@ source_cli("cli_helpers.r")
               row.names = FALSE)
 }
 .read_centroids <- function(out, sid){
-  read.delim(file.path(out, paste0(sid, "_feature_centroids.tsv")), stringsAsFactors = FALSE)
+  read.delim(file.path(out, paste0(sid, "_feature_centroids.tsv")), stringsAsFactors = FALSE, comment.char = "#")
 }
 
 # One nucleus: a 10x10 square on slice 1 and a 20x20 one on slice 2 that

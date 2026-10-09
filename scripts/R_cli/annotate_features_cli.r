@@ -443,7 +443,15 @@ annotate_features_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     z_step <- .cli_z_step_for(series_sf, rds_path, unique(dirname(sid_jobs$path)))
     cen <- feature_centroids(series_sf, z_step = as.numeric(z_step))
     cen_path <- file.path(outdir, paste0(sid, "_feature_centroids.tsv"))
-    utils::write.table(cen, cen_path, sep = "\t", quote = FALSE, row.names = FALSE, na = "")
+    # The Fiji run's time axis rides above the header (`# frames_analysed: ...`):
+    # a frame where nothing was found has no row, and tracking needs to know it
+    # was there. Without a config the table is written without it, and tracking
+    # several frames refuses it.
+    stamp <- .cli_centroid_stamp(sid, rds_path, unique(dirname(sid_jobs$path)))
+    con <- file(cen_path, "w")
+    if (length(stamp)) writeLines(paste0("# ", names(stamp), ": ", stamp), con)
+    utils::write.table(cen, con, sep = "\t", quote = FALSE, row.names = FALSE, na = "")
+    close(con)
     message("    -> ", basename(cen_path), " (", nrow(cen), " feature(s); ",
             .centroid_z_note(cen, z_step), ")")
     

@@ -244,6 +244,34 @@ This means the Groovy scripts may have to defined into different levels:
   - Until then it is a standalone cleanup with one real caller. It would also
     delete the old function's `if(F){...}` block, a test scratchpad with a
     hardcoded `/Volumes/pool-toti-imaging/...` path.
+- **Tracking loose ends, found in `tracking`'s release review** (2026-10-09;
+  none gives a wrong answer):
+  - `number_tracks()` is quadratic in branches (`which()` per track and per
+    branch): 0.2 s at 10k features / 2k branches, 16.8 s at 100k / 20k, paid on
+    every `join_tracks()`. `split()` would make it linear.
+  - No R test reads a tracks or edits file that Groovy actually wrote; the
+    seam is held by `test-data_formats.R`'s column lists and one manual run. A
+    small Groovy-written pair committed as a fixture would close it.
+  - Messages that send a person the wrong way: an NA `t` in the features is
+    blamed on the tracks table ("a t that is not their own (NA)"); a tracks
+    file with a byte-order mark "lacks column(s): series_id"; `--label x7` on
+    `feature_outline_cli.r` names `--qc_label`.
+  - Options that silently do nothing in some combinations:
+    `--keep_merged_branches` without `--group_by branch_id`;
+    `feature_outline --force` with neither `--feature_table` nor track
+    colouring; `--feature_table` under `--color_by feature_id|track_id|branch_id`
+    (joined, then unused).
+  - `Make_FeatureTracks` writes outputs under a centroid file's stem even when
+    it is not the series_id (`Test_FeatureTracks` §11 tests that case), and R
+    looks them up by series_id, so it refuses them (loudly). `annotate` never
+    writes such a stem; refuse or warn on the Groovy side instead of testing
+    it as supported.
+  - An edits file holding only the header plus a trailing tab, as a
+    spreadsheet saves it, is kept rather than reseeded, so it never gains the
+    template line with the fingerprint.
+  - Library-only settings checks: a non-numeric distance gives a raw
+    `NumberFormatException`; `max_frame_gap: 2.7` becomes 2 silently. The
+    `#@` front end's types prevent both.
 - **A real time-lapse fixture for tracking** (2026-10-08). `tracking` can only
   be verified on synthesised data: the FUCCI acquisition's nuclear channel is
   sparse and dim at later time points, and its per-frame segmentation is

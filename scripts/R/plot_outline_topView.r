@@ -236,7 +236,7 @@ qc_id_colours <- function(feature_id, feature_type, focus_type,
 .gcd <- function(a, b){ while(b) { t <- b; b <- a %% b; a <- t }; a }
 
 #' The short label of an id: `nucleus_0007` -> `0007`, a track
-#' `nucleus_track_0003` -> `0003`, a branch `nucleus_track_0003_b02` -> `0003b02`
+#' `nucleus_track_0003` -> `0003`, a branch `nucleus_track_0003_b002` -> `0003b002`
 qc_short_label <- function(feature_id){
   out <- sub("^.*_track_([0-9]+)_b([0-9]+)$", "\\1b\\2", feature_id)
   plain <- !is.na(feature_id) & out == feature_id

@@ -605,6 +605,10 @@
   } else {
     utils::read.delim(path, stringsAsFactors = FALSE, check.names = FALSE)
   }
+  # A spreadsheet saving "UTF-8" may put a byte-order mark first. Left on, it
+  # becomes part of the first column's name -- invisibly, so "no 'series_id'
+  # column" names one that looks present. Tsv.read() drops it on the Groovy side.
+  if (ncol(df)) colnames(df)[1] <- sub("^\xef\xbb\xbf", "", colnames(df)[1], useBytes = TRUE)
   if (!nrow(df)) stop(what, " is empty: ", path, call. = FALSE)
   return(df)
 }
@@ -816,6 +820,30 @@
   return(v)
 }
 
+#' Where a series' `_config.txt` is looked for: beside the inputs, then beside
+#' the features file, its parent, and a `segmentation/` beside that
+.cli_config_dirs <- function(features_path, res_dirs) {
+  here <- dirname(features_path)
+  return(unique(c(res_dirs, here, file.path(here, ".."), file.path(here, "..", "segmentation"))))
+}
+
+#' The `_config.txt` fields a centroid table carries above its header
+#'
+#' What the step after annotate needs from the Fiji run and cannot get from the
+#' features: `frames_analysed` is the time axis -- a frame where nothing was
+#' found has no feature row, yet is still a time point to a tracker -- and
+#' `pixel_depth` is what `z` was computed with. Copied as the config writes
+#' them, so there is no second spelling to drift; absent keys are left out.
+#'
+#' @return named character, possibly empty
+.cli_centroid_stamp <- function(sid, features_path, res_dirs) {
+  cfg <- .cli_read_config(.cli_find_config(sid, .cli_config_dirs(features_path, res_dirs)))
+  keys <- c("frames_analysed", "pixel_depth")
+  if (is.null(cfg)) return(character(0))
+  out <- trimws(cfg[intersect(keys, names(cfg))])
+  return(out[!is.na(out)])
+}
+
 #' The z step of the series in a features table, from the `_config.txt` Fiji
 #' wrote beside them
 #'
@@ -838,10 +866,7 @@
 #' @return a positive number, or NA_real_ (with attr "conflict" on a clash)
 .cli_z_step_for <- function(feats, features_path, res_dirs) {
   tab <- if (inherits(feats, "sf")) sf::st_drop_geometry(feats) else feats
-  here <- dirname(features_path)
-  dirs <- unique(c(res_dirs, here,
-                   file.path(here, ".."),
-                   file.path(here, "..", "segmentation")))
+  dirs <- .cli_config_dirs(features_path, res_dirs)
   vals <- c()
   for (sid in unique(tab$series_id)) {
     cfg <- .cli_read_config(.cli_find_config(sid, dirs))

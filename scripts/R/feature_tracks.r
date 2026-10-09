@@ -13,7 +13,7 @@
 #   track_id   a lineage: everything connected by links, mother and daughters
 #              together. <feature_type>_track_NNNN.
 #   branch_id  one object through time: a stretch of a track with no division
-#              or merge in it, at most one feature per t. <track_id>_bNN.
+#              or merge in it, at most one feature per t. <track_id>_bNNN.
 #
 # A feature linked to nothing, in either direction, has neither: NA, not a
 # track of one.
@@ -80,11 +80,14 @@ read_track_edits <- function(path){
   raw <- strsplit(lines[rows], "\t")
   # Up to the fingerprint every cell is needed; a row with fewer was almost
   # always typed with spaces, and would otherwise be refused for a missing
-  # fingerprint that is plainly there on the line.
+  # fingerprint that is plainly there on the line. Counted from the tabs, not
+  # from strsplit(), which drops trailing empty cells: `cut X Y<tab>` has its
+  # four columns, the last one blank, and is refused for that below.
+  ncell <- lengths(regmatches(lines[rows], gregexpr("\t", lines[rows]))) + 1L
   need <- max(match(setdiff(EDIT_COLUMNS, "note"), header))
-  short <- which(lengths(raw) < need)
+  short <- which(ncell < need)
   if(length(short)){
-    stop(name, ": line ", rows[short[1]], " has ", length(raw[[short[1]]]), " column(s) where ",
+    stop(name, ": line ", rows[short[1]], " has ", ncell[short[1]], " column(s) where ",
          need, " are needed (", paste(header[seq_len(need)], collapse = " "), "). Are they ",
          "separated by tabs? Spaces are not a column break.", call. = FALSE)
   }
@@ -342,7 +345,7 @@ number_tracks <- function(feat, links, feature_type, edited = character(0)){
   for(tr in unique(stats::na.omit(track_id))){
     in_tr <- which(track_id == tr)
     starts <- sort(unique(start[in_tr]))
-    branch_id[in_tr] <- sprintf("%s_b%02d", tr, match(start[in_tr], starts))
+    branch_id[in_tr] <- sprintf("%s_b%03d", tr, match(start[in_tr], starts))
   }
   merged <- ifelse(linked, n_pred[start] >= 2L, NA)
 
@@ -384,7 +387,11 @@ number_tracks <- function(feat, links, feature_type, edited = character(0)){
 #' NA; so does a feature linked to nothing.
 #'
 #' A series with no tracks table stops the join: a time course quietly coming
-#' out untracked is a join matching nothing.
+#' out untracked is a join matching nothing. A table with no valid feature of
+#' the type at all -- a position where detection found nothing, or every
+#' object was rejected -- is a result, not a missing input: every row gets NA
+#' and the branches table is empty. Whether the type exists anywhere in a run
+#' is the caller's to check, across all its inputs.
 #'
 #' @param st_df        the annotation (per ROI) or any table with series_id,
 #'                     feature_id, feature_type, t and run_id
@@ -399,12 +406,23 @@ join_tracks <- function(st_df, feature_type, tracks_dir, force = FALSE){
   if(length(absent)){
     stop("join_tracks() needs column(s): ", paste(absent, collapse = ", "), call. = FALSE)
   }
+  new <- c("track_id", "branch_id", "branch_merged")
+  clash <- intersect(new, colnames(st_df))
+  if(length(clash)){
+    stop("The table already has ", paste(clash, collapse = ", "),
+         "; tracks are joined at use, never stored", call. = FALSE)
+  }
   tab <- if(inherits(st_df, "sf")) sf::st_drop_geometry(st_df) else as.data.frame(st_df)
   real <- !is.na(tab$feature_id) & !is.na(tab$feature_type) &
     tab$feature_type == feature_type & startsWith(tab$feature_id, paste0(feature_type, "_"))
   if(!any(real)){
-    stop("No '", feature_type, "' features to join tracks onto; types present: ",
-         paste(sort(unique(tab$feature_type)), collapse = ", "), call. = FALSE)
+    message("No valid '", feature_type, "' feature in ",
+            paste(sort(unique(stats::na.omit(tab$series_id))), collapse = ", "),
+            ": nothing to track, every track id NA")
+    out <- st_df
+    out$track_id <- NA_character_; out$branch_id <- NA_character_; out$branch_merged <- NA
+    attr(out, "branches") <- .empty_branches()
+    return(out)
   }
   sids <- sort(unique(tab$series_id[real]))
   paths <- tracks_path(tracks_dir, sids, feature_type)
@@ -469,23 +487,21 @@ join_tracks <- function(st_df, feature_type, tracks_dir, force = FALSE){
     }
   }
   ids <- do.call(rbind, per_feature)
-  new <- c("track_id", "branch_id", "branch_merged")
-  clash <- intersect(new, colnames(st_df))
-  if(length(clash)){
-    stop("The table already has ", paste(clash, collapse = ", "),
-         "; tracks are joined at use, never stored", call. = FALSE)
-  }
   key <- paste(tab$series_id, tab$feature_id, sep = "\r")
   m <- match(key, paste(ids$series_id, ids$feature_id, sep = "\r"))
   m[!real] <- NA_integer_
   out <- st_df
   for(cl in new) out[[cl]] <- ids[[cl]][m]
-  branches <- if(length(per_branch)) do.call(rbind, per_branch) else
-    data.frame(series_id = character(0), feature_type = character(0), track_id = character(0),
-               track_source = character(0), branch_id = character(0), parent_branch_id = character(0),
-               branch_merged = logical(0), first_t = integer(0), last_t = integer(0),
-               n_features = integer(0))
+  branches <- if(length(per_branch)) do.call(rbind, per_branch) else .empty_branches()
   rownames(branches) <- NULL
   attr(out, "branches") <- branches
   return(out)
+}
+
+#' join_tracks()' branches table with no rows, typed
+.empty_branches <- function(){
+  data.frame(series_id = character(0), feature_type = character(0), track_id = character(0),
+             track_source = character(0), branch_id = character(0), parent_branch_id = character(0),
+             branch_merged = logical(0), first_t = integer(0), last_t = integer(0),
+             n_features = integer(0))
 }
