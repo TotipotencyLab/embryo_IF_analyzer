@@ -244,6 +244,22 @@ This means the Groovy scripts may have to defined into different levels:
   - Until then it is a standalone cleanup with one real caller. It would also
     delete the old function's `if(F){...}` block, a test scratchpad with a
     hardcoded `/Volumes/pool-toti-imaging/...` path.
+- **`feature_outline_cli.r` as a list of panels** (raised 2026-10-09, during
+  `tracking`'s review fixes; needs a design discussion before any of it is
+  built). Today it is fixed: up to two Fiji images (`--projection`,
+  `--overlay`) and one R outline panel. Two needs it does not meet:
+  - **Several R panels**, e.g. `--color_by feature_id branch_id` drawing one
+    outline panel per colouring side by side. (`--label_by` with stacked labels,
+    PR 6, covers the editing case meanwhile.)
+  - **Any image as a panel, each with its own caption** — the other channels'
+    overviews, with or without outlines. `--projection` / `--overlay` are
+    already being used this way, for two unlabelled channels; they would stay
+    as shorthands so existing runbooks keep working.
+  - ⚠️ **The single focus type** (colour by id, labels and tracks act on the
+    first `--feature` only) is the rule to revisit here, together with the
+    "Detect N named features" entry above: per-panel focus types and labels are
+    where several types would be labelled at once, and relaxing the repo's two
+    fixed feature types changes what a focus type even is.
 - **Tracking loose ends, found in `tracking`'s release review** (2026-10-09;
   none gives a wrong answer):
   - `number_tracks()` is quadratic in branches (`which()` per track and per

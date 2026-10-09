@@ -153,11 +153,17 @@ feature_outline_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
                                  "--feature, or the only one present"))
   p <- add_argument(p, "--tracks_dir", short = "-K", type = "character", default = NA,
                     help = paste("where Make_FeatureTracks wrote <series_id>_<type>_tracks.tsv,",
-                                 "for --color_by track_id/branch_id [default: beside --features]"))
+                                 "for track_id/branch_id colours or labels [default: beside",
+                                 "--features]"))
+  p <- add_argument(p, "--label_by", short = "-Y", type = "character", nargs = Inf, default = NULL,
+                    help = paste("label each outline of that type with its feature_id, track_id",
+                                 "and/or branch_id, stacked one per line, in the outline's",
+                                 "colour [default with --label: the --color_by id, else",
+                                 "feature_id]"))
   p <- add_argument(p, "--label", short = "-L", type = "character", nargs = Inf, default = NULL,
-                    help = paste("label panel (iii) outlines of that type with the number of",
-                                 "what is coloured: 'all', or some (7 0007 nucleus_0007).",
-                                 "Track numbers under track_id/branch_id"))
+                    help = paste("which outlines get a label: 'all', or feature_id=7,3",
+                                 "track_id=2 branch_id=3b2 -- any of them (OR); a full id",
+                                 "or 3b2 says its own kind, a bare number needs a key"))
   p <- add_argument(p, "--palette", short = "-P", type = "character", default = NA,
                     help = paste("palette for --color_by feature_id/track_id/branch_id",
                                  "[default: Tableau 10]: a grDevices::palette.pals() set",
@@ -293,7 +299,7 @@ feature_outline_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     # --track_type carries its own copy of these columns, and joining it first
     # would leave join_tracks() refusing a table that "already has" them.
     # join_feature_table() skips columns the spine already has.
-    if (qc$color_by %in% c("track_id", "branch_id")) {
+    if (length(qc$track_cols)) {
       tdir <- if (is.na(argv$tracks_dir)) dirname(argv$features) else argv$tracks_dir
       if (!"series_id" %in% colnames(valid)) valid$series_id <- sid
       valid <- join_tracks(valid, qc$focus, tdir, force = argv$force)
@@ -350,8 +356,7 @@ feature_outline_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     unioned <- union_features(valid,
                               group_cols = c("feature_id", "feature_type", "feature_class",
                                              if (per_frame) "t",
-                                             if (qc$color_by %in% c("track_id", "branch_id"))
-                                               qc$color_by))
+                                             qc$track_cols))
     if (!per_frame) {
       message("Panel (iii): ", nrow(feats), " ROIs -> ", nrow(unioned), " unioned feature(s)")
     }
@@ -369,8 +374,8 @@ feature_outline_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       pal <- class_palette(unioned$feature_class, cmap)
       unioned$feature_class <- pal$values
     }
-    unioned$qc_label <- qc_label_select(unioned[[id_col]], unioned$feature_type,
-                                        qc$focus, qc$label)
+    unioned$qc_label <- qc_labels(sf::st_drop_geometry(unioned), qc$focus, qc$label,
+                                  qc$label_by)
   }
 
   ttl <- .fo_one(.cli_resolve_arg(argv$title, "--title"), sid)
@@ -392,7 +397,7 @@ feature_outline_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
     r_png <- tempfile(fileext = ".png")
     .r_panel(f_feats, f_unioned, extent, sid, r_png, argv$panel_height,
-             palette = pal$palette, label_by = if (length(qc$label)) "qc_label" else NULL)
+             palette = pal$palette, label_by = if (!is.null(qc$label)) "qc_label" else NULL)
 
     # The panel is deliberately legend-free so it lines up with the Fiji PNGs
     # beside it, so the key goes in the caption instead. Naming what is inside
@@ -422,6 +427,16 @@ feature_outline_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
         cap <- paste0(cap, " | other(", length(pal$other_members), "): ",
                       paste(pal$other_members, collapse = ", "))
       }
+    }
+    # Labels that do not name the colour say so: the text and the colour are
+    # then two different ids, and the picture must not let one pass for the
+    # other. Labels naming what is coloured need no note, as before --label_by
+    # -- the feature_id under class colouring, the id itself under id colouring.
+    if (!f_rejected && !is.null(qc$label) &&
+        !identical(qc$label_by, if (isTRUE(pal$by_id)) qc$color_by else "feature_id")) {
+      # Short: the caption is drawn inside a panel 600 px wide by default, and
+      # "by <type> ..." before it already names the type.
+      cap <- paste0(cap, " | labels: ", paste(sub("_id$", "", qc$label_by), collapse = ", "))
     }
     panels[[cap]] <- magick::image_read(r_png)
 
@@ -611,10 +626,27 @@ feature_outline_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     stop("--color_by takes class, feature_id, track_id or branch_id; got '", color_by, "'",
          call. = FALSE)
   }
-  if (!is.na(argv$tracks_dir) && !color_by %in% c("track_id", "branch_id")) {
-    warning("--tracks_dir is used by --color_by track_id/branch_id only", call. = FALSE)
+  label <- .cli_label_spec(argv$label, "--label")
+  label_by <- .cli_resolve_arg(argv$label_by, "--label_by")
+  bad <- setdiff(label_by, by_id)
+  if (length(bad)) {
+    stop("--label_by takes feature_id, track_id and/or branch_id; got ",
+         paste0("'", bad, "'", collapse = ", "), call. = FALSE)
   }
-  label <- .cli_resolve_arg(argv$label, "--label")
+  label_by <- unique(label_by)
+  # Labels are on when either flag is given: --label_by alone labels every
+  # outline, --label alone writes what is coloured (as before --label_by).
+  if (length(label_by) && is.null(label)) label <- list(all = TRUE)
+  if (!is.null(label) && !length(label_by)) {
+    label_by <- if (color_by %in% by_id) color_by else "feature_id"
+  }
+  # Tracks are read when anything here is about them, not only the colour.
+  track_cols <- intersect(c("track_id", "branch_id"),
+                          c(color_by, label_by, setdiff(names(label), "all")))
+  if (!is.na(argv$tracks_dir) && !length(track_cols)) {
+    warning("--tracks_dir is used only when --color_by, --label_by or --label involves ",
+            "track_id or branch_id", call. = FALSE)
+  }
   palette <- if (is.na(argv$palette)) QC_DEFAULT_PALETTE else argv$palette
   qc_palette_colours(palette)                       # stops on an unknown name
   if (color_by %in% by_id) {
@@ -630,17 +662,18 @@ feature_outline_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     warning("--palette applies to --color_by feature_id/track_id/branch_id only", call. = FALSE)
   }
   focus <- NA_character_
-  if (color_by %in% by_id || length(label)) {
+  if (color_by %in% by_id || !is.null(label)) {
     types <- sort(unique(feats$feature_type))
     focus <- if (length(keep_features)) keep_features[1] else if (length(types) == 1L) types else NA
     if (is.na(focus)) {
-      stop(if (color_by %in% by_id) paste("--color_by", color_by) else "--label",
+      stop(if (color_by %in% by_id) paste("--color_by", color_by) else "--label/--label_by",
            " acts on one feature type, and this file holds ", paste(types, collapse = ", "),
            ": name it first in --feature (e.g. --feature ", types[1], " ",
            paste(types[-1], collapse = " "), ")", call. = FALSE)
     }
   }
-  return(list(color_by = color_by, label = label, palette = palette, focus = focus))
+  return(list(color_by = color_by, label = label, label_by = label_by, track_cols = track_cols,
+              palette = palette, focus = focus))
 }
 
 .r_panel <- function(feats, unioned, extent, sid, path, panel_height,

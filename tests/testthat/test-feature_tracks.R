@@ -697,3 +697,77 @@ test_that("a blank fingerprint before a trailing tab is called that, not a spaci
   writeLines(sub("\t[0-9a-f]{10}\ttest$", "\t", readLines(e)), e)
   expect_error(join_tracks(.feats(), "nucleus", d), "line 5 \\(cut nucleus_0006 nucleus_0009\\): no fingerprint")
 })
+
+# --- labels: --label_by says what, --label says which (PR 6) -------------------------
+
+test_that("--label parses key=values, OR, argparser's comma split, and refuses a guess", {
+  source_cli("cli_helpers.r")
+  L <- function(...) .cli_label_spec(c(...), "--label")
+  # `feature_id=7,3,1 track_id=2` as argparser delivers it.
+  expect_identical(L("feature_id=7", "3", "1", "track_id=2"),
+                   list(feature_id = c("7", "3", "1"), track_id = "2"))
+  expect_identical(L("feature_id=7 3"), list(feature_id = c("7", "3")))
+  expect_identical(L("feature_id=7", "feature_id=3"), list(feature_id = c("7", "3")))
+  expect_identical(L("all"), list(all = TRUE))
+  expect_identical(L("3b2", "nucleus_0005"), list(branch_id = "3b2", feature_id = "nucleus_0005"))
+  expect_null(L())
+  expect_error(L("7"), "say what it names: feature_id=7 or track_id=7")
+  expect_error(L("all", "feature_id=1"), "not both")
+  expect_error(L("branch_id=3"), "a branch needs its track")
+  expect_error(L("track_id=3b2"), "is a branch id, under track_id=; write branch_id=3b2")
+  expect_error(L("cell=3"), "'cell=' is not a kind")
+  expect_error(L("feature_id="), "names no value")
+})
+
+test_that("labels: stacked kinds, a selection by any kind, never a feature read as a track", {
+  source_r_scripts("plot_outline_topView.r")
+  source_cli("cli_helpers.r")
+  L <- function(...) .cli_label_spec(c(...), "--label")
+  # Feature 5 is in track 1; track 5 holds feature 9. Before --label_by,
+  # `--label nucleus_0005` under branch colouring kept only the number and
+  # labelled TRACK 5's branch -- nucleus_0009, another object.
+  tab <- data.frame(feature_id = c("nucleus_0005", "nucleus_0007", "nucleus_0009", "nucleus_0011", "nucleolus_0001"),
+                    feature_type = c(rep("nucleus", 4), "nucleolus"),
+                    track_id = c("nucleus_track_0001", "nucleus_track_0001", "nucleus_track_0005", NA, NA),
+                    branch_id = c("nucleus_track_0001_b001", "nucleus_track_0001_b002",
+                                  "nucleus_track_0005_b001", NA, NA))
+  expect_identical(qc_labels(tab, "nucleus", L("nucleus_0005"), "branch_id"),
+                   c("0001b001", NA, NA, NA, NA))
+  # Stacked, in --label_by's order; an untracked feature keeps what it has.
+  expect_identical(qc_labels(tab, "nucleus", L("all"), c("feature_id", "branch_id")),
+                   c("0005\n0001b001", "0007\n0001b002", "0009\n0005b001", "0011", NA))
+  # OR across kinds; zeros optional in the short form.
+  expect_identical(qc_labels(tab, "nucleus", L("track_id=5", "branch_id=1b2"), "feature_id"),
+                   c(NA, "0007", "0009", NA, NA))
+  expect_identical(qc_labels(tab, "nucleus", L("branch_id=0001b001"), "feature_id"),
+                   c("0005", NA, NA, NA, NA))
+  expect_error(qc_labels(tab, "nucleus", L("nucleolus_0001"), "feature_id"),
+               "labels act on the focus type, nucleus. Name nucleolus first in --feature")
+  expect_warning(qc_labels(tab, "nucleus", L("track_id=9"), "feature_id"),
+                 "No track nucleus_track_0009 to label")
+  expect_error(qc_labels(tab[, 1:2], "nucleus", L("all"), "branch_id"), "the tracks are not joined")
+})
+
+test_that("feature_outline --label_by: tracks read for labels alone, and bad options stop early", {
+  skip_if_no_sf()
+  skip_if_no_pkg(c("argparser", "ggplot2", "magick"))
+  source_cli(c("annotate_features_cli.r", "feature_outline_cli.r"))
+  d <- withr::local_tempdir(); out <- withr::local_tempdir()
+  .time_course(d)
+  suppressMessages(annotate_features_cli(c("--input", d, "--feature", "nucleus", "--outdir", out,
+                                           "--min_z_span", "nucleus=2")))
+  .tracks_for(out)
+  run <- function(...) suppressWarnings(feature_outline_cli(c(
+    "--features", file.path(out, "TC_features.rds"), "--config", file.path(d, "TC_config.txt"),
+    "--output", file.path(withr::local_tempdir(), "m.tif"), ...)))
+  # Class colouring, branch labels: the tracks are read because a label needs them.
+  expect_message(run("--label_by", "feature_id", "branch_id", "--label", "track_id=1"),
+                 "2 nucleus track\\(s\\), 4 branch\\(es\\)")
+  expect_error(run("--label", "7"), "say what it names")
+  expect_error(run("--label_by", "class"), "--label_by takes feature_id, track_id and/or branch_id")
+  expect_error(run("--color_by", "branch_id", "--label", "track_id=3b2"), "write branch_id=3b2")
+  expect_warning(feature_outline_cli(c(
+    "--features", file.path(out, "TC_features.rds"), "--config", file.path(d, "TC_config.txt"),
+    "--output", file.path(withr::local_tempdir(), "m.tif"), "--tracks_dir", out, "--label", "all")),
+    "--tracks_dir is used only when")
+})

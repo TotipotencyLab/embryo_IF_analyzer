@@ -170,8 +170,10 @@ open in a viewer or pasted into a note.
 
 To **name a problem outline**, colour each feature of one type differently and
 write its number on it: `annotate_features_cli.r --qc_plot --qc_color_by
-feature_id --qc_label all`, or `--color_by feature_id --label all` on
-`feature_outline_cli.r`. The type is the first `--feature`; others are drawn grey.
+feature_id --qc_label all` (or `--qc_label 7 12` for some), or
+`--color_by feature_id --label all` (`--label feature_id=7,12`) on
+`feature_outline_cli.r`, which can also label by track and branch
+(`--label_by`; `note/data_formats.md`). The type is the first `--feature`; others are drawn grey.
 `--qc_palette` picks the colours (`Tableau 10` by default; `Okabe-Ito`, `Set 1`,
 `Viridis`, …). `annotate_features_cli.r` also writes
 `<series_id>_feature_centroids.tsv`, one point per feature in calibrated units —
@@ -440,8 +442,9 @@ in the order they run, for one feature type at a time:
    `<series_id>_<type>_tracks.tsv`.
 3. **Check** — `feature_outline_cli.r --feature nucleus --color_by branch_id
    --label all`, a page per frame.
-4. **Correct** — rows in `<series_id>_<type>_track_edits.tsv`, then step 3
-   again. Step 2 is not re-run.
+4. **Correct** — rows in `<series_id>_<type>_track_edits.tsv`, chosen on
+   `--color_by branch_id --label_by feature_id branch_id`, then step 3 again.
+   Step 2 is not re-run.
 5. **Measure** — `feature_stat_cli.r --track_type <type>`.
 
 **Linking** is a Fiji step that runs *after* `annotate`,
@@ -481,8 +484,11 @@ than joined.
 
 **Correcting a track by hand** is a row in the `<series_id>_<type>_track_edits.tsv`
 seeded beside each tracks table: copy its commented template line, remove the
-`# `, and fill in the action and two `feature_id`s (`feature_outline_cli.r
---color_by feature_id --label all` shows which is which). `join X Y` rejoins a
+`# `, and fill in the action and two `feature_id`s. To find them,
+`feature_outline_cli.r --feature nucleus --color_by branch_id --label_by
+feature_id branch_id` colours each outline by its branch and labels it with
+its feature number over its branch; `--label track_id=3` (or `feature_id=5,7`,
+`branch_id=3b2`) keeps the labels to the ones in question. `join X Y` rejoins a
 track that broke (X its last feature before the break, Y the first after),
 `cut X Y` removes a wrong link, `link X Y` adds one — a missed division is two
 `link`s from the mother. The edits are applied every time R reads the tracks,

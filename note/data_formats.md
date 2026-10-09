@@ -1290,6 +1290,9 @@ palette, ids `k` apart share a colour; the label settles which is which.
 `feature_outline_cli.r` takes the same choices without the `qc_` prefix
 (`--color_by feature_id`, `--label`, `--palette`) for panel (iii), except that
 its colour-by-type mode is called `class` rather than `feature_type`.
+`--qc_label` is parsed by the same function as `--label` (`.cli_label_spec()`):
+`all`, `feature_id=7,3`, or — since annotate has features only — bare numbers
+(`7 3`), which mean features here and nothing else.
 
 #### `<series_id>_feature_centroids.tsv`
 
@@ -1677,9 +1680,36 @@ object-through-time, over every page of the series, so a nucleus keeps its
 colour from frame to frame and **a tracking error shows as a colour jump** —
 the visual check of tracking. The tracks are read from beside `--features`
 (or `--tracks_dir`) and checked as §2 describes; features linked to nothing
-are grey, as are other types. `--label` then writes the track number (`0003`)
-or the branch (`0003b002`), and its numbers select tracks: `--label 3` labels
-every branch of track 3.
+are grey, as are other types.
+
+**Labels: `--label_by` says what, `--label` says which.** Both act on the focus
+type only (the first `--feature`); other types are never labelled.
+
+- `--label_by feature_id track_id branch_id` — any of them, **stacked one per
+  line** in one label (`0005` over `0001b002`), drawn in the outline's colour,
+  on every outline of the type. A kind an outline lacks (an untracked
+  feature's branch) is left out of its label. Default, when only `--label` is
+  given: the `--color_by` id, or `feature_id` under class colouring — the
+  labels as they were before `--label_by`. When the labels name something
+  other than what is coloured, the caption says so (`labels: feature, branch`).
+- `--label` narrows that to the outlines named, **any of them** (OR):
+  `all`, or `key=values` tokens — `feature_id=7,3 track_id=2 branch_id=3b2`.
+  Values are numbers (zeros optional), a branch's short form (`3b2` =
+  `0003b002`; a branch needs its track, and `track_id=3` is all of track 3's
+  branches), or full ids. A token without `=` belongs to the key before it,
+  which is also what argparser makes of a comma: `feature_id=7,3,1` arrives as
+  `feature_id=7`, `3`, `1`. A full id or `3b2` names its own kind, and is
+  refused under a key of another kind. **A bare number with no key before it
+  is refused** — under branch colouring, `7` could be feature 7 or track 7,
+  and reading `nucleus_0005` as track 5 is what the old `--label` did. An id
+  of another type is refused, naming the `--feature` order that would label
+  it; one that matches nothing warns.
+
+The tracks are read whenever `--color_by`, `--label_by` or `--label` involves
+`track_id` or `branch_id`, so `--color_by class --label_by branch_id` works.
+For choosing hand edits: `--color_by branch_id --label_by feature_id
+branch_id` — the colour shows where a track breaks, the labels give the two
+`feature_id`s to `join`.
 
 `--color_map 'growing=red' 'small=blue'` highlights the classes under
 inspection. Everything else — including orphans — is drawn as a single `other`

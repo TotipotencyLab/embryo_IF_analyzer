@@ -70,7 +70,7 @@ plot_features_topView <- function(st_df, union_df=NULL, color_by="feature_type",
   #   st_df    per-ROI features (drawn faintly underneath); may be NULL
   #   union_df one row per feature (drawn on top); may be NULL
   #   label_by a union_df column of text drawn on each feature, in its own
-  #            outline colour; NA rows get none (qc_label_select())
+  #            outline colour; NA rows get none (qc_labels())
   #   legend   FALSE drops the colour legend -- for colour-by-feature_id, where
   #            a hundred keys would be a legend bigger than the plot and the
   #            labels name the outlines instead
@@ -244,35 +244,71 @@ qc_short_label <- function(feature_id){
   out
 }
 
-#' Which outlines get a label
+#' The label written on each outline
 #'
-#' `spec` is "all", or feature ids written as the CLI user would: `7`, `0007`
-#' or `nucleus_0007` all mean feature 7 of the focus type. Only the focus type
-#' is labelled -- labelling every nucleolus inside every nucleus would cover
-#' the picture it is meant to explain. Given track or branch ids, the numbers
-#' are TRACK numbers: `3` labels every branch of track 3.
+#' Only the focus type is labelled -- labelling every nucleolus inside every
+#' nucleus would cover the picture it is meant to explain. WHAT a label says is
+#' `label_by`: one or more of feature_id, track_id, branch_id, stacked one per
+#' line (`0005` over `0001b002`); a kind an outline lacks (an untracked
+#' feature's branch) is left out of its label. WHICH outlines get one is
+#' `spec`, from .cli_label_spec(): all of them, or the union of the features,
+#' tracks and branches it names. A number is completed with the focus type
+#' (`7` -> nucleus_0007, `3b2` -> nucleus_track_0003_b002); a full id of
+#' another type is refused, because it would match nothing and say so only as
+#' a warning.
 #'
-#' @return a character vector, one per outline: the short label, or NA
-qc_label_select <- function(feature_id, feature_type, focus_type, spec){
-  lab <- ifelse(feature_type == focus_type, qc_short_label(feature_id), NA_character_)
-  if(is.null(spec) || !length(spec)) return(rep(NA_character_, length(feature_id)))
-  if(identical(tolower(spec), "all")) return(lab)
-  # The number a spec is matched against: a branch label's track part.
-  key <- sub("b[0-9]+$", "", lab)
-  want <- vapply(spec, function(s){
-    tail <- sub("^.*_", "", s)
-    if(!grepl("^[0-9]+$", tail)){
-      stop("--qc_label takes 'all' or feature numbers/ids (7, 0007, nucleus_0007); got '",
-           s, "'", call. = FALSE)
-    }
-    sprintf("%04d", as.integer(tail))
-  }, character(1))
-  absent <- setdiff(want, key)
+#' @param tab      one row per outline: feature_id, feature_type, and the
+#'                 track_id / branch_id columns that label_by or spec use
+#' @param spec     NULL (no labels), list(all = TRUE), or ids per kind
+#' @return a character vector, one per outline: the label, or NA
+qc_labels <- function(tab, focus_type, spec, label_by = "feature_id"){
+  n <- nrow(tab)
+  if(is.null(spec)) return(rep(NA_character_, n))
+  need <- unique(c(label_by, setdiff(names(spec), "all")))
+  absent <- setdiff(need, colnames(tab))
   if(length(absent)){
-    warning("No ", focus_type, " ", if(any(grepl("_track_", feature_id))) "track" else "feature",
-            " numbered ", paste(absent, collapse = ", "), " to label", call. = FALSE)
+    stop("Labels need ", paste(absent, collapse = ", "), ": the tracks are not joined",
+         call. = FALSE)
   }
-  return(ifelse(key %in% want, lab, NA_character_))
+  focus <- !is.na(tab$feature_type) & tab$feature_type == focus_type
+  parts <- lapply(label_by, function(k) qc_short_label(tab[[k]]))
+  lab <- vapply(seq_len(n), function(i){
+    p <- vapply(parts, `[`, character(1), i)
+    p <- p[!is.na(p)]
+    if(length(p)) paste(p, collapse = "\n") else NA_character_
+  }, character(1))
+  lab[!focus] <- NA_character_
+  if(isTRUE(spec$all)) return(lab)
+
+  full <- function(k, v){
+    num <- !grepl("_", v, fixed = TRUE)
+    out <- v
+    out[num] <- switch(k,
+      feature_id = sprintf("%s_%04d", focus_type, as.integer(v[num])),
+      track_id   = sprintf("%s_track_%04d", focus_type, as.integer(v[num])),
+      branch_id  = sprintf("%s_track_%04d_b%03d", focus_type,
+                           as.integer(sub("b.*$", "", v[num])), as.integer(sub("^[0-9]+b", "", v[num]))))
+    alien <- out[!startsWith(out, paste0(focus_type, "_"))]
+    if(length(alien)){
+      stop(alien[1], ": labels act on the focus type, ", focus_type, ". Name ",
+           sub("_(track_)?[0-9]+(_b[0-9]+)?$", "", alien[1]),
+           " first in --feature to label it", call. = FALSE)
+    }
+    out
+  }
+  pick <- rep(FALSE, n)
+  for(k in setdiff(names(spec), "all")){
+    want <- unique(full(k, spec[[k]]))
+    hit <- focus & !is.na(tab[[k]]) & tab[[k]] %in% want
+    gone <- setdiff(want, tab[[k]][focus])
+    if(length(gone)){
+      warning("No ", sub("_id$", "", k), " ", paste(gone, collapse = ", "), " to label",
+              call. = FALSE)
+    }
+    pick <- pick | hit
+  }
+  lab[!pick] <- NA_character_
+  return(lab)
 }
 
 union_features <- function(st_df, group_cols=c("feature_id", "feature_type")){

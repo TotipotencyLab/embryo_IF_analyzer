@@ -1401,6 +1401,17 @@ segmented time-lapse exists (`note/wishlist.md`).
         that Groovy accepts; docs — `NA` not blank in `feature_stats.tsv`,
         "two or more" merge parents, the z step per series, `--feature` in
         the README's check step.
+      - **Labels: `--label_by` says what, `--label` says which** (raised by
+        the user while choosing hand edits: no picture showed feature ids and
+        branches together). `--label_by feature_id track_id branch_id`, any
+        of them stacked in one label in the outline's colour; `--label` an
+        optional OR-filter of `key=values` (`feature_id=7,3 branch_id=3b2`).
+        A bare number is refused in `feature_outline` — under branch
+        colouring the old `--label nucleus_0005` kept only the number and
+        labelled TRACK 5, another object — and means a feature in
+        `annotate --qc_label`, through the same parser with a default key
+        (`.cli_label_spec()`). One focus type kept; the multi-panel redesign
+        is in the wishlist.
       Verified: each fix's test fails on the code before it (run against an
       export of `tracking` at PR 5), passes after. Left for later, in
       `note/wishlist.md`: `number_tracks` quadratic in branches, several
@@ -1558,6 +1569,12 @@ a library class and the `Open_*` script is a thin caller — same division as
       - **Pipeline ids** (`series_id`, the sources key, `feature_id`) — check
         whether any input takes a list of them; none does in a `#@` today.
 
+      ⚠️ **On the R side argparser splits a value on commas before any of
+      our code sees it** (`--x 1,3` arrives as `1`, `3`; the
+      `r-cli-convention` skill), so every R parser of this grammar must
+      re-join the pieces first, as `feature_outline_cli.r --t` and
+      `.cli_label_spec()` (PR 6) already do. Index lists then reach `--label`
+      and `--qc_label` values (`feature_id=1-20`) through that one function.
       Proposed: SLURM-array style — `5`, `1-96`, `10-90:10` (a step), pieces
       joined by commas — parsed by **one** function per language, so Groovy
       and R cannot drift. Writers emit one canonical, shortest form (a step
